@@ -1086,22 +1086,55 @@ def find_classic_and_buffered_collars(
                         + call.get("callOpenInterest", 0)
                     )
 
-                    buffer_error = abs(buffer_pct - target_loss_pct)
+                    # buffer_error = abs(buffer_pct - target_loss_pct)
+                    # cap_error = abs(cap_return - target_gain_pct)
+
+                    # outcome_error = 2.0 * buffer_error + cap_error
+
+                    # liquidity_score = (
+                    #     np.log1p(total_volume)
+                    #     + np.log1p(total_oi)
+                    # )
+
+                    # rank_score = (
+                    #     -100.0 * outcome_error
+                    #     -0.10 * abs(net_cost_bps)
+                    #     -0.05 * bid_ask_drag_bps
+                    #     + liquidity_score
+                    # )
+                    # For buffered collars, the user's gain target is the anchor.
+
+
+
+                    
+                    # We want the cap close to target_gain_pct, then maximize the first-loss buffer.
                     cap_error = abs(cap_return - target_gain_pct)
-
-                    outcome_error = 2.0 * buffer_error + cap_error
-
+                    
+                    # Keep outcome_error mostly focused on cap fit.
+                    # Lower is better.
+                    outcome_error = cap_error
+                    
                     liquidity_score = (
                         np.log1p(total_volume)
                         + np.log1p(total_oi)
                     )
-
+                    
+                    # Higher is better.
+                    # Primary goal: cap close to target.
+                    # Secondary goal: bigger first-loss buffer.
+                    # Then lower net cost, lower bid/ask drag, better liquidity.
                     rank_score = (
-                        -100.0 * outcome_error
+                        -100.0 * cap_error
+                        +100.0 * buffer_pct
                         -0.10 * abs(net_cost_bps)
                         -0.05 * bid_ask_drag_bps
                         + liquidity_score
                     )
+
+
+
+
+
 
                     rows.append({
                         "strategy": "buffered_collar_first_loss",
@@ -1269,15 +1302,23 @@ def build_frontend_payload(
         .head(n_classic)
     )
 
+    # buffered = (
+    #     view[view["strategy"] == "buffered_collar_first_loss"]
+    #     .sort_values(
+    #         ["outcome_error", "bid_ask_drag_bps", "total_oi"],
+    #         ascending=[True, True, False],
+    #     )
+    #     [buffered_cols]
+    #     .head(n_buffered)
+    # )
     buffered = (
-        view[view["strategy"] == "buffered_collar_first_loss"]
-        .sort_values(
-            ["outcome_error", "bid_ask_drag_bps", "total_oi"],
-            ascending=[True, True, False],
-        )
-        [buffered_cols]
-        .head(n_buffered)
+    view[view["strategy"] == "buffered_collar_first_loss"]
+    .sort_values(
+        ["rank_score", "buffer_pct", "bid_ask_drag_bps", "total_oi"],
+        ascending=[False, False, True, False],
     )
+    [buffered_cols]
+    .head(n_buffered) )
 
     payload = {
         "classic_collars": classic.to_dict(orient="records"),

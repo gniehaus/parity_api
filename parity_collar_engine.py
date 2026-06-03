@@ -512,24 +512,29 @@ def build_zero_cost_target_cap_buffer(
     target_gain_pct=0.08,
     assumed_dividend_yield=0.01,
     max_buffer_pct=0.20,
-    max_credit_bps=25,
-    max_debit_bps=25,
-    fallback_max_abs_cost_bps=50,
+    max_near_zero_bps=25,
 ):
     """
     Product: Buffered Growth
 
-    Loosened POC logic:
-    1. Find the call strike closest to the user's target gain.
-    2. Build buffer candidates using an ATM/near-ATM long put and lower short puts.
-    3. Allow small credits or small debits around zero.
-    4. Rank by option cost closest to zero, then larger buffer.
-    5. If nothing is inside the tight +/-10 bps band, use a fallback within +/-50 bps.
-    6. Do not allow extreme buffers above max_buffer_pct.
+    POC logic:
+    Always try to return a buffer.
+
+    1. Look at calls near the user's target gain.
+    2. Look at near-ATM long puts.
+    3. Look at lower short puts.
+    4. Do NOT filter out credits or debits.
+    5. Rank by:
+        - cap close to target
+        - option cost close to zero
+        - larger buffer
+        - lower bid/ask drag
+        - better open interest
+    6. Return the best available buffer.
 
     Important:
-    A small credit should not be marketed as income.
-    The front end can display near-zero costs as "approximately $0".
+    This may return a small credit or debit.
+    The frontend should display near-zero option costs as "approximately $0".
     """
 
     g = expiry_chain.copy()
@@ -552,9 +557,9 @@ def build_zero_cost_target_cap_buffer(
         target_cap_value - expected_dividend_dollars
     ) / MULT
 
+    # Loosened call filter.
     valid_calls = g[
         (g["strike"] > spot)
-        & (g["callAskPrice"] > g["callBidPrice"])
         & (g["callMid"] > 0)
     ].copy()
 
@@ -565,16 +570,15 @@ def build_zero_cost_target_cap_buffer(
         valid_calls["strike"] - required_call_strike
     ).abs()
 
-    # Instead of only using one call, look at several calls near the target.
-    # This helps the buffer exist more often.
+    # Look at more calls near the target, not just one.
     nearby_calls = valid_calls.sort_values(
         ["target_distance", "strike"],
         ascending=[True, True],
-    ).head(7)
+    ).head(15)
 
+    # Loosened long put filter.
     candidate_long_puts = g[
         (g["strike"] <= spot)
-        & (g["putAskPrice"] > g["putBidPrice"])
         & (g["putMid"] > 0)
     ].copy()
 
@@ -585,11 +589,11 @@ def build_zero_cost_target_cap_buffer(
         candidate_long_puts["strike"] - spot
     ).abs()
 
-    # Look at a few near-ATM long puts, not only one.
+    # Look at several near-ATM long puts.
     nearby_long_puts = candidate_long_puts.sort_values(
         ["atm_distance", "strike"],
         ascending=[True, False],
-    ).head(5)
+    ).head(10)
 
     rows = []
 
@@ -601,9 +605,9 @@ def build_zero_cost_target_cap_buffer(
             long_put_strike = float(long_put["strike"])
             long_put_cost = float(long_put["putMid"]) * MULT
 
+            # Loosened short put filter.
             short_puts = g[
                 (g["strike"] < long_put_strike)
-                & (g["putAskPrice"] > g["putBidPrice"])
                 & (g["putMid"] > 0)
             ].copy()
 
@@ -621,7 +625,7 @@ def build_zero_cost_target_cap_buffer(
                 buffer_width_points = long_put_strike - short_put_strike
                 buffer_pct = buffer_width_points / spot
 
-                # Avoid weird demo output like 40%+ buffers.
+                # Keep the buffer in a reasonable demo range.
                 if buffer_pct <= 0 or buffer_pct > max_buffer_pct:
                     continue
 
@@ -643,10 +647,24 @@ def build_zero_cost_target_cap_buffer(
                 protected_zone_return = protected_zone_value / notional - 1
                 cap_return = cap_value / notional - 1
 
+                # Use safe bid/ask drag calculation.
+                long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
+                short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
+                call_bid = float(call.get("callBidPrice", call["callMid"]))
+
+                if pd.isna(long_put_ask) or long_put_ask <= 0:
+                    long_put_ask = float(long_put["putMid"])
+
+                if pd.isna(short_put_bid) or short_put_bid < 0:
+                    short_put_bid = float(short_put["putMid"])
+
+                if pd.isna(call_bid) or call_bid < 0:
+                    call_bid = float(call["callMid"])
+
                 worst_net_cost = (
-                    float(long_put["putAskPrice"])
-                    - float(short_put["putBidPrice"])
-                    - float(call["callBidPrice"])
+                    long_put_ask
+                    - short_put_bid
+                    - call_bid
                 ) * MULT
 
                 bid_ask_drag_dollars = worst_net_cost - net_cost
@@ -688,49 +706,34 @@ def build_zero_cost_target_cap_buffer(
 
     candidates = pd.DataFrame(rows)
 
-    # Preferred range: allow small credits or small debits around zero.
-    preferred = candidates[
-        (candidates["net_cost_bps"] >= -max_credit_bps)
-        & (candidates["net_cost_bps"] <= max_debit_bps)
-    ].copy()
+    candidates["near_zero"] = (
+        candidates["abs_net_cost_bps"] <= max_near_zero_bps
+    )
 
-    if not preferred.empty:
-        pool = preferred
-        outside_tolerance = False
-    else:
-        # Fallback: still return a buffer for the demo if it is reasonably close.
-        fallback = candidates[
-            candidates["abs_net_cost_bps"] <= fallback_max_abs_cost_bps
-        ].copy()
-
-        if fallback.empty:
-            return None
-
-        pool = fallback
-        outside_tolerance = True
-
-    # Rank:
-    # 1. closest to zero cost
-    # 2. cap closest to target
-    # 3. larger buffer
-    # 4. lower bid/ask drag
-    # 5. better OI
-    best = pool.sort_values(
+    # Prefer near-zero structures, but do not require them.
+    # This forces the API to return a buffer instead of null.
+    best = candidates.sort_values(
         [
-            "abs_net_cost",
+            "near_zero",
             "cap_error",
+            "abs_net_cost_bps",
             "buffer_pct",
             "bid_ask_drag_bps",
             "total_oi",
         ],
-        ascending=[True, True, False, True, False],
+        ascending=[False, True, True, False, True, False],
     ).iloc[0]
 
     net_cost = float(best["net_cost"])
+    net_cost_bps = float(best["net_cost_bps"])
+    abs_net_cost_bps = abs(net_cost_bps)
 
-    cost_display_label = "approximately $0"
-    if outside_tolerance:
-        cost_display_label = "near zero"
+    if abs_net_cost_bps <= max_near_zero_bps:
+        cost_display_label = "approximately $0"
+    elif net_cost > 0:
+        cost_display_label = "small debit"
+    else:
+        cost_display_label = "small credit"
 
     return {
         "product_name": "Buffered Growth",
@@ -758,12 +761,10 @@ def build_zero_cost_target_cap_buffer(
         "put_spread_cost_dollars": float(best["put_spread_cost"]),
         "call_credit_dollars": float(best["call_credit"]),
         "net_cost_dollars": net_cost,
-        "net_cost_bps": float(best["net_cost_bps"]),
+        "net_cost_bps": net_cost_bps,
 
-        "near_zero_cost_ok": True,
-        "outside_tolerance": outside_tolerance,
-        "max_credit_bps_allowed": max_credit_bps,
-        "max_debit_bps_allowed": max_debit_bps,
+        "near_zero_cost_ok": bool(best["near_zero"]),
+        "max_near_zero_bps": max_near_zero_bps,
 
         "buffer_width_points": float(best["buffer_width_points"]),
         "buffer_pct": float(best["buffer_pct"]),
@@ -797,7 +798,6 @@ def build_zero_cost_target_cap_buffer(
             ),
         },
     }
-
 # ============================================================
 # 7. PRODUCT RECOMMENDATION PAYLOAD
 # ============================================================

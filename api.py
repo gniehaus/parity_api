@@ -102,7 +102,7 @@
 
 
 import os
-from typing import Optional
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -126,11 +126,60 @@ app.add_middleware(
 
 
 class RecommendationRequest(BaseModel):
-    ticker: str = Field(default="XSP")
-    horizon: int = Field(default=365, description="Target horizon in days")
-    max_loss: float = Field(default=0.005, description="Max loss target for collar. Example: 0.005 = 0.50%")
-    target_gain: float = Field(default=0.08, description="Target gain for buffer. Example: 0.08 = 8.00%")
-    assumed_dividend_yield: float = Field(default=0.01, description="Annual dividend yield. Example: 0.01 = 1.00%")
+    # Base44 should pass this from the selected product universe.
+    # Phase 1 default in the UI can still be XSP, but the API should receive it explicitly.
+    ticker: str = Field(..., description="Options ticker to use, e.g. XSP")
+
+    # Base44 should pass this from the user's survey answer.
+    # Example mappings:
+    # 3 months -> 90
+    # 6 months -> 180
+    # 1 year -> 365
+    horizon: int = Field(..., description="Target outcome period in days")
+
+    # Base44 should pass this from the user's downside preference.
+    # Example:
+    # close to no loss -> 0.005
+    # small loss -> 0.01 or 0.015
+    # more downside -> 0.025
+    max_loss: float = Field(
+        ...,
+        description="Max loss target for Defined Floor collar. Example: 0.005 = 0.50%",
+    )
+
+    # Base44 should pass this from the user's upside preference.
+    # Example:
+    # conservative -> 0.05
+    # balanced -> 0.07
+    # growth -> 0.10
+    target_gain: float = Field(
+        ...,
+        description="Target gain used to select the Buffered Growth call. Example: 0.08 = 8.00%",
+    )
+
+    # Base44 should pass this explicitly.
+    # For now Base44 can send 0.01.
+    assumed_dividend_yield: float = Field(
+        ...,
+        description="Annual dividend yield assumption. Example: 0.01 = 1.00%",
+    )
+
+    # Optional metadata from Base44. The API does not need this for math yet,
+    # but it can be returned/logged later if useful.
+    investment_amount: float | None = Field(
+        default=None,
+        description="User's intended investment amount, if collected",
+    )
+
+    protection_style: Literal["hard_floor", "buffer", "show_both"] | None = Field(
+        default=None,
+        description="User's selected protection style",
+    )
+
+    risk_profile: Literal["conservative", "balanced", "growth"] | None = Field(
+        default=None,
+        description="Derived front-end risk profile",
+    )
 
 
 @app.get("/")
@@ -138,14 +187,13 @@ def root():
     return {
         "status": "ok",
         "message": "Parity Defined Outcome API is running",
+        "usage": "POST /recommendations with ticker, horizon, max_loss, target_gain, and assumed_dividend_yield",
     }
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy",
-    }
+    return {"status": "healthy"}
 
 
 @app.post("/recommendations")
@@ -173,49 +221,17 @@ def get_recommendations(request: RecommendationRequest):
             assumed_dividend_yield=request.assumed_dividend_yield,
         )
 
-        return payload
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
-
-
-# Optional backwards-compatible GET endpoint for quick browser testing
-@app.get("/recommendations")
-def get_recommendations_get(
-    ticker: str = "XSP",
-    horizon: int = 365,
-    max_loss: float = 0.005,
-    target_gain: float = 0.08,
-    assumed_dividend_yield: float = 0.01,
-):
-    try:
-        token = os.getenv("ORATS_TOKEN")
-
-        if not token:
-            raise HTTPException(
-                status_code=500,
-                detail="Missing ORATS_TOKEN environment variable",
-            )
-
-        df = fetch_orats_chain(
-            ticker=ticker,
-            token=token,
-        )
-
-        payload = build_defined_outcome_recommendations(
-            df=df,
-            ticker=ticker,
-            horizon=horizon,
-            max_loss_pct=max_loss,
-            target_gain_pct=target_gain,
-            assumed_dividend_yield=assumed_dividend_yield,
-        )
+        # Echo the Base44 inputs back so the front end can confirm what was used.
+        payload["request"] = {
+            "ticker": request.ticker,
+            "horizon": request.horizon,
+            "max_loss": request.max_loss,
+            "target_gain": request.target_gain,
+            "assumed_dividend_yield": request.assumed_dividend_yield,
+            "investment_amount": request.investment_amount,
+            "protection_style": request.protection_style,
+            "risk_profile": request.risk_profile,
+        }
 
         return payload
 

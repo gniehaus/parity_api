@@ -512,8 +512,8 @@ def build_zero_cost_target_cap_buffer(
     target_gain_pct=0.08,
     assumed_dividend_yield=0.01,
     max_buffer_pct=0.20,
-    max_credit_bps=10,
-    max_debit_bps=10,
+    max_credit_bps=25,
+    max_debit_bps=25,
     fallback_max_abs_cost_bps=50,
 ):
     """

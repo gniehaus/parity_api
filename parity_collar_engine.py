@@ -311,15 +311,15 @@ def build_zero_cost_dividend_floor_collar(
     """
     Product: Defined Floor
 
-    Corrected logic:
+    Fast vectorized logic:
     1. Search put/call combinations together.
-    2. Calculate the final floor after dividends and net option cost.
-    3. Reject any collar that misses the requested max loss.
+    2. Calculate final floor after dividends and net option cost.
+    3. Reject collars that miss the requested max loss.
     4. Prefer near-zero option cost.
     5. Within valid/near-zero structures, choose the highest cap.
-    6. Use bid/ask drag and liquidity as tie breakers.
+    6. Use cost, bid/ask drag, and liquidity as tie breakers.
 
-    This fixes the issue where max_loss=0.0 could still return a negative floor.
+    This is much faster than nested Python loops.
     """
 
     g = expiry_chain.copy()
@@ -351,117 +351,144 @@ def build_zero_cost_dividend_floor_collar(
     if valid_puts.empty or valid_calls.empty:
         return None
 
-    rows = []
+    # Optional speed filter:
+    # For a floor product, puts far below the required floor will never work.
+    # Keep a reasonable band around the required strike.
+    approximate_required_put = (
+        notional * (1 - max_loss_pct) - expected_dividend_dollars
+    ) / MULT
 
-    for _, put in valid_puts.iterrows():
-        put_strike = float(put["strike"])
-        put_cost = float(put["putMid"]) * MULT
+    valid_puts = valid_puts[
+        valid_puts["strike"] >= approximate_required_put - 10
+    ].copy()
 
-        for _, call in valid_calls.iterrows():
-            call_strike = float(call["strike"])
-            call_credit = float(call["callMid"]) * MULT
-
-            net_cost = put_cost - call_credit
-            net_cost_bps = net_cost / notional * 10000
-
-            floor_value = (
-                put_strike * MULT
-                + expected_dividend_dollars
-                - net_cost
-            )
-
-            cap_value = (
-                call_strike * MULT
-                + expected_dividend_dollars
-                - net_cost
-            )
-
-            floor_return = floor_value / notional - 1
-            cap_return = cap_value / notional - 1
-
-            # Critical fix:
-            # Do not return a collar that misses the requested floor.
-            # If max_loss_pct = 0.0, floor_return must be >= 0.0.
-            if floor_return < target_floor_return:
-                continue
-
-            worst_net_cost = (
-                float(put.get("putAskPrice", put["putMid"]))
-                - float(call.get("callBidPrice", call["callMid"]))
-            ) * MULT
-
-            bid_ask_drag_dollars = worst_net_cost - net_cost
-            bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
-
-            liq_score, total_volume, total_oi = liquidity_score(put, call)
-
-            rows.append({
-                "put": put,
-                "call": call,
-                "put_strike": put_strike,
-                "call_strike": call_strike,
-                "put_cost": put_cost,
-                "call_credit": call_credit,
-                "net_cost": net_cost,
-                "net_cost_bps": net_cost_bps,
-                "abs_net_cost_bps": abs(net_cost_bps),
-                "floor_value": floor_value,
-                "cap_value": cap_value,
-                "floor_return": floor_return,
-                "cap_return": cap_return,
-                "max_loss_dollars": notional - floor_value,
-                "max_gain_dollars": cap_value - notional,
-                "bid_ask_drag_bps": bid_ask_drag_bps,
-                "total_volume": total_volume,
-                "total_oi": total_oi,
-                "liquidity_score": liq_score,
-            })
-
-    if not rows:
+    if valid_puts.empty:
         return None
 
-    candidates = pd.DataFrame(rows)
+    # Convert to arrays.
+    put_strikes = valid_puts["strike"].to_numpy(dtype=float)
+    put_costs = (valid_puts["putMid"].to_numpy(dtype=float) * MULT)
 
-    candidates["near_zero"] = (
-        candidates["abs_net_cost_bps"] <= max_near_zero_bps
+    put_asks = valid_puts.get(
+        "putAskPrice",
+        valid_puts["putMid"]
+    ).to_numpy(dtype=float)
+
+    put_volumes = valid_puts.get(
+        "putVolume",
+        pd.Series(0, index=valid_puts.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    put_oi = valid_puts.get(
+        "putOpenInterest",
+        pd.Series(0, index=valid_puts.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    call_strikes = valid_calls["strike"].to_numpy(dtype=float)
+    call_credits = (valid_calls["callMid"].to_numpy(dtype=float) * MULT)
+
+    call_bids = valid_calls.get(
+        "callBidPrice",
+        valid_calls["callMid"]
+    ).to_numpy(dtype=float)
+
+    call_volumes = valid_calls.get(
+        "callVolume",
+        pd.Series(0, index=valid_calls.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    call_oi = valid_calls.get(
+        "callOpenInterest",
+        pd.Series(0, index=valid_calls.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    # Broadcast put/call grids.
+    # Shape = number of puts x number of calls.
+    net_cost = put_costs[:, None] - call_credits[None, :]
+    net_cost_bps = net_cost / notional * 10000
+
+    floor_value = (
+        put_strikes[:, None] * MULT
+        + expected_dividend_dollars
+        - net_cost
     )
 
-    # Preferred pool: collars that satisfy the floor and are near zero cost.
-    near_zero_candidates = candidates[candidates["near_zero"]].copy()
+    cap_value = (
+        call_strikes[None, :] * MULT
+        + expected_dividend_dollars
+        - net_cost
+    )
 
-    if not near_zero_candidates.empty:
-        pool = near_zero_candidates
+    floor_return = floor_value / notional - 1
+    cap_return = cap_value / notional - 1
+
+    # Enforce the actual requested floor after net option cost.
+    valid_mask = floor_return >= target_floor_return
+
+    if not np.any(valid_mask):
+        return None
+
+    abs_net_cost_bps = np.abs(net_cost_bps)
+    near_zero = abs_net_cost_bps <= max_near_zero_bps
+
+    # Prefer near-zero collars if any exist.
+    preferred_mask = valid_mask & near_zero
+
+    if np.any(preferred_mask):
+        selection_mask = preferred_mask
         outside_tolerance = False
     else:
-        # Still return a valid floor if no near-zero collar exists.
-        # But do not ever return one that misses the floor.
-        pool = candidates
+        selection_mask = valid_mask
         outside_tolerance = True
 
-    # Ranking:
-    # 1. Highest cap
-    # 2. Cost closest to zero
-    # 3. Lower bid/ask drag
-    # 4. Better liquidity
-    best = pool.sort_values(
-        [
-            "cap_return",
-            "abs_net_cost_bps",
-            "bid_ask_drag_bps",
-            "total_oi",
-        ],
-        ascending=[False, True, True, False],
-    ).iloc[0]
+    # Bid/ask drag grid.
+    worst_net_cost = (
+        put_asks[:, None] - call_bids[None, :]
+    ) * MULT
 
-    put = best["put"]
-    call = best["call"]
+    bid_ask_drag_dollars = worst_net_cost - net_cost
+    bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
 
-    net_cost = float(best["net_cost"])
-    net_cost_bps = float(best["net_cost_bps"])
+    total_volume = put_volumes[:, None] + call_volumes[None, :]
+    total_oi = put_oi[:, None] + call_oi[None, :]
+    liquidity = np.log1p(total_volume) + np.log1p(total_oi)
 
-    if abs(net_cost_bps) <= max_near_zero_bps:
+    # Build a score.
+    # Primary: highest cap.
+    # Secondary: closer to zero cost.
+    # Third: lower bid/ask drag.
+    # Fourth: better liquidity.
+    score = (
+        cap_return * 1_000_000
+        - abs_net_cost_bps * 100
+        - bid_ask_drag_bps * 10
+        + liquidity
+    )
+
+    # Exclude invalid candidates.
+    score = np.where(selection_mask, score, -np.inf)
+
+    best_flat_idx = np.argmax(score)
+    best_put_idx, best_call_idx = np.unravel_index(best_flat_idx, score.shape)
+
+    best_put = valid_puts.iloc[best_put_idx]
+    best_call = valid_calls.iloc[best_call_idx]
+
+    best_net_cost = float(net_cost[best_put_idx, best_call_idx])
+    best_net_cost_bps = float(net_cost_bps[best_put_idx, best_call_idx])
+    best_floor_value = float(floor_value[best_put_idx, best_call_idx])
+    best_cap_value = float(cap_value[best_put_idx, best_call_idx])
+    best_floor_return = float(floor_return[best_put_idx, best_call_idx])
+    best_cap_return = float(cap_return[best_put_idx, best_call_idx])
+    best_bid_ask_drag_bps = float(bid_ask_drag_bps[best_put_idx, best_call_idx])
+    best_total_volume = float(total_volume[best_put_idx, best_call_idx])
+    best_total_oi = float(total_oi[best_put_idx, best_call_idx])
+    best_liquidity = float(liquidity[best_put_idx, best_call_idx])
+    best_near_zero = bool(near_zero[best_put_idx, best_call_idx])
+
+    if abs(best_net_cost_bps) <= max_near_zero_bps:
         cost_display_label = "approximately $0"
-    elif net_cost > 0:
+    elif best_net_cost > 0:
         cost_display_label = "small debit"
     else:
         cost_display_label = "small credit"
@@ -483,42 +510,42 @@ def build_zero_cost_dividend_floor_collar(
         "target_max_loss_pct": max_loss_pct,
         "target_floor_return": target_floor_return,
 
-        "long_put_strike": float(best["put_strike"]),
+        "long_put_strike": float(best_put["strike"]),
         "short_put_strike": None,
-        "call_strike": float(best["call_strike"]),
+        "call_strike": float(best_call["strike"]),
 
-        "put_cost_dollars": float(best["put_cost"]),
-        "call_credit_dollars": float(best["call_credit"]),
-        "net_cost_dollars": net_cost,
-        "net_cost_bps": net_cost_bps,
+        "put_cost_dollars": float(best_put["putMid"]) * MULT,
+        "call_credit_dollars": float(best_call["callMid"]) * MULT,
+        "net_cost_dollars": best_net_cost,
+        "net_cost_bps": best_net_cost_bps,
 
-        "near_zero_cost_ok": bool(best["near_zero"]),
+        "near_zero_cost_ok": best_near_zero,
         "outside_tolerance": outside_tolerance,
         "max_near_zero_bps": max_near_zero_bps,
 
-        "floor_value": float(best["floor_value"]),
-        "cap_value": float(best["cap_value"]),
-        "floor_return": float(best["floor_return"]),
-        "cap_return": float(best["cap_return"]),
-        "max_loss_dollars": float(best["max_loss_dollars"]),
-        "max_gain_dollars": float(best["max_gain_dollars"]),
+        "floor_value": best_floor_value,
+        "cap_value": best_cap_value,
+        "floor_return": best_floor_return,
+        "cap_return": best_cap_return,
+        "max_loss_dollars": notional - best_floor_value,
+        "max_gain_dollars": best_cap_value - notional,
 
         "buffer_width_points": None,
         "buffer_pct": None,
         "protected_zone_value": None,
         "protected_zone_return": None,
 
-        "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
-        "total_volume": float(best["total_volume"]),
-        "total_oi": float(best["total_oi"]),
-        "liquidity_score": float(best["liquidity_score"]),
+        "bid_ask_drag_bps": best_bid_ask_drag_bps,
+        "total_volume": best_total_volume,
+        "total_oi": best_total_oi,
+        "liquidity_score": best_liquidity,
 
         "display": {
             "title": "Defined Floor",
             "subtitle": "Hard-loss target with capped upside",
-            "estimated_max_loss_pct": round_pct(float(best["floor_return"])),
-            "estimated_cap_pct": round_pct(float(best["cap_return"])),
-            "estimated_option_cost_dollars": net_cost,
+            "estimated_max_loss_pct": round_pct(best_floor_return),
+            "estimated_cap_pct": round_pct(best_cap_return),
+            "estimated_option_cost_dollars": best_net_cost,
             "estimated_option_cost_label": cost_display_label,
             "estimated_dividends_dollars": expected_dividend_dollars,
             "explanation": (
@@ -527,6 +554,232 @@ def build_zero_cost_dividend_floor_collar(
             ),
         },
     }
+    
+# def build_zero_cost_dividend_floor_collar(
+#     expiry_chain,
+#     max_loss_pct=0.005,
+#     assumed_dividend_yield=0.01,
+#     max_near_zero_bps=50,
+# ):
+#     """
+#     Product: Defined Floor
+
+#     Corrected logic:
+#     1. Search put/call combinations together.
+#     2. Calculate the final floor after dividends and net option cost.
+#     3. Reject any collar that misses the requested max loss.
+#     4. Prefer near-zero option cost.
+#     5. Within valid/near-zero structures, choose the highest cap.
+#     6. Use bid/ask drag and liquidity as tie breakers.
+
+#     This fixes the issue where max_loss=0.0 could still return a negative floor.
+#     """
+
+#     g = expiry_chain.copy()
+
+#     if g.empty:
+#         return None
+
+#     spot = float(g["spot"].median())
+#     dte = float(g["dte"].median())
+#     notional = spot * MULT
+
+#     expected_dividend_dollars = (
+#         notional * assumed_dividend_yield * (dte / 365.25)
+#     )
+#     expected_dividend_per_share = expected_dividend_dollars / MULT
+
+#     target_floor_return = -max_loss_pct
+
+#     valid_puts = g[
+#         (g["strike"] < spot)
+#         & (g["putMid"] > 0)
+#     ].copy()
+
+#     valid_calls = g[
+#         (g["strike"] > spot)
+#         & (g["callMid"] > 0)
+#     ].copy()
+
+#     if valid_puts.empty or valid_calls.empty:
+#         return None
+
+#     rows = []
+
+#     for _, put in valid_puts.iterrows():
+#         put_strike = float(put["strike"])
+#         put_cost = float(put["putMid"]) * MULT
+
+#         for _, call in valid_calls.iterrows():
+#             call_strike = float(call["strike"])
+#             call_credit = float(call["callMid"]) * MULT
+
+#             net_cost = put_cost - call_credit
+#             net_cost_bps = net_cost / notional * 10000
+
+#             floor_value = (
+#                 put_strike * MULT
+#                 + expected_dividend_dollars
+#                 - net_cost
+#             )
+
+#             cap_value = (
+#                 call_strike * MULT
+#                 + expected_dividend_dollars
+#                 - net_cost
+#             )
+
+#             floor_return = floor_value / notional - 1
+#             cap_return = cap_value / notional - 1
+
+#             # Critical fix:
+#             # Do not return a collar that misses the requested floor.
+#             # If max_loss_pct = 0.0, floor_return must be >= 0.0.
+#             if floor_return < target_floor_return:
+#                 continue
+
+#             worst_net_cost = (
+#                 float(put.get("putAskPrice", put["putMid"]))
+#                 - float(call.get("callBidPrice", call["callMid"]))
+#             ) * MULT
+
+#             bid_ask_drag_dollars = worst_net_cost - net_cost
+#             bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
+
+#             liq_score, total_volume, total_oi = liquidity_score(put, call)
+
+#             rows.append({
+#                 "put": put,
+#                 "call": call,
+#                 "put_strike": put_strike,
+#                 "call_strike": call_strike,
+#                 "put_cost": put_cost,
+#                 "call_credit": call_credit,
+#                 "net_cost": net_cost,
+#                 "net_cost_bps": net_cost_bps,
+#                 "abs_net_cost_bps": abs(net_cost_bps),
+#                 "floor_value": floor_value,
+#                 "cap_value": cap_value,
+#                 "floor_return": floor_return,
+#                 "cap_return": cap_return,
+#                 "max_loss_dollars": notional - floor_value,
+#                 "max_gain_dollars": cap_value - notional,
+#                 "bid_ask_drag_bps": bid_ask_drag_bps,
+#                 "total_volume": total_volume,
+#                 "total_oi": total_oi,
+#                 "liquidity_score": liq_score,
+#             })
+
+#     if not rows:
+#         return None
+
+#     candidates = pd.DataFrame(rows)
+
+#     candidates["near_zero"] = (
+#         candidates["abs_net_cost_bps"] <= max_near_zero_bps
+#     )
+
+#     # Preferred pool: collars that satisfy the floor and are near zero cost.
+#     near_zero_candidates = candidates[candidates["near_zero"]].copy()
+
+#     if not near_zero_candidates.empty:
+#         pool = near_zero_candidates
+#         outside_tolerance = False
+#     else:
+#         # Still return a valid floor if no near-zero collar exists.
+#         # But do not ever return one that misses the floor.
+#         pool = candidates
+#         outside_tolerance = True
+
+#     # Ranking:
+#     # 1. Highest cap
+#     # 2. Cost closest to zero
+#     # 3. Lower bid/ask drag
+#     # 4. Better liquidity
+#     best = pool.sort_values(
+#         [
+#             "cap_return",
+#             "abs_net_cost_bps",
+#             "bid_ask_drag_bps",
+#             "total_oi",
+#         ],
+#         ascending=[False, True, True, False],
+#     ).iloc[0]
+
+#     put = best["put"]
+#     call = best["call"]
+
+#     net_cost = float(best["net_cost"])
+#     net_cost_bps = float(best["net_cost_bps"])
+
+#     if abs(net_cost_bps) <= max_near_zero_bps:
+#         cost_display_label = "approximately $0"
+#     elif net_cost > 0:
+#         cost_display_label = "small debit"
+#     else:
+#         cost_display_label = "small credit"
+
+#     return {
+#         "product_name": "Defined Floor",
+#         "strategy": "classic_collar",
+#         "structure": "collar",
+#         "backend_structure": "long_underlying_plus_long_put_short_call",
+#         "expirDate": g["expirDate"].iloc[0],
+#         "dte": dte,
+#         "spot": spot,
+#         "notional": notional,
+
+#         "assumed_dividend_yield": assumed_dividend_yield,
+#         "expected_dividend_dollars": expected_dividend_dollars,
+#         "expected_dividend_per_share": expected_dividend_per_share,
+
+#         "target_max_loss_pct": max_loss_pct,
+#         "target_floor_return": target_floor_return,
+
+#         "long_put_strike": float(best["put_strike"]),
+#         "short_put_strike": None,
+#         "call_strike": float(best["call_strike"]),
+
+#         "put_cost_dollars": float(best["put_cost"]),
+#         "call_credit_dollars": float(best["call_credit"]),
+#         "net_cost_dollars": net_cost,
+#         "net_cost_bps": net_cost_bps,
+
+#         "near_zero_cost_ok": bool(best["near_zero"]),
+#         "outside_tolerance": outside_tolerance,
+#         "max_near_zero_bps": max_near_zero_bps,
+
+#         "floor_value": float(best["floor_value"]),
+#         "cap_value": float(best["cap_value"]),
+#         "floor_return": float(best["floor_return"]),
+#         "cap_return": float(best["cap_return"]),
+#         "max_loss_dollars": float(best["max_loss_dollars"]),
+#         "max_gain_dollars": float(best["max_gain_dollars"]),
+
+#         "buffer_width_points": None,
+#         "buffer_pct": None,
+#         "protected_zone_value": None,
+#         "protected_zone_return": None,
+
+#         "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
+#         "total_volume": float(best["total_volume"]),
+#         "total_oi": float(best["total_oi"]),
+#         "liquidity_score": float(best["liquidity_score"]),
+
+#         "display": {
+#             "title": "Defined Floor",
+#             "subtitle": "Hard-loss target with capped upside",
+#             "estimated_max_loss_pct": round_pct(float(best["floor_return"])),
+#             "estimated_cap_pct": round_pct(float(best["cap_return"])),
+#             "estimated_option_cost_dollars": net_cost,
+#             "estimated_option_cost_label": cost_display_label,
+#             "estimated_dividends_dollars": expected_dividend_dollars,
+#             "explanation": (
+#                 "Designed to target a defined floor over the selected outcome period. "
+#                 "Upside is capped in exchange for downside protection."
+#             ),
+#         },
+#     }
 
 # ============================================================
 # 6. BUFFER PRODUCT

@@ -1360,7 +1360,7 @@ def analyze_defined_income_product(
     expiry_chain,
     floor_pct=0.10,
     cap_pct=0.08,
-    assumed_dividend_yield=0.0,
+    assumed_dividend_yield=0.01,
 ):
     """
     Income product:

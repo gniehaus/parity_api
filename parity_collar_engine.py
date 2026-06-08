@@ -1352,6 +1352,175 @@ def main():
 
     print(json.dumps(payload, indent=2))
 
+import numpy as np
+import pandas as pd
+
+
+def analyze_defined_income_product(
+    chain: pd.DataFrame,
+    spot: float,
+    expiration: str | None = None,
+    floor_pct: float | None = None,
+    cap_pct: float | None = None,
+    floor_strike: float | None = None,
+    cap_strike: float | None = None,
+    dte: int | None = None,
+    dividend_yield: float = 0.0,
+    contract_multiplier: int = 100,
+    strike_col: str = "strike",
+    option_type_col: str = "option_type",
+    bid_col: str = "bid",
+    ask_col: str = "ask",
+    expiration_col: str = "expiration",
+) -> dict:
+    """
+    Analyze an income-oriented defined-outcome strategy.
+
+    Structure:
+        Long underlying
+        Long put at floor strike
+        Short call at cap strike
+
+    Income comes from:
+        call premium received - put premium paid + expected dividends
+
+    Parameters
+    ----------
+    chain : pd.DataFrame
+        Options chain containing calls and puts.
+    spot : float
+        Current underlying price.
+    expiration : str, optional
+        Expiration to filter for, if chain contains multiple expiries.
+    floor_pct : float, optional
+        Desired downside floor as decimal. Example: 0.10 = 10% max downside before option cost/dividends.
+    cap_pct : float, optional
+        Desired upside cap as decimal. Example: 0.08 = 8% cap.
+    floor_strike : float, optional
+        Explicit put strike. Overrides floor_pct.
+    cap_strike : float, optional
+        Explicit call strike. Overrides cap_pct.
+    dte : int, optional
+        Days to expiration. Used for annualized income and dividends.
+    dividend_yield : float
+        Annual dividend yield as decimal. Example: 0.012 = 1.2%.
+    contract_multiplier : int
+        Option contract multiplier. Usually 100 for equity/ETF options.
+
+    Returns
+    -------
+    dict
+        Strategy summary with strikes, prices, income, and annualized figures.
+    """
+
+    if spot <= 0:
+        raise ValueError("spot must be positive.")
+
+    df = chain.copy()
+
+    if expiration is not None and expiration_col in df.columns:
+        df = df[df[expiration_col].astype(str) == str(expiration)].copy()
+
+    if df.empty:
+        raise ValueError("No option rows available after filtering.")
+
+    required_cols = {strike_col, option_type_col, bid_col, ask_col}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    df[option_type_col] = df[option_type_col].astype(str).str.lower()
+
+    puts = df[df[option_type_col].isin(["put", "p"])].copy()
+    calls = df[df[option_type_col].isin(["call", "c"])].copy()
+
+    if puts.empty:
+        raise ValueError("No puts found in option chain.")
+    if calls.empty:
+        raise ValueError("No calls found in option chain.")
+
+    if floor_strike is None:
+        if floor_pct is None:
+            raise ValueError("Provide either floor_pct or floor_strike.")
+        floor_strike = spot * (1 - floor_pct)
+
+    if cap_strike is None:
+        if cap_pct is None:
+            raise ValueError("Provide either cap_pct or cap_strike.")
+        cap_strike = spot * (1 + cap_pct)
+
+    put_row = puts.iloc[(puts[strike_col] - floor_strike).abs().argsort()[:1]]
+    call_row = calls.iloc[(calls[strike_col] - cap_strike).abs().argsort()[:1]]
+
+    put_row = put_row.iloc[0]
+    call_row = call_row.iloc[0]
+
+    actual_floor_strike = float(put_row[strike_col])
+    actual_cap_strike = float(call_row[strike_col])
+
+    put_ask = float(put_row[ask_col])
+    call_bid = float(call_row[bid_col])
+
+    if np.isnan(put_ask) or np.isnan(call_bid):
+        raise ValueError("Selected put ask or call bid is NaN.")
+
+    option_income_per_share = call_bid - put_ask
+    option_income_pct = option_income_per_share / spot
+
+    expected_dividend_per_share = 0.0
+    if dte is not None and dividend_yield > 0:
+        expected_dividend_per_share = spot * dividend_yield * (dte / 365)
+
+    total_income_per_share = option_income_per_share + expected_dividend_per_share
+    total_income_pct = total_income_per_share / spot
+
+    annualized_option_income_pct = None
+    annualized_total_income_pct = None
+
+    if dte is not None and dte > 0:
+        annualized_option_income_pct = option_income_pct * (365 / dte)
+        annualized_total_income_pct = total_income_pct * (365 / dte)
+
+    downside_floor_pct = (actual_floor_strike / spot) - 1
+    upside_cap_pct = (actual_cap_strike / spot) - 1
+
+    max_loss_before_income_pct = downside_floor_pct
+    max_loss_after_income_pct = downside_floor_pct + total_income_pct
+    max_gain_after_income_pct = upside_cap_pct + total_income_pct
+
+    return {
+        "spot": spot,
+        "expiration": expiration,
+        "dte": dte,
+
+        "floor_strike_requested": floor_strike,
+        "cap_strike_requested": cap_strike,
+        "floor_strike_actual": actual_floor_strike,
+        "cap_strike_actual": actual_cap_strike,
+
+        "put_ask": put_ask,
+        "call_bid": call_bid,
+
+        "option_income_per_share": option_income_per_share,
+        "option_income_pct": option_income_pct,
+        "annualized_option_income_pct": annualized_option_income_pct,
+
+        "expected_dividend_per_share": expected_dividend_per_share,
+        "total_income_per_share": total_income_per_share,
+        "total_income_pct": total_income_pct,
+        "annualized_total_income_pct": annualized_total_income_pct,
+
+        "downside_floor_pct": downside_floor_pct,
+        "upside_cap_pct": upside_cap_pct,
+        "max_loss_before_income_pct": max_loss_before_income_pct,
+        "max_loss_after_income_pct": max_loss_after_income_pct,
+        "max_gain_after_income_pct": max_gain_after_income_pct,
+
+        "contracts_notional": spot * contract_multiplier,
+        "option_income_per_contract": option_income_per_share * contract_multiplier,
+        "total_income_per_contract": total_income_per_share * contract_multiplier,
+    }
+
 
 if __name__ == "__main__":
     main()

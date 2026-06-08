@@ -111,6 +111,8 @@ from pydantic import BaseModel, Field
 from parity_collar_engine import (
     fetch_orats_chain,
     build_defined_outcome_recommendations,
+    analyze_defined_income_product,
+
 )
 
 
@@ -180,7 +182,15 @@ class RecommendationRequest(BaseModel):
         default=None,
         description="Derived front-end risk profile",
     )
-
+    
+class IncomeRequest(BaseModel):
+    ticker: str = Field(..., description="Options ticker to use, e.g. SPY or XSP")
+    horizon: int = Field(..., description="Target income period in days")
+    floor_pct: float = Field(..., description="Max downside as decimal. Example: 0.10 = 10%")
+    cap_pct: float = Field(..., description="Upside cap as decimal. Example: 0.08 = 8%")
+    assumed_dividend_yield: float = Field(default=0.0)
+    investment_amount: float | None = None
+    income_goal: Literal["conservative_income", "balanced_income", "higher_income"] | None = None
 
 @app.get("/")
 def root():
@@ -243,3 +253,49 @@ def get_recommendations(request: RecommendationRequest):
             status_code=500,
             detail=str(e),
         )
+
+@app.post("/income")
+def get_income_product(request: IncomeRequest):
+    try:
+        token = os.getenv("ORATS_TOKEN")
+
+        if not token:
+            raise HTTPException(
+                status_code=500,
+                detail="Missing ORATS_TOKEN environment variable",
+            )
+
+        df = fetch_orats_chain(
+            ticker=request.ticker,
+            token=token,
+        )
+
+        result = analyze_defined_income_product(
+            chain=df,
+            spot=float(df["underlying_price"].dropna().iloc[0])
+            if "underlying_price" in df.columns
+            else float(df["spot"].dropna().iloc[0]),
+            expiration=None,
+            floor_pct=request.floor_pct,
+            cap_pct=request.cap_pct,
+            dte=request.horizon,
+            dividend_yield=request.assumed_dividend_yield,
+        )
+
+        result["request"] = {
+            "ticker": request.ticker,
+            "horizon": request.horizon,
+            "floor_pct": request.floor_pct,
+            "cap_pct": request.cap_pct,
+            "assumed_dividend_yield": request.assumed_dividend_yield,
+            "investment_amount": request.investment_amount,
+            "income_goal": request.income_goal,
+        }
+
+        return result
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

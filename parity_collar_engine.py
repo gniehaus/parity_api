@@ -1357,169 +1357,148 @@ import pandas as pd
 
 
 def analyze_defined_income_product(
-    chain: pd.DataFrame,
-    spot: float,
-    expiration: str | None = None,
-    floor_pct: float | None = None,
-    cap_pct: float | None = None,
-    floor_strike: float | None = None,
-    cap_strike: float | None = None,
-    dte: int | None = None,
-    dividend_yield: float = 0.0,
-    contract_multiplier: int = 100,
-    strike_col: str = "strike",
-    option_type_col: str = "option_type",
-    bid_col: str = "bid",
-    ask_col: str = "ask",
-    expiration_col: str = "expiration",
-) -> dict:
+    expiry_chain,
+    floor_pct=0.10,
+    cap_pct=0.08,
+    assumed_dividend_yield=0.0,
+):
     """
-    Analyze an income-oriented defined-outcome strategy.
+    Income product:
+    Long underlying + long put + short call.
 
-    Structure:
-        Long underlying
-        Long put at floor strike
-        Short call at cap strike
-
-    Income comes from:
-        call premium received - put premium paid + expected dividends
-
-    Parameters
-    ----------
-    chain : pd.DataFrame
-        Options chain containing calls and puts.
-    spot : float
-        Current underlying price.
-    expiration : str, optional
-        Expiration to filter for, if chain contains multiple expiries.
-    floor_pct : float, optional
-        Desired downside floor as decimal. Example: 0.10 = 10% max downside before option cost/dividends.
-    cap_pct : float, optional
-        Desired upside cap as decimal. Example: 0.08 = 8% cap.
-    floor_strike : float, optional
-        Explicit put strike. Overrides floor_pct.
-    cap_strike : float, optional
-        Explicit call strike. Overrides cap_pct.
-    dte : int, optional
-        Days to expiration. Used for annualized income and dividends.
-    dividend_yield : float
-        Annual dividend yield as decimal. Example: 0.012 = 1.2%.
-    contract_multiplier : int
-        Option contract multiplier. Usually 100 for equity/ETF options.
-
-    Returns
-    -------
-    dict
-        Strategy summary with strikes, prices, income, and annualized figures.
+    Uses ORATS cleaned chain format:
+    - strike
+    - spot
+    - dte
+    - putAskPrice
+    - callBidPrice
     """
 
-    if spot <= 0:
-        raise ValueError("spot must be positive.")
+    g = expiry_chain.copy()
 
-    df = chain.copy()
+    if g.empty:
+        raise ValueError("Empty expiry chain.")
 
-    if expiration is not None and expiration_col in df.columns:
-        df = df[df[expiration_col].astype(str) == str(expiration)].copy()
+    required_cols = [
+        "strike",
+        "spot",
+        "dte",
+        "putAskPrice",
+        "callBidPrice",
+    ]
 
-    if df.empty:
-        raise ValueError("No option rows available after filtering.")
-
-    required_cols = {strike_col, option_type_col, bid_col, ask_col}
-    missing = required_cols - set(df.columns)
+    missing = [col for col in required_cols if col not in g.columns]
     if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+        raise ValueError(f"Missing required columns for income product: {missing}")
 
-    df[option_type_col] = df[option_type_col].astype(str).str.lower()
+    spot = float(g["spot"].median())
+    dte = float(g["dte"].median())
+    notional = spot * MULT
 
-    puts = df[df[option_type_col].isin(["put", "p"])].copy()
-    calls = df[df[option_type_col].isin(["call", "c"])].copy()
+    floor_strike_target = spot * (1 - floor_pct)
+    cap_strike_target = spot * (1 + cap_pct)
+
+    puts = g[
+        (g["strike"] <= spot)
+        & (g["putAskPrice"] > 0)
+    ].copy()
+
+    calls = g[
+        (g["strike"] >= spot)
+        & (g["callBidPrice"] > 0)
+    ].copy()
 
     if puts.empty:
-        raise ValueError("No puts found in option chain.")
+        raise ValueError("No valid puts found for income product.")
+
     if calls.empty:
-        raise ValueError("No calls found in option chain.")
+        raise ValueError("No valid calls found for income product.")
 
-    if floor_strike is None:
-        if floor_pct is None:
-            raise ValueError("Provide either floor_pct or floor_strike.")
-        floor_strike = spot * (1 - floor_pct)
+    puts["floor_distance"] = (puts["strike"] - floor_strike_target).abs()
+    calls["cap_distance"] = (calls["strike"] - cap_strike_target).abs()
 
-    if cap_strike is None:
-        if cap_pct is None:
-            raise ValueError("Provide either cap_pct or cap_strike.")
-        cap_strike = spot * (1 + cap_pct)
+    put = puts.sort_values(["floor_distance", "strike"], ascending=[True, False]).iloc[0]
+    call = calls.sort_values(["cap_distance", "strike"], ascending=[True, True]).iloc[0]
 
-    put_row = puts.iloc[(puts[strike_col] - floor_strike).abs().argsort()[:1]]
-    call_row = calls.iloc[(calls[strike_col] - cap_strike).abs().argsort()[:1]]
+    put_cost_per_share = float(put["putAskPrice"])
+    call_credit_per_share = float(call["callBidPrice"])
 
-    put_row = put_row.iloc[0]
-    call_row = call_row.iloc[0]
+    option_income_per_share = call_credit_per_share - put_cost_per_share
+    option_income_dollars = option_income_per_share * MULT
+    option_income_pct = option_income_dollars / notional
 
-    actual_floor_strike = float(put_row[strike_col])
-    actual_cap_strike = float(call_row[strike_col])
+    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
+    expected_dividend_per_share = expected_dividend_dollars / MULT
 
-    put_ask = float(put_row[ask_col])
-    call_bid = float(call_row[bid_col])
+    total_income_dollars = option_income_dollars + expected_dividend_dollars
+    total_income_pct = total_income_dollars / notional
 
-    if np.isnan(put_ask) or np.isnan(call_bid):
-        raise ValueError("Selected put ask or call bid is NaN.")
+    annualized_option_income_pct = option_income_pct * (365.25 / dte)
+    annualized_total_income_pct = total_income_pct * (365.25 / dte)
 
-    option_income_per_share = call_bid - put_ask
-    option_income_pct = option_income_per_share / spot
+    floor_return_before_income = float(put["strike"]) / spot - 1
+    cap_return_before_income = float(call["strike"]) / spot - 1
 
-    expected_dividend_per_share = 0.0
-    if dte is not None and dividend_yield > 0:
-        expected_dividend_per_share = spot * dividend_yield * (dte / 365)
+    floor_return_after_income = floor_return_before_income + total_income_pct
+    cap_return_after_income = cap_return_before_income + total_income_pct
 
-    total_income_per_share = option_income_per_share + expected_dividend_per_share
-    total_income_pct = total_income_per_share / spot
+    liq_score, total_volume, total_oi = liquidity_score(put, call)
 
-    annualized_option_income_pct = None
-    annualized_total_income_pct = None
-
-    if dte is not None and dte > 0:
-        annualized_option_income_pct = option_income_pct * (365 / dte)
-        annualized_total_income_pct = total_income_pct * (365 / dte)
-
-    downside_floor_pct = (actual_floor_strike / spot) - 1
-    upside_cap_pct = (actual_cap_strike / spot) - 1
-
-    max_loss_before_income_pct = downside_floor_pct
-    max_loss_after_income_pct = downside_floor_pct + total_income_pct
-    max_gain_after_income_pct = upside_cap_pct + total_income_pct
-
-    return {
-        "spot": spot,
-        "expiration": expiration,
+    return make_json_safe({
+        "product_name": "Defined Income",
+        "strategy": "income_collar",
+        "structure": "collar",
+        "backend_structure": "long_underlying_plus_long_put_short_call",
+        "expirDate": g["expirDate"].iloc[0],
         "dte": dte,
+        "spot": spot,
+        "notional": notional,
 
-        "floor_strike_requested": floor_strike,
-        "cap_strike_requested": cap_strike,
-        "floor_strike_actual": actual_floor_strike,
-        "cap_strike_actual": actual_cap_strike,
+        "assumed_dividend_yield": assumed_dividend_yield,
 
-        "put_ask": put_ask,
-        "call_bid": call_bid,
+        "floor_pct_requested": floor_pct,
+        "cap_pct_requested": cap_pct,
+        "floor_strike_target": floor_strike_target,
+        "cap_strike_target": cap_strike_target,
 
+        "long_put_strike": float(put["strike"]),
+        "call_strike": float(call["strike"]),
+
+        "put_cost_per_share": put_cost_per_share,
+        "call_credit_per_share": call_credit_per_share,
         "option_income_per_share": option_income_per_share,
+        "option_income_dollars": option_income_dollars,
         "option_income_pct": option_income_pct,
         "annualized_option_income_pct": annualized_option_income_pct,
 
+        "expected_dividend_dollars": expected_dividend_dollars,
         "expected_dividend_per_share": expected_dividend_per_share,
-        "total_income_per_share": total_income_per_share,
+        "total_income_dollars": total_income_dollars,
         "total_income_pct": total_income_pct,
         "annualized_total_income_pct": annualized_total_income_pct,
 
-        "downside_floor_pct": downside_floor_pct,
-        "upside_cap_pct": upside_cap_pct,
-        "max_loss_before_income_pct": max_loss_before_income_pct,
-        "max_loss_after_income_pct": max_loss_after_income_pct,
-        "max_gain_after_income_pct": max_gain_after_income_pct,
+        "floor_return_before_income": floor_return_before_income,
+        "cap_return_before_income": cap_return_before_income,
+        "floor_return_after_income": floor_return_after_income,
+        "cap_return_after_income": cap_return_after_income,
 
-        "contracts_notional": spot * contract_multiplier,
-        "option_income_per_contract": option_income_per_share * contract_multiplier,
-        "total_income_per_contract": total_income_per_share * contract_multiplier,
-    }
+        "total_volume": total_volume,
+        "total_oi": total_oi,
+        "liquidity_score": liq_score,
+
+        "display": {
+            "title": "Defined Income",
+            "subtitle": "Income with defined downside and capped upside",
+            "estimated_income_pct": round_pct(total_income_pct),
+            "estimated_annualized_income_pct": round_pct(annualized_total_income_pct),
+            "estimated_floor_pct": round_pct(floor_return_after_income),
+            "estimated_cap_pct": round_pct(cap_return_after_income),
+            "explanation": (
+                "Designed to generate income by selling capped upside while using a put "
+                "to define downside risk over the selected outcome period."
+            ),
+        },
+    })
 
 
 if __name__ == "__main__":

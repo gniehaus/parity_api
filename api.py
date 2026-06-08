@@ -111,7 +111,10 @@ from pydantic import BaseModel, Field
 from parity_collar_engine import (
     fetch_orats_chain,
     build_defined_outcome_recommendations,
+    clean_chain,
+    select_single_expiry,
     analyze_defined_income_product,
+    make_json_safe,
 
 )
 
@@ -265,34 +268,31 @@ def get_income_product(request: IncomeRequest):
                 detail="Missing ORATS_TOKEN environment variable",
             )
 
-        df = fetch_orats_chain(
+        raw_df = fetch_orats_chain(
             ticker=request.ticker,
             token=token,
         )
 
-        result = analyze_defined_income_product(
-            chain=df,
-            spot=float(df["underlying_price"].dropna().iloc[0])
-            if "underlying_price" in df.columns
-            else float(df["spot"].dropna().iloc[0]),
-            expiration=None,
-            floor_pct=request.floor_pct,
-            cap_pct=request.cap_pct,
-            dte=request.horizon,
-            dividend_yield=request.assumed_dividend_yield,
+        chain = clean_chain(raw_df, ticker=request.ticker)
+
+        expiry_chain, selected_expiry_summary, _ = select_single_expiry(
+            chain,
+            target_dte=request.horizon,
+            prefer_at_or_after=True,
+            max_dte_overage=60,
         )
 
-        result["request"] = {
-            "ticker": request.ticker,
-            "horizon": request.horizon,
-            "floor_pct": request.floor_pct,
-            "cap_pct": request.cap_pct,
-            "assumed_dividend_yield": request.assumed_dividend_yield,
-            "investment_amount": request.investment_amount,
-            "income_goal": request.income_goal,
-        }
+        result = analyze_defined_income_product(
+            expiry_chain=expiry_chain,
+            floor_pct=request.floor_pct,
+            cap_pct=request.cap_pct,
+            assumed_dividend_yield=request.assumed_dividend_yield,
+        )
 
-        return result
+        result["selected_expiry"] = selected_expiry_summary
+        result["request"] = request.dict()
+
+        return make_json_safe(result)
 
     except HTTPException:
         raise

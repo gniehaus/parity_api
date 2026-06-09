@@ -785,6 +785,297 @@ def build_zero_cost_dividend_floor_collar(
 # 6. BUFFER PRODUCT
 # ============================================================
 
+# def build_zero_cost_target_cap_buffer(
+#     expiry_chain,
+#     target_gain_pct=0.08,
+#     assumed_dividend_yield=0.01,
+#     max_buffer_pct=0.20,
+#     max_near_zero_bps=25,
+# ):
+#     """
+#     Product: Buffered Growth
+
+#     POC logic:
+#     Always try to return a buffer.
+
+#     1. Look at calls near the user's target gain.
+#     2. Look at near-ATM long puts.
+#     3. Look at lower short puts.
+#     4. Do NOT filter out credits or debits.
+#     5. Rank by:
+#         - cap close to target
+#         - option cost close to zero
+#         - larger buffer
+#         - lower bid/ask drag
+#         - better open interest
+#     6. Return the best available buffer.
+
+#     Important:
+#     This may return a small credit or debit.
+#     The frontend should display near-zero option costs as "approximately $0".
+#     """
+
+#     g = expiry_chain.copy()
+
+#     if g.empty:
+#         return None
+
+#     spot = float(g["spot"].median())
+#     dte = float(g["dte"].median())
+#     notional = spot * MULT
+
+#     expected_dividend_dollars = (
+#         notional * assumed_dividend_yield * (dte / 365.25)
+#     )
+#     expected_dividend_per_share = expected_dividend_dollars / MULT
+
+#     target_cap_value = notional * (1 + target_gain_pct)
+
+#     required_call_strike = (
+#         target_cap_value - expected_dividend_dollars
+#     ) / MULT
+
+#     # Loosened call filter.
+#     valid_calls = g[
+#         (g["strike"] > spot)
+#         & (g["callMid"] > 0)
+#     ].copy()
+
+#     if valid_calls.empty:
+#         return None
+
+#     valid_calls["target_distance"] = (
+#         valid_calls["strike"] - required_call_strike
+#     ).abs()
+
+#     # Look at more calls near the target, not just one.
+#     nearby_calls = valid_calls.sort_values(
+#         ["target_distance", "strike"],
+#         ascending=[True, True],
+#     ).head(15)
+
+#     # Loosened long put filter.
+#     candidate_long_puts = g[
+#         (g["strike"] <= spot)
+#         & (g["putMid"] > 0)
+#     ].copy()
+
+#     if candidate_long_puts.empty:
+#         return None
+
+#     candidate_long_puts["atm_distance"] = (
+#         candidate_long_puts["strike"] - spot
+#     ).abs()
+
+#     # Look at several near-ATM long puts.
+#     nearby_long_puts = candidate_long_puts.sort_values(
+#         ["atm_distance", "strike"],
+#         ascending=[True, False],
+#     ).head(10)
+
+#     rows = []
+
+#     for _, call in nearby_calls.iterrows():
+#         call_strike = float(call["strike"])
+#         call_credit = float(call["callMid"]) * MULT
+
+#         for _, long_put in nearby_long_puts.iterrows():
+#             long_put_strike = float(long_put["strike"])
+#             long_put_cost = float(long_put["putMid"]) * MULT
+
+#             # Loosened short put filter.
+#             short_puts = g[
+#                 (g["strike"] < long_put_strike)
+#                 & (g["putMid"] > 0)
+#             ].copy()
+
+#             if short_puts.empty:
+#                 continue
+
+#             for _, short_put in short_puts.iterrows():
+#                 short_put_strike = float(short_put["strike"])
+#                 short_put_credit = float(short_put["putMid"]) * MULT
+
+#                 put_spread_cost = long_put_cost - short_put_credit
+#                 net_cost = put_spread_cost - call_credit
+#                 net_cost_bps = net_cost / notional * 10000
+
+#                 buffer_width_points = long_put_strike - short_put_strike
+#                 buffer_pct = buffer_width_points / spot
+
+#                 # Keep the buffer in a reasonable demo range.
+#                 if buffer_pct <= 0 or buffer_pct > max_buffer_pct:
+#                     continue
+
+#                 max_buffer_value = buffer_width_points * MULT
+
+#                 protected_zone_value = (
+#                     short_put_strike * MULT
+#                     + max_buffer_value
+#                     + expected_dividend_dollars
+#                     - net_cost
+#                 )
+
+#                 cap_value = (
+#                     call_strike * MULT
+#                     + expected_dividend_dollars
+#                     - net_cost
+#                 )
+
+#                 protected_zone_return = protected_zone_value / notional - 1
+#                 cap_return = cap_value / notional - 1
+
+#                 # Use safe bid/ask drag calculation.
+#                 long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
+#                 short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
+#                 call_bid = float(call.get("callBidPrice", call["callMid"]))
+
+#                 if pd.isna(long_put_ask) or long_put_ask <= 0:
+#                     long_put_ask = float(long_put["putMid"])
+
+#                 if pd.isna(short_put_bid) or short_put_bid < 0:
+#                     short_put_bid = float(short_put["putMid"])
+
+#                 if pd.isna(call_bid) or call_bid < 0:
+#                     call_bid = float(call["callMid"])
+
+#                 worst_net_cost = (
+#                     long_put_ask
+#                     - short_put_bid
+#                     - call_bid
+#                 ) * MULT
+
+#                 bid_ask_drag_dollars = worst_net_cost - net_cost
+#                 bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
+
+#                 liq_score, total_volume, total_oi = liquidity_score(
+#                     long_put,
+#                     short_put,
+#                     call,
+#                 )
+
+#                 rows.append({
+#                     "call_strike": call_strike,
+#                     "call_credit": call_credit,
+#                     "long_put_strike": long_put_strike,
+#                     "long_put_cost": long_put_cost,
+#                     "short_put_strike": short_put_strike,
+#                     "short_put_credit": short_put_credit,
+#                     "put_spread_cost": put_spread_cost,
+#                     "net_cost": net_cost,
+#                     "net_cost_bps": net_cost_bps,
+#                     "abs_net_cost": abs(net_cost),
+#                     "abs_net_cost_bps": abs(net_cost_bps),
+#                     "buffer_width_points": buffer_width_points,
+#                     "buffer_pct": buffer_pct,
+#                     "protected_zone_value": protected_zone_value,
+#                     "protected_zone_return": protected_zone_return,
+#                     "cap_value": cap_value,
+#                     "cap_return": cap_return,
+#                     "cap_error": abs(cap_return - target_gain_pct),
+#                     "bid_ask_drag_bps": bid_ask_drag_bps,
+#                     "total_volume": total_volume,
+#                     "total_oi": total_oi,
+#                     "liquidity_score": liq_score,
+#                 })
+
+#     if not rows:
+#         return None
+
+#     candidates = pd.DataFrame(rows)
+
+#     candidates["near_zero"] = (
+#         candidates["abs_net_cost_bps"] <= max_near_zero_bps
+#     )
+
+#     # Prefer near-zero structures, but do not require them.
+#     # This forces the API to return a buffer instead of null.
+#     best = candidates.sort_values(
+#         [
+#             "near_zero",
+#             "cap_error",
+#             "abs_net_cost_bps",
+#             "buffer_pct",
+#             "bid_ask_drag_bps",
+#             "total_oi",
+#         ],
+#         ascending=[False, True, True, False, True, False],
+#     ).iloc[0]
+
+#     net_cost = float(best["net_cost"])
+#     net_cost_bps = float(best["net_cost_bps"])
+#     abs_net_cost_bps = abs(net_cost_bps)
+
+#     if abs_net_cost_bps <= max_near_zero_bps:
+#         cost_display_label = "approximately $0"
+#     elif net_cost > 0:
+#         cost_display_label = "small debit"
+#     else:
+#         cost_display_label = "small credit"
+
+#     return {
+#         "product_name": "Buffered Growth",
+#         "strategy": "buffered_collar_first_loss",
+#         "structure": "buffer",
+#         "backend_structure": "long_underlying_plus_long_put_short_put_short_call",
+#         "expirDate": g["expirDate"].iloc[0],
+#         "dte": dte,
+#         "spot": spot,
+#         "notional": notional,
+
+#         "assumed_dividend_yield": assumed_dividend_yield,
+#         "expected_dividend_dollars": expected_dividend_dollars,
+#         "expected_dividend_per_share": expected_dividend_per_share,
+
+#         "target_gain_pct": target_gain_pct,
+#         "required_call_strike": required_call_strike,
+
+#         "long_put_strike": float(best["long_put_strike"]),
+#         "short_put_strike": float(best["short_put_strike"]),
+#         "call_strike": float(best["call_strike"]),
+
+#         "long_put_cost_dollars": float(best["long_put_cost"]),
+#         "short_put_credit_dollars": float(best["short_put_credit"]),
+#         "put_spread_cost_dollars": float(best["put_spread_cost"]),
+#         "call_credit_dollars": float(best["call_credit"]),
+#         "net_cost_dollars": net_cost,
+#         "net_cost_bps": net_cost_bps,
+
+#         "near_zero_cost_ok": bool(best["near_zero"]),
+#         "max_near_zero_bps": max_near_zero_bps,
+
+#         "buffer_width_points": float(best["buffer_width_points"]),
+#         "buffer_pct": float(best["buffer_pct"]),
+
+#         "protected_zone_value": float(best["protected_zone_value"]),
+#         "protected_zone_return": float(best["protected_zone_return"]),
+#         "cap_value": float(best["cap_value"]),
+#         "cap_return": float(best["cap_return"]),
+
+#         "floor_value": None,
+#         "floor_return": None,
+#         "max_loss_dollars": None,
+#         "max_gain_dollars": float(best["cap_value"]) - notional,
+
+#         "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
+#         "total_volume": float(best["total_volume"]),
+#         "total_oi": float(best["total_oi"]),
+#         "liquidity_score": float(best["liquidity_score"]),
+
+#         "display": {
+#             "title": "Buffered Growth",
+#             "subtitle": "First-loss protection with more upside potential",
+#             "estimated_buffer_pct": round_pct(float(best["buffer_pct"])),
+#             "estimated_cap_pct": round_pct(float(best["cap_return"])),
+#             "estimated_option_cost_dollars": net_cost,
+#             "estimated_option_cost_label": cost_display_label,
+#             "estimated_dividends_dollars": expected_dividend_dollars,
+#             "explanation": (
+#                 "Designed to absorb a defined range of losses first. "
+#                 "Losses may continue if the market falls beyond the buffer."
+#             ),
+#         },
+#     }
 def build_zero_cost_target_cap_buffer(
     expiry_chain,
     target_gain_pct=0.08,
@@ -795,28 +1086,14 @@ def build_zero_cost_target_cap_buffer(
     """
     Product: Buffered Growth
 
-    POC logic:
-    Always try to return a buffer.
-
-    1. Look at calls near the user's target gain.
-    2. Look at near-ATM long puts.
-    3. Look at lower short puts.
-    4. Do NOT filter out credits or debits.
-    5. Rank by:
-        - cap close to target
-        - option cost close to zero
-        - larger buffer
-        - lower bid/ask drag
-        - better open interest
-    6. Return the best available buffer.
-
-    Important:
-    This may return a small credit or debit.
-    The frontend should display near-zero option costs as "approximately $0".
+    Correct logic:
+    1. Long put is dividend-adjusted, not ATM.
+    2. Short put is set below long put by the target buffer.
+    3. Call is chosen as the highest OTM call that finances the put spread.
+    4. Rank by highest cap, then near-zero cost, then liquidity.
     """
 
     g = expiry_chain.copy()
-
     if g.empty:
         return None
 
@@ -824,127 +1101,95 @@ def build_zero_cost_target_cap_buffer(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-    expected_dividend_dollars = (
-        notional * assumed_dividend_yield * (dte / 365.25)
-    )
+    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
     expected_dividend_per_share = expected_dividend_dollars / MULT
 
-    target_cap_value = notional * (1 + target_gain_pct)
+    # Dividend-adjusted long put target
+    long_put_target = spot - expected_dividend_per_share
 
-    required_call_strike = (
-        target_cap_value - expected_dividend_dollars
-    ) / MULT
+    # Short put target based on desired buffer
+    short_put_target = long_put_target - (spot * max_buffer_pct)
 
-    # Loosened call filter.
-    valid_calls = g[
-        (g["strike"] > spot)
-        & (g["callMid"] > 0)
-    ].copy()
+    valid_calls = g[(g["strike"] > spot) & (g["callMid"] > 0)].copy()
+    valid_puts = g[(g["strike"] < spot) & (g["putMid"] > 0)].copy()
 
-    if valid_calls.empty:
+    if valid_calls.empty or valid_puts.empty:
         return None
 
-    valid_calls["target_distance"] = (
-        valid_calls["strike"] - required_call_strike
-    ).abs()
-
-    # Look at more calls near the target, not just one.
-    nearby_calls = valid_calls.sort_values(
-        ["target_distance", "strike"],
-        ascending=[True, True],
-    ).head(15)
-
-    # Loosened long put filter.
-    candidate_long_puts = g[
-        (g["strike"] <= spot)
-        & (g["putMid"] > 0)
-    ].copy()
-
-    if candidate_long_puts.empty:
-        return None
-
-    candidate_long_puts["atm_distance"] = (
-        candidate_long_puts["strike"] - spot
-    ).abs()
-
-    # Look at several near-ATM long puts.
-    nearby_long_puts = candidate_long_puts.sort_values(
-        ["atm_distance", "strike"],
+    # Choose candidate long puts near dividend-adjusted floor
+    valid_puts["long_put_distance"] = (valid_puts["strike"] - long_put_target).abs()
+    nearby_long_puts = valid_puts.sort_values(
+        ["long_put_distance", "strike"],
         ascending=[True, False],
-    ).head(10)
+    ).head(5)
 
     rows = []
 
-    for _, call in nearby_calls.iterrows():
-        call_strike = float(call["strike"])
-        call_credit = float(call["callMid"]) * MULT
+    for _, long_put in nearby_long_puts.iterrows():
+        long_put_strike = float(long_put["strike"])
+        long_put_cost = float(long_put["putMid"]) * MULT
 
-        for _, long_put in nearby_long_puts.iterrows():
-            long_put_strike = float(long_put["strike"])
-            long_put_cost = float(long_put["putMid"]) * MULT
+        # Short put should target the buffer below the long put
+        candidate_short_puts = valid_puts[
+            valid_puts["strike"] < long_put_strike
+        ].copy()
 
-            # Loosened short put filter.
-            short_puts = g[
-                (g["strike"] < long_put_strike)
-                & (g["putMid"] > 0)
-            ].copy()
+        if candidate_short_puts.empty:
+            continue
 
-            if short_puts.empty:
+        candidate_short_puts["short_put_distance"] = (
+            candidate_short_puts["strike"] - short_put_target
+        ).abs()
+
+        nearby_short_puts = candidate_short_puts.sort_values(
+            ["short_put_distance", "strike"],
+            ascending=[True, False],
+        ).head(5)
+
+        for _, short_put in nearby_short_puts.iterrows():
+            short_put_strike = float(short_put["strike"])
+            short_put_credit = float(short_put["putMid"]) * MULT
+
+            buffer_width_points = long_put_strike - short_put_strike
+            buffer_pct = buffer_width_points / spot
+
+            if buffer_pct <= 0 or buffer_pct > max_buffer_pct * 1.05:
                 continue
 
-            for _, short_put in short_puts.iterrows():
-                short_put_strike = float(short_put["strike"])
-                short_put_credit = float(short_put["putMid"]) * MULT
+            put_spread_cost = long_put_cost - short_put_credit
 
-                put_spread_cost = long_put_cost - short_put_credit
+            for _, call in valid_calls.iterrows():
+                call_strike = float(call["strike"])
+                call_credit = float(call["callMid"]) * MULT
+
                 net_cost = put_spread_cost - call_credit
                 net_cost_bps = net_cost / notional * 10000
 
-                buffer_width_points = long_put_strike - short_put_strike
-                buffer_pct = buffer_width_points / spot
-
-                # Keep the buffer in a reasonable demo range.
-                if buffer_pct <= 0 or buffer_pct > max_buffer_pct:
+                # Do not overfinance by selling a too-low call.
+                # Keep near-zero structures only.
+                if abs(net_cost_bps) > max_near_zero_bps:
                     continue
-
-                max_buffer_value = buffer_width_points * MULT
-
-                protected_zone_value = (
-                    short_put_strike * MULT
-                    + max_buffer_value
-                    + expected_dividend_dollars
-                    - net_cost
-                )
 
                 cap_value = (
                     call_strike * MULT
                     + expected_dividend_dollars
                     - net_cost
                 )
-
-                protected_zone_return = protected_zone_value / notional - 1
                 cap_return = cap_value / notional - 1
 
-                # Use safe bid/ask drag calculation.
+                protected_zone_value = (
+                    short_put_strike * MULT
+                    + buffer_width_points * MULT
+                    + expected_dividend_dollars
+                    - net_cost
+                )
+                protected_zone_return = protected_zone_value / notional - 1
+
                 long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
                 short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
                 call_bid = float(call.get("callBidPrice", call["callMid"]))
 
-                if pd.isna(long_put_ask) or long_put_ask <= 0:
-                    long_put_ask = float(long_put["putMid"])
-
-                if pd.isna(short_put_bid) or short_put_bid < 0:
-                    short_put_bid = float(short_put["putMid"])
-
-                if pd.isna(call_bid) or call_bid < 0:
-                    call_bid = float(call["callMid"])
-
-                worst_net_cost = (
-                    long_put_ask
-                    - short_put_bid
-                    - call_bid
-                ) * MULT
-
+                worst_net_cost = (long_put_ask - short_put_bid - call_bid) * MULT
                 bid_ask_drag_dollars = worst_net_cost - net_cost
                 bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
 
@@ -964,7 +1209,6 @@ def build_zero_cost_target_cap_buffer(
                     "put_spread_cost": put_spread_cost,
                     "net_cost": net_cost,
                     "net_cost_bps": net_cost_bps,
-                    "abs_net_cost": abs(net_cost),
                     "abs_net_cost_bps": abs(net_cost_bps),
                     "buffer_width_points": buffer_width_points,
                     "buffer_pct": buffer_pct,
@@ -972,7 +1216,6 @@ def build_zero_cost_target_cap_buffer(
                     "protected_zone_return": protected_zone_return,
                     "cap_value": cap_value,
                     "cap_return": cap_return,
-                    "cap_error": abs(cap_return - target_gain_pct),
                     "bid_ask_drag_bps": bid_ask_drag_bps,
                     "total_volume": total_volume,
                     "total_oi": total_oi,
@@ -984,29 +1227,21 @@ def build_zero_cost_target_cap_buffer(
 
     candidates = pd.DataFrame(rows)
 
-    candidates["near_zero"] = (
-        candidates["abs_net_cost_bps"] <= max_near_zero_bps
-    )
-
-    # Prefer near-zero structures, but do not require them.
-    # This forces the API to return a buffer instead of null.
+    # Key fix: maximize cap first.
     best = candidates.sort_values(
         [
-            "near_zero",
-            "cap_error",
+            "cap_return",
             "abs_net_cost_bps",
-            "buffer_pct",
             "bid_ask_drag_bps",
             "total_oi",
         ],
-        ascending=[False, True, True, False, True, False],
+        ascending=[False, True, True, False],
     ).iloc[0]
 
     net_cost = float(best["net_cost"])
     net_cost_bps = float(best["net_cost_bps"])
-    abs_net_cost_bps = abs(net_cost_bps)
 
-    if abs_net_cost_bps <= max_near_zero_bps:
+    if abs(net_cost_bps) <= max_near_zero_bps:
         cost_display_label = "approximately $0"
     elif net_cost > 0:
         cost_display_label = "small debit"
@@ -1028,7 +1263,8 @@ def build_zero_cost_target_cap_buffer(
         "expected_dividend_per_share": expected_dividend_per_share,
 
         "target_gain_pct": target_gain_pct,
-        "required_call_strike": required_call_strike,
+        "long_put_target": long_put_target,
+        "short_put_target": short_put_target,
 
         "long_put_strike": float(best["long_put_strike"]),
         "short_put_strike": float(best["short_put_strike"]),
@@ -1041,7 +1277,7 @@ def build_zero_cost_target_cap_buffer(
         "net_cost_dollars": net_cost,
         "net_cost_bps": net_cost_bps,
 
-        "near_zero_cost_ok": bool(best["near_zero"]),
+        "near_zero_cost_ok": abs(net_cost_bps) <= max_near_zero_bps,
         "max_near_zero_bps": max_near_zero_bps,
 
         "buffer_width_points": float(best["buffer_width_points"]),

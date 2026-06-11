@@ -422,24 +422,47 @@ def build_zero_cost_dividend_floor_collar(
     floor_return = floor_value / notional - 1
     cap_return = cap_value / notional - 1
 
+    # # Enforce the actual requested floor after net option cost.
+    # valid_mask = floor_return >= target_floor_return
+
+    # if not np.any(valid_mask):
+    #     return None
+
+    # abs_net_cost_bps = np.abs(net_cost_bps)
+    # near_zero = abs_net_cost_bps <= max_near_zero_bps
+
+    # # Prefer near-zero collars if any exist.
+    # preferred_mask = valid_mask & near_zero
+
+    # if np.any(preferred_mask):
+    #     selection_mask = preferred_mask
+    #     outside_tolerance = False
+    # else:
+    #     selection_mask = valid_mask
+    #     outside_tolerance = True
+
     # Enforce the actual requested floor after net option cost.
     valid_mask = floor_return >= target_floor_return
-
-    if not np.any(valid_mask):
-        return None
-
+    
     abs_net_cost_bps = np.abs(net_cost_bps)
     near_zero = abs_net_cost_bps <= max_near_zero_bps
-
-    # Prefer near-zero collars if any exist.
-    preferred_mask = valid_mask & near_zero
-
-    if np.any(preferred_mask):
-        selection_mask = preferred_mask
-        outside_tolerance = False
-    else:
-        selection_mask = valid_mask
+    
+    # If no collar meets the requested floor, return the closest available collar.
+    if not np.any(valid_mask):
+        selection_mask = np.isfinite(floor_return) & np.isfinite(cap_return)
         outside_tolerance = True
+        exact_floor_match = False
+    else:
+        preferred_mask = valid_mask & near_zero
+    
+        if np.any(preferred_mask):
+            selection_mask = preferred_mask
+            outside_tolerance = False
+        else:
+            selection_mask = valid_mask
+            outside_tolerance = True
+    
+        exact_floor_match = True
 
     # Bid/ask drag grid.
     worst_net_cost = (
@@ -458,14 +481,33 @@ def build_zero_cost_dividend_floor_collar(
     # Secondary: closer to zero cost.
     # Third: lower bid/ask drag.
     # Fourth: better liquidity.
-    score = (
-        cap_return * 1_000_000
-        - abs_net_cost_bps * 100
-        - bid_ask_drag_bps * 10
-        + liquidity
-    )
+    # score = (
+    #     cap_return * 1_000_000
+    #     - abs_net_cost_bps * 100
+    #     - bid_ask_drag_bps * 10
+    #     + liquidity
+    # )
 
-    # Exclude invalid candidates.
+    # # Exclude invalid candidates.
+    # score = np.where(selection_mask, score, -np.inf)
+    if exact_floor_match:
+    # If the requested floor is met, maximize upside.
+        score = (
+            cap_return * 1_000_000
+            - abs_net_cost_bps * 100
+            - bid_ask_drag_bps * 10
+            + liquidity
+            )
+    else:
+        # If the requested floor cannot be met, return the closest available floor.
+        score = (
+            floor_return * 1_000_000
+            + cap_return * 10_000
+            - abs_net_cost_bps * 100
+            - bid_ask_drag_bps * 10
+            + liquidity
+        )
+    
     score = np.where(selection_mask, score, -np.inf)
 
     best_flat_idx = np.argmax(score)
@@ -521,6 +563,12 @@ def build_zero_cost_dividend_floor_collar(
 
         "near_zero_cost_ok": best_near_zero,
         "outside_tolerance": outside_tolerance,
+        "exact_floor_match": exact_floor_match,
+        "requested_floor_met": bool(best_floor_return >= target_floor_return),
+        "fallback_reason": None if exact_floor_match else (
+            "No available collar met the requested max-loss target. "
+            "Returned the closest available defined-floor collar."
+        ),
         "max_near_zero_bps": max_near_zero_bps,
 
         "floor_value": best_floor_value,
@@ -1691,7 +1739,7 @@ def find_classic_and_buffered_collars(
     expiry_chain,
     target_gain_pct=target_gain_pct,
     assumed_dividend_yield=assumed_dividend_yield,
-    target_buffer_pct=target_buffer_pct,  # ADD THIS LINE
+    target_buffer_pct=put_buffer_pct,
 )
 
 

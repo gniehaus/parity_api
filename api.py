@@ -168,6 +168,8 @@ class RecommendationRequest(BaseModel):
         ...,
         description="Annual dividend yield assumption. Example: 0.01 = 1.00%",
     )
+    
+    target_buffer_pct: float = Field(default=0.10)
 
     # Optional metadata from Base44. The API does not need this for math yet,
     # but it can be returned/logged later if useful.
@@ -232,6 +234,7 @@ def get_recommendations(request: RecommendationRequest):
             max_loss_pct=request.max_loss,
             target_gain_pct=request.target_gain,
             assumed_dividend_yield=request.assumed_dividend_yield,
+            target_buffer_pct=request.target_buffer_pct,
         )
 
         # Echo the Base44 inputs back so the front end can confirm what was used.

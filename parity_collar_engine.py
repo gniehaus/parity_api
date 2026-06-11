@@ -1560,6 +1560,14 @@ def build_zero_cost_target_cap_buffer(
 # 7. PRODUCT RECOMMENDATION PAYLOAD
 # ============================================================
 
+# def build_defined_outcome_recommendations(
+#     df,
+#     ticker="XSP",
+#     horizon=365,
+#     max_loss_pct=0.005,
+#     target_gain_pct=0.08,
+#     assumed_dividend_yield=0.01,
+# ):
 def build_defined_outcome_recommendations(
     df,
     ticker="XSP",
@@ -1567,6 +1575,7 @@ def build_defined_outcome_recommendations(
     max_loss_pct=0.005,
     target_gain_pct=0.08,
     assumed_dividend_yield=0.01,
+    target_buffer_pct=0.10,
 ):
     """
     Builds the two Phase 1 products for Base44:
@@ -1677,13 +1686,13 @@ def find_classic_and_buffered_collars(
     #     assumed_dividend_yield=assumed_dividend_yield,
     #     max_buffer_pct=max_buffer_pct,
     # )
-
+    
     buffer = build_zero_cost_target_cap_buffer(
     expiry_chain,
     target_gain_pct=target_gain_pct,
     assumed_dividend_yield=assumed_dividend_yield,
-    target_buffer_pct=max_loss_pct, 
-    )
+    target_buffer_pct=target_buffer_pct,
+)
 
     rows = []
 

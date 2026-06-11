@@ -1686,13 +1686,13 @@ def find_classic_and_buffered_collars(
     #     assumed_dividend_yield=assumed_dividend_yield,
     #     max_buffer_pct=max_buffer_pct,
     # )
-    
     buffer = build_zero_cost_target_cap_buffer(
     expiry_chain,
     target_gain_pct=target_gain_pct,
     assumed_dividend_yield=assumed_dividend_yield,
-    target_buffer_pct=target_buffer_pct,
+    target_buffer_pct=target_buffer_pct,  # ADD THIS LINE
 )
+
 
     rows = []
 

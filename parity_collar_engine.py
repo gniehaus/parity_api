@@ -1612,7 +1612,8 @@ def build_defined_outcome_recommendations(
     expiry_chain,
     target_gain_pct=target_gain_pct,
     assumed_dividend_yield=assumed_dividend_yield,
-    target_buffer_pct=target_buffer_pct,  # ADD THIS LINE )
+    target_buffer_pct=target_buffer_pct,  # ADD THIS LINE 
+    )
 
     payload = {
         "ticker": ticker,

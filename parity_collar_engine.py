@@ -1365,19 +1365,18 @@ def build_zero_cost_target_cap_buffer(
     expiry_chain,
     target_gain_pct=0.08,
     assumed_dividend_yield=0.01,
-    target_buffer_pct=0.05,
+    target_buffer_pct=0.10,
     max_near_zero_bps=25,
+    buffer_tolerance_pct=0.015,
 ):
     """
     Product: Buffered Growth
 
-    True first-loss buffer logic:
-    1. Long put is anchored to dividend-adjusted spot:
-       long_put_target = spot - expected_dividend_per_share
-    2. Choose the closest put strike to that target.
-    3. Short put is below long put by target_buffer_pct of spot.
-    4. Choose the call that gets closest to zero cost.
-    5. Among near-zero structures, prefer highest cap.
+    Correct logic:
+    1. Pick long put near dividend-adjusted spot.
+    2. Pick short put near long_put_strike - target_buffer_pct * spot.
+    3. Enforce the requested buffer as the product definition.
+    4. Then find the short call that finances that buffer closest to zero cost.
     """
 
     g = expiry_chain.copy()
@@ -1406,7 +1405,7 @@ def build_zero_cost_target_cap_buffer(
     if valid_puts.empty or valid_calls.empty:
         return None
 
-    # FORCE the long put to the closest strike to dividend-adjusted spot.
+    # 1. Long put near spot
     valid_puts["long_put_distance"] = (
         valid_puts["strike"] - long_put_target
     ).abs()
@@ -1419,6 +1418,7 @@ def build_zero_cost_target_cap_buffer(
     long_put_strike = float(long_put["strike"])
     long_put_cost = float(long_put["putMid"]) * MULT
 
+    # 2. Short put near requested buffer
     short_put_target = long_put_strike - (spot * target_buffer_pct)
 
     short_put_candidates = valid_puts[
@@ -1432,29 +1432,57 @@ def build_zero_cost_target_cap_buffer(
         short_put_candidates["strike"] - short_put_target
     ).abs()
 
-    # Use a few short put candidates around the target buffer width.
-    short_put_candidates = short_put_candidates.sort_values(
-        ["short_put_distance", "strike"],
-        ascending=[True, False],
-    ).head(5)
+    short_put_candidates["buffer_width_points"] = (
+        long_put_strike - short_put_candidates["strike"]
+    )
+
+    short_put_candidates["buffer_pct"] = (
+        short_put_candidates["buffer_width_points"] / spot
+    )
+
+    short_put_candidates["buffer_error"] = (
+        short_put_candidates["buffer_pct"] - target_buffer_pct
+    ).abs()
+
+    # HARD FILTER: do not allow a 5% buffer when we requested 10%
+    buffer_pool = short_put_candidates[
+        short_put_candidates["buffer_error"] <= buffer_tolerance_pct
+    ].copy()
+
+    if buffer_pool.empty:
+        # fallback: closest actual buffer, but mark it as outside tolerance
+        buffer_pool = short_put_candidates.sort_values(
+            ["buffer_error", "strike"],
+            ascending=[True, False],
+        ).head(3).copy()
+        buffer_exact_match = False
+    else:
+        buffer_pool = buffer_pool.sort_values(
+            ["buffer_error", "strike"],
+            ascending=[True, False],
+        ).head(3).copy()
+        buffer_exact_match = True
 
     rows = []
 
-    for _, short_put in short_put_candidates.iterrows():
+    for _, short_put in buffer_pool.iterrows():
         short_put_strike = float(short_put["strike"])
         short_put_credit = float(short_put["putMid"]) * MULT
 
         buffer_width_points = long_put_strike - short_put_strike
         buffer_pct = buffer_width_points / spot
+        buffer_error = abs(buffer_pct - target_buffer_pct)
 
         put_spread_cost = long_put_cost - short_put_credit
 
+        # 3. Now find the call that finances this buffer
         for _, call in valid_calls.iterrows():
             call_strike = float(call["strike"])
             call_credit = float(call["callMid"]) * MULT
 
             net_cost = put_spread_cost - call_credit
             net_cost_bps = net_cost / notional * 10000
+            abs_net_cost_bps = abs(net_cost_bps)
 
             cap_value = (
                 call_strike * MULT
@@ -1490,9 +1518,10 @@ def build_zero_cost_target_cap_buffer(
                 "put_spread_cost": put_spread_cost,
                 "net_cost": net_cost,
                 "net_cost_bps": net_cost_bps,
-                "abs_net_cost_bps": abs(net_cost_bps),
+                "abs_net_cost_bps": abs_net_cost_bps,
                 "buffer_width_points": buffer_width_points,
                 "buffer_pct": buffer_pct,
+                "buffer_error": buffer_error,
                 "protected_start_return": protected_start_return,
                 "protected_end_return": protected_end_return,
                 "cap_value": cap_value,
@@ -1509,22 +1538,20 @@ def build_zero_cost_target_cap_buffer(
     candidates = pd.DataFrame(rows)
     candidates["near_zero"] = candidates["abs_net_cost_bps"] <= max_near_zero_bps
 
-    near_zero_candidates = candidates[candidates["near_zero"]].copy()
-
-    if not near_zero_candidates.empty:
-        pool = near_zero_candidates
-    else:
-        pool = candidates
-
-    # Prefer near-zero cost first, then highest cap.
-    best = pool.sort_values(
+    # Correct ranking:
+    # 1. Buffer closest to requested target
+    # 2. Cost closest to zero
+    # 3. Highest cap
+    # 4. Better execution / liquidity
+    best = candidates.sort_values(
         [
+            "buffer_error",
             "abs_net_cost_bps",
             "cap_return",
             "bid_ask_drag_bps",
             "total_oi",
         ],
-        ascending=[True, False, True, False],
+        ascending=[True, True, False, True, False],
     ).iloc[0]
 
     net_cost = float(best["net_cost"])
@@ -1552,6 +1579,10 @@ def build_zero_cost_target_cap_buffer(
         "expected_dividend_per_share": expected_dividend_per_share,
 
         "target_buffer_pct": target_buffer_pct,
+        "actual_buffer_pct": float(best["buffer_pct"]),
+        "buffer_error": float(best["buffer_error"]),
+        "buffer_exact_match": bool(buffer_exact_match),
+
         "long_put_target": long_put_target,
         "short_put_target": short_put_target,
 

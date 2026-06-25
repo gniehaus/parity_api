@@ -1871,6 +1871,251 @@ def build_frontend_payload(
 
     return make_json_safe(payload)
 
+def build_married_put(
+    expiry_chain,
+    max_loss_pct=0.10,
+    assumed_dividend_yield=0.0,
+):
+    """
+    Product: Insured Upside
+    Long underlying + long put.
+
+    Finds the dividend-adjusted put strike that targets the user's max loss.
+    Keeps upside unlimited.
+    """
+
+    g = expiry_chain.copy()
+    if g.empty:
+        return None
+
+    spot = float(g["spot"].median())
+    dte = float(g["dte"].median())
+    notional = spot * MULT
+
+    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
+    expected_dividend_per_share = expected_dividend_dollars / MULT
+
+    puts = g[
+        (g["strike"] < spot)
+        & (g["putMid"] > 0)
+    ].copy()
+
+    if puts.empty:
+        return None
+
+    # Solve for put strike where:
+    # floor = put strike + dividends - put cost
+    # floor return ~= -max_loss_pct
+    target_floor_value = notional * (1 - max_loss_pct)
+
+    puts["put_cost_dollars"] = puts["putMid"] * MULT
+
+    puts["floor_value"] = (
+        puts["strike"] * MULT
+        + expected_dividend_dollars
+        - puts["put_cost_dollars"]
+    )
+
+    puts["floor_return"] = puts["floor_value"] / notional - 1
+    puts["max_loss_dollars"] = notional - puts["floor_value"]
+    puts["floor_error"] = (puts["floor_value"] - target_floor_value).abs()
+
+    # Prefer meeting/exceeding the requested floor.
+    valid = puts[puts["floor_return"] >= -max_loss_pct].copy()
+
+    if valid.empty:
+        pool = puts.copy()
+        exact_floor_match = False
+    else:
+        pool = valid.copy()
+        exact_floor_match = True
+
+    # Pick closest floor; tie-break on lower cost and better OI.
+    best = pool.sort_values(
+        ["floor_error", "put_cost_dollars", "putOpenInterest"],
+        ascending=[True, True, False],
+    ).iloc[0]
+
+    liq_score, total_volume, total_oi = liquidity_score(best)
+
+    return make_json_safe({
+        "product_name": "Insured Upside",
+        "strategy": "married_put",
+        "structure": "married_put",
+        "backend_structure": "long_underlying_plus_long_put",
+
+        "expirDate": g["expirDate"].iloc[0],
+        "dte": dte,
+        "spot": spot,
+        "notional": notional,
+
+        "assumed_dividend_yield": assumed_dividend_yield,
+        "expected_dividend_dollars": expected_dividend_dollars,
+        "expected_dividend_per_share": expected_dividend_per_share,
+
+        "target_max_loss_pct": max_loss_pct,
+        "target_floor_return": -max_loss_pct,
+        "exact_floor_match": exact_floor_match,
+        "requested_floor_met": bool(best["floor_return"] >= -max_loss_pct),
+
+        "long_put_strike": float(best["strike"]),
+        "short_put_strike": None,
+        "call_strike": None,
+
+        "put_cost_dollars": float(best["put_cost_dollars"]),
+        "call_credit_dollars": None,
+        "net_cost_dollars": float(best["put_cost_dollars"]),
+        "net_cost_bps": float(best["put_cost_dollars"] / notional * 10000),
+
+        "floor_value": float(best["floor_value"]),
+        "floor_return": float(best["floor_return"]),
+        "cap_value": None,
+        "cap_return": None,
+        "max_loss_dollars": float(best["max_loss_dollars"]),
+        "max_gain_dollars": None,
+
+        "total_volume": total_volume,
+        "total_oi": total_oi,
+        "liquidity_score": liq_score,
+
+        "display": {
+            "title": "Insured Upside",
+            "subtitle": "Downside protection with unlimited upside",
+            "estimated_max_loss_pct": round_pct(float(best["floor_return"])),
+            "estimated_cap_pct": None,
+            "estimated_max_gain_label": "Unlimited",
+            "estimated_option_cost_dollars": float(best["put_cost_dollars"]),
+            "estimated_dividends_dollars": expected_dividend_dollars,
+            "explanation": (
+                "Designed to insure the downside while keeping upside uncapped. "
+                "The put cost reduces the final floor."
+            ),
+        },
+    })
+
+
+def build_covered_call(
+    expiry_chain,
+    target_income_pct=0.05,
+    assumed_dividend_yield=0.0,
+):
+    """
+    Product: Income
+    Long underlying + short call.
+
+    Finds the call strike that gets closest to the user's preferred income.
+    Shows the tradeoff: known income, capped upside, downside still exposed.
+    """
+
+    g = expiry_chain.copy()
+    if g.empty:
+        return None
+
+    spot = float(g["spot"].median())
+    dte = float(g["dte"].median())
+    notional = spot * MULT
+
+    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
+    expected_dividend_per_share = expected_dividend_dollars / MULT
+
+    calls = g[
+        (g["strike"] > spot)
+        & (g["callMid"] > 0)
+    ].copy()
+
+    if calls.empty:
+        return None
+
+    calls["call_credit_dollars"] = calls["callMid"] * MULT
+
+    calls["option_income_pct"] = calls["call_credit_dollars"] / notional
+    calls["total_income_dollars"] = (
+        calls["call_credit_dollars"] + expected_dividend_dollars
+    )
+    calls["total_income_pct"] = calls["total_income_dollars"] / notional
+
+    calls["income_error"] = (
+        calls["total_income_pct"] - target_income_pct
+    ).abs()
+
+    calls["cap_value"] = (
+        calls["strike"] * MULT
+        + calls["call_credit_dollars"]
+        + expected_dividend_dollars
+    )
+
+    calls["cap_return"] = calls["cap_value"] / notional - 1
+    calls["max_gain_dollars"] = calls["cap_value"] - notional
+
+    # Downside is still stock downside, partially offset by call premium/dividends.
+    calls["breakeven_value"] = notional - calls["total_income_dollars"]
+    calls["breakeven_return"] = calls["breakeven_value"] / notional - 1
+
+    # Pick income closest to target; tie-break by higher cap / better OI.
+    best = calls.sort_values(
+        ["income_error", "cap_return", "callOpenInterest"],
+        ascending=[True, False, False],
+    ).iloc[0]
+
+    liq_score, total_volume, total_oi = liquidity_score(best)
+
+    return make_json_safe({
+        "product_name": "Income",
+        "strategy": "covered_call",
+        "structure": "covered_call",
+        "backend_structure": "long_underlying_plus_short_call",
+
+        "expirDate": g["expirDate"].iloc[0],
+        "dte": dte,
+        "spot": spot,
+        "notional": notional,
+
+        "assumed_dividend_yield": assumed_dividend_yield,
+        "expected_dividend_dollars": expected_dividend_dollars,
+        "expected_dividend_per_share": expected_dividend_per_share,
+
+        "target_income_pct": target_income_pct,
+
+        "long_put_strike": None,
+        "short_put_strike": None,
+        "call_strike": float(best["strike"]),
+
+        "put_cost_dollars": None,
+        "call_credit_dollars": float(best["call_credit_dollars"]),
+        "net_cost_dollars": -float(best["call_credit_dollars"]),
+        "net_cost_bps": -float(best["call_credit_dollars"] / notional * 10000),
+
+        "option_income_pct": float(best["option_income_pct"]),
+        "total_income_dollars": float(best["total_income_dollars"]),
+        "total_income_pct": float(best["total_income_pct"]),
+
+        "floor_value": None,
+        "floor_return": None,
+        "cap_value": float(best["cap_value"]),
+        "cap_return": float(best["cap_return"]),
+        "max_loss_dollars": None,
+        "max_gain_dollars": float(best["max_gain_dollars"]),
+        "breakeven_value": float(best["breakeven_value"]),
+        "breakeven_return": float(best["breakeven_return"]),
+
+        "total_volume": total_volume,
+        "total_oi": total_oi,
+        "liquidity_score": liq_score,
+
+        "display": {
+            "title": "Income",
+            "subtitle": "Generate income while keeping limited upside",
+            "estimated_income_pct": round_pct(float(best["total_income_pct"])),
+            "estimated_cap_pct": round_pct(float(best["cap_return"])),
+            "estimated_max_loss_label": "Substantial downside remains",
+            "estimated_option_income_dollars": float(best["call_credit_dollars"]),
+            "estimated_dividends_dollars": expected_dividend_dollars,
+            "explanation": (
+                "Designed to generate income by selling upside above the call strike. "
+                "Upside is capped and downside is not protected."
+            ),
+        },
+    })
 
 # ============================================================
 # 10. COMMAND LINE ENTRY POINT

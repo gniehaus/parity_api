@@ -1880,8 +1880,11 @@ def build_married_put(
     Product: Insured Upside
     Long underlying + long put.
 
-    Finds the dividend-adjusted put strike that targets the user's max loss.
-    Keeps upside unlimited.
+    Logic:
+    - User chooses a protection level, e.g. 10%.
+    - We find the dividend-adjusted put strike near 10% OTM.
+    - Put premium is shown separately as insurance cost.
+    - Actual worst case includes the insurance cost.
     """
 
     g = expiry_chain.copy()
@@ -1895,6 +1898,9 @@ def build_married_put(
     expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
     expected_dividend_per_share = expected_dividend_dollars / MULT
 
+    # Target the actual insurance strike, not the premium-adjusted floor.
+    target_put_strike = spot * (1 - max_loss_pct) - expected_dividend_per_share
+
     puts = g[
         (g["strike"] < spot)
         & (g["putMid"] > 0)
@@ -1903,38 +1909,48 @@ def build_married_put(
     if puts.empty:
         return None
 
-    # Solve for put strike where:
-    # floor = put strike + dividends - put cost
-    # floor return ~= -max_loss_pct
-    target_floor_value = notional * (1 - max_loss_pct)
-
+    puts["strike_distance"] = (puts["strike"] - target_put_strike).abs()
     puts["put_cost_dollars"] = puts["putMid"] * MULT
 
-    puts["floor_value"] = (
-        puts["strike"] * MULT
-        + expected_dividend_dollars
-        - puts["put_cost_dollars"]
-    )
-
-    puts["floor_return"] = puts["floor_value"] / notional - 1
-    puts["max_loss_dollars"] = notional - puts["floor_value"]
-    puts["floor_error"] = (puts["floor_value"] - target_floor_value).abs()
-
-    # Prefer meeting/exceeding the requested floor.
-    valid = puts[puts["floor_return"] >= -max_loss_pct].copy()
-
-    if valid.empty:
-        pool = puts.copy()
-        exact_floor_match = False
+    # For execution realism, track worst case at ask too.
+    if "putAskPrice" in puts.columns:
+        puts["put_ask_dollars"] = puts["putAskPrice"].fillna(puts["putMid"]) * MULT
     else:
-        pool = valid.copy()
-        exact_floor_match = True
+        puts["put_ask_dollars"] = puts["put_cost_dollars"]
 
-    # Pick closest floor; tie-break on lower cost and better OI.
-    best = pool.sort_values(
-        ["floor_error", "put_cost_dollars", "putOpenInterest"],
-        ascending=[True, True, False],
+    if "putBidPrice" in puts.columns:
+        puts["put_bid_dollars"] = puts["putBidPrice"].fillna(puts["putMid"]) * MULT
+    else:
+        puts["put_bid_dollars"] = puts["put_cost_dollars"]
+
+    puts["bid_ask_drag_dollars"] = puts["put_ask_dollars"] - puts["put_cost_dollars"]
+    puts["bid_ask_drag_bps"] = puts["bid_ask_drag_dollars"] / notional * 10000
+
+    # Pick nearest strike to requested protection.
+    # Tie-breakers: lower bid/ask drag, better OI, better volume.
+    best = puts.sort_values(
+        [
+            "strike_distance",
+            "bid_ask_drag_bps",
+            "putOpenInterest",
+            "putVolume",
+        ],
+        ascending=[True, True, False, False],
     ).iloc[0]
+
+    put_strike = float(best["strike"])
+    put_cost_dollars = float(best["put_cost_dollars"])
+
+    # Protection level is based on strike.
+    protection_floor_value = put_strike * MULT + expected_dividend_dollars
+    protection_floor_return = protection_floor_value / notional - 1
+
+    # Actual worst case includes the insurance premium paid.
+    actual_floor_value = protection_floor_value - put_cost_dollars
+    actual_floor_return = actual_floor_value / notional - 1
+
+    max_loss_dollars = notional - actual_floor_value
+    insurance_cost_pct = put_cost_dollars / notional
 
     liq_score, total_volume, total_oi = liquidity_score(best)
 
@@ -1953,46 +1969,65 @@ def build_married_put(
         "expected_dividend_dollars": expected_dividend_dollars,
         "expected_dividend_per_share": expected_dividend_per_share,
 
-        "target_max_loss_pct": max_loss_pct,
-        "target_floor_return": -max_loss_pct,
-        "exact_floor_match": exact_floor_match,
-        "requested_floor_met": bool(best["floor_return"] >= -max_loss_pct),
+        "target_protection_pct": max_loss_pct,
+        "target_put_strike": target_put_strike,
+        "actual_protection_pct": abs(protection_floor_return),
+        "strike_distance": float(best["strike_distance"]),
 
-        "long_put_strike": float(best["strike"]),
+        "long_put_strike": put_strike,
         "short_put_strike": None,
         "call_strike": None,
 
-        "put_cost_dollars": float(best["put_cost_dollars"]),
-        "call_credit_dollars": None,
-        "net_cost_dollars": float(best["put_cost_dollars"]),
-        "net_cost_bps": float(best["put_cost_dollars"] / notional * 10000),
+        "put_cost_dollars": put_cost_dollars,
+        "put_cost_per_share": float(best["putMid"]),
+        "put_bid_per_share": float(best.get("putBidPrice", best["putMid"])),
+        "put_ask_per_share": float(best.get("putAskPrice", best["putMid"])),
 
-        "floor_value": float(best["floor_value"]),
-        "floor_return": float(best["floor_return"]),
+        "call_credit_dollars": None,
+        "net_cost_dollars": put_cost_dollars,
+        "net_cost_bps": float(put_cost_dollars / notional * 10000),
+
+        "insurance_cost_pct": insurance_cost_pct,
+
+        "protection_floor_value": protection_floor_value,
+        "protection_floor_return": protection_floor_return,
+
+        "floor_value": actual_floor_value,
+        "floor_return": actual_floor_return,
         "cap_value": None,
         "cap_return": None,
-        "max_loss_dollars": float(best["max_loss_dollars"]),
-        "max_gain_dollars": None,
 
+        "max_loss_dollars": max_loss_dollars,
+        "max_loss_pct": abs(actual_floor_return),
+        "max_gain_dollars": None,
+        "max_gain_label": "Unlimited",
+
+        "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
         "total_volume": total_volume,
         "total_oi": total_oi,
         "liquidity_score": liq_score,
 
         "display": {
             "title": "Insured Upside",
-            "subtitle": "Downside protection with unlimited upside",
-            "estimated_max_loss_pct": round_pct(float(best["floor_return"])),
+            "subtitle": "Downside insurance with unlimited upside",
+
+            "protection_level_pct": round_pct(abs(protection_floor_return)),
+            "insurance_strike": put_strike,
+            "insurance_cost_pct": round_pct(insurance_cost_pct),
+            "estimated_max_loss_pct": round_pct(abs(actual_floor_return)),
             "estimated_cap_pct": None,
             "estimated_max_gain_label": "Unlimited",
-            "estimated_option_cost_dollars": float(best["put_cost_dollars"]),
+
+            "estimated_option_cost_dollars": put_cost_dollars,
             "estimated_dividends_dollars": expected_dividend_dollars,
+
             "explanation": (
-                "Designed to insure the downside while keeping upside uncapped. "
-                "The put cost reduces the final floor."
+                "Designed to target the selected downside protection level by buying a put "
+                "near the requested protection strike. The insurance cost is shown separately "
+                "and increases the actual worst-case loss."
             ),
         },
     })
-
 
 def build_covered_call(
     expiry_chain,

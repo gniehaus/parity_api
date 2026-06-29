@@ -292,12 +292,11 @@ def build_funded_defense(
     chain: pd.DataFrame,
     etf_price: float,
     max_loss_pct: float = 0.02,
-    target_gain_pct: float = 0.05,
+    target_gain_pct: float | None = None,
 ):
     calls, puts = split_calls_puts(chain)
 
     target_put_strike = etf_price * (1 - max_loss_pct)
-    target_call_strike = etf_price * (1 + target_gain_pct)
 
     puts = puts[(puts["strike"] < etf_price) & (puts["mid"] > 0)].copy()
     calls = calls[(calls["strike"] > etf_price) & (calls["mid"] > 0)].copy()
@@ -306,25 +305,36 @@ def build_funded_defense(
         return None
 
     put = nearest_row(puts, target_put_strike)
-    
     put_cost = float(put["mid"])
-    
-    # For funded defense, the call should fund the selected put.
-    # Do not choose the call from a fixed target_gain unless explicitly requested.
-    if target_gain_pct is not None:
-        call = nearest_row(calls, target_call_strike)
-    else:
-        calls = calls.copy()
-        calls["credit_error"] = (calls["mid"] - put_cost).abs()
-        calls["price_upside_pct"] = (calls["strike"] - etf_price) / etf_price
-    
+
+    calls = calls.copy()
+    calls["call_credit"] = calls["mid"].astype(float)
+    calls["net_cost"] = put_cost - calls["call_credit"]
+    calls["abs_net_cost"] = calls["net_cost"].abs()
+    calls["price_upside_pct"] = (calls["strike"] - etf_price) / etf_price
+    calls["max_upside_pct"] = (
+        calls["strike"] - etf_price - calls["net_cost"]
+    ) / etf_price
+
+    # Default funded-defense behavior:
+    # choose the call that creates the closest-to-zero debit/credit.
+    # Tie-breaker: prefer more upside, then better liquidity.
+    if target_gain_pct is None:
         call = calls.sort_values(
-            ["credit_error", "price_upside_pct", "open_interest", "volume"],
+            ["abs_net_cost", "price_upside_pct", "open_interest", "volume"],
             ascending=[True, False, False, False],
         ).iloc[0]
-    
-    call_credit = float(call["mid"])
-    net_cost = put_cost - call_credit
+    else:
+        target_call_strike = etf_price * (1 + target_gain_pct)
+        calls["target_gain_error"] = (calls["strike"] - target_call_strike).abs()
+
+        call = calls.sort_values(
+            ["target_gain_error", "abs_net_cost", "open_interest", "volume"],
+            ascending=[True, True, False, False],
+        ).iloc[0]
+
+    call_credit = float(call["call_credit"])
+    net_cost = float(call["net_cost"])
 
     protection_pct = (etf_price - float(put["strike"])) / etf_price
     price_upside_pct = (float(call["strike"]) - etf_price) / etf_price
@@ -374,7 +384,7 @@ def build_products_for_expiration(
     etf_price: float,
     target_income_pct: float = 0.01,
     max_loss_pct: float = 0.02,
-    target_gain_pct: float = 0.05,
+    target_gain_pct: float | None = None,
 ):
     raw_chain = get_nanos_chain(expiration_date)
     chain = clean_nanos_chain(raw_chain)
@@ -480,7 +490,7 @@ if __name__ == "__main__":
         etf_symbol="SPY",
         target_income_pct=0.01,
         max_loss_pct=0.02,
-        target_gain_pct=0.05,
+        target_gain_pct: float | None = None,
     )
 
     import json

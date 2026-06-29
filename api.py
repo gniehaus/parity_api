@@ -310,6 +310,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from nanos_engine import build_weekly_outcomes_payload
 
 from parity_collar_engine import (
     fetch_orats_chain,
@@ -414,6 +415,22 @@ def root():
 def health():
     return {"status": "healthy"}
 
+@app.get("/weekly-outcomes")
+def get_weekly_outcomes():
+    try:
+        payload = build_weekly_outcomes_payload(
+            etf_symbol="SPY",
+            target_income_pct=0.01,
+            max_loss_pct=0.02,
+            target_gain_pct=0.05,
+            max_expirations=6,
+        )
+        return payload
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+        
 
 @app.post("/recommendations")
 def get_recommendations(request: RecommendationRequest):

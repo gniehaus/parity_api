@@ -10,6 +10,7 @@ import math
 import requests
 import pandas as pd
 from datetime import date, datetime
+import numpy as np
 
 
 NANOS_SYMBOL = "NANOS"

@@ -9,13 +9,12 @@ import os
 import math
 import requests
 import pandas as pd
-from datetime import date, datetime
 import numpy as np
+from datetime import date, datetime
 
 
 NANOS_SYMBOL = "NANOS"
 DEFAULT_ETF_SYMBOL = "SPY"
-
 
 def make_json_safe(obj):
     if isinstance(obj, dict):
@@ -34,7 +33,6 @@ def make_json_safe(obj):
 def tradier_headers():
     if not TRADIER_TOKEN:
         raise ValueError("Missing TRADIER_TOKEN environment variable")
-
     return {
         "Authorization": f"Bearer {TRADIER_TOKEN}",
         "Accept": "application/json",
@@ -53,23 +51,18 @@ def get_quote(symbol: str) -> dict:
         "/markets/quotes",
         params={"symbols": symbol, "greeks": "false"},
     )
-
     quotes = data.get("quotes", {}).get("quote")
-
     if isinstance(quotes, list):
         return quotes[0]
-
     return quotes or {}
 
 
 def get_last_price(symbol: str) -> float:
     quote = get_quote(symbol)
-
     for field in ["last", "bid", "ask", "close", "prevclose"]:
         value = quote.get(field)
         if value is not None:
             return float(value)
-
     raise ValueError(f"Could not find price for {symbol}")
 
 
@@ -86,15 +79,12 @@ def get_nanos_expirations_with_strikes() -> pd.DataFrame:
     )
 
     expirations = data.get("expirations", {}).get("expiration", [])
-
     if isinstance(expirations, dict):
         expirations = [expirations]
 
     rows = []
-
     for exp in expirations:
         strikes = exp.get("strikes", {}).get("strike", [])
-
         if not isinstance(strikes, list):
             strikes = [strikes]
 
@@ -120,17 +110,14 @@ def get_nanos_chain(expiration: str) -> pd.DataFrame:
     )
 
     options_block = data.get("options")
-
     if not options_block:
         return pd.DataFrame()
 
     options = options_block.get("option", [])
-
     if isinstance(options, dict):
         options = [options]
 
     df = pd.DataFrame(options)
-
     if df.empty:
         return df
 
@@ -158,16 +145,14 @@ def clean_nanos_chain(df: pd.DataFrame) -> pd.DataFrame:
         if col in g.columns:
             g[col] = pd.to_numeric(g[col], errors="coerce")
 
-    # Require a real two-sided market.
-    # Do not use stale last prices or one-sided quotes like bid=0 / ask=0.50.
     g["has_two_sided_quote"] = (
         g["bid"].notna()
         & g["ask"].notna()
         & (g["bid"] > 0)
         & (g["ask"] > 0)
     )
-    
-    g["mid"] = None
+
+    g["mid"] = np.nan
     g.loc[g["has_two_sided_quote"], "mid"] = (
         g.loc[g["has_two_sided_quote"], "bid"]
         + g.loc[g["has_two_sided_quote"], "ask"]
@@ -200,19 +185,27 @@ def nearest_row(df: pd.DataFrame, target_strike: float):
 def build_income_defense(
     chain: pd.DataFrame,
     etf_price: float,
+    nanos_price: float,
     target_income_pct: float = 0.01,
 ):
     calls, _ = split_calls_puts(chain)
 
-    calls = calls[(calls["strike"] > etf_price) & (calls["mid"] > 0)].copy()
+    calls = calls[
+        (calls["strike"] > nanos_price)
+        & (calls["bid"] > 0)
+        & (calls["ask"] > 0)
+        & (calls["mid"] > 0)
+    ].copy()
 
     if calls.empty:
         return None
 
-    calls["income_pct"] = calls["mid"] / etf_price
+    calls["income_pct"] = calls["mid"] / nanos_price
     calls["income_error"] = (calls["income_pct"] - target_income_pct).abs()
-    calls["max_upside_pct"] = ((calls["strike"] - etf_price) + calls["mid"]) / etf_price
-    calls["price_upside_pct"] = (calls["strike"] - etf_price) / etf_price
+    calls["price_upside_pct"] = (calls["strike"] - nanos_price) / nanos_price
+    calls["max_upside_pct"] = (
+        (calls["strike"] - nanos_price) + calls["mid"]
+    ) / nanos_price
     calls["breakeven_pct"] = -calls["income_pct"]
 
     best = calls.sort_values(
@@ -248,13 +241,19 @@ def build_income_defense(
 def build_insured_defense(
     chain: pd.DataFrame,
     etf_price: float,
+    nanos_price: float,
     protection_pct: float = 0.02,
 ):
     _, puts = split_calls_puts(chain)
 
-    target_put_strike = etf_price * (1 - protection_pct)
+    target_put_strike = nanos_price * (1 - protection_pct)
 
-    puts = puts[(puts["strike"] < etf_price) & (puts["mid"] > 0)].copy()
+    puts = puts[
+        (puts["strike"] < nanos_price)
+        & (puts["bid"] > 0)
+        & (puts["ask"] > 0)
+        & (puts["mid"] > 0)
+    ].copy()
 
     if puts.empty:
         return None
@@ -262,8 +261,8 @@ def build_insured_defense(
     best = nearest_row(puts, target_put_strike)
 
     put_cost = float(best["mid"])
-    protection_level_pct = (etf_price - float(best["strike"])) / etf_price
-    worst_case_pct_including_cost = protection_level_pct + (put_cost / etf_price)
+    protection_level_pct = (nanos_price - float(best["strike"])) / nanos_price
+    worst_case_pct_including_cost = protection_level_pct + (put_cost / nanos_price)
 
     return {
         "product_key": "insured_defense",
@@ -275,7 +274,7 @@ def build_insured_defense(
         "long_put_symbol": best.get("symbol"),
         "long_put_strike": float(best["strike"]),
         "insurance_cost_dollars": put_cost,
-        "insurance_cost_pct": put_cost / etf_price,
+        "insurance_cost_pct": put_cost / nanos_price,
         "protection_level_pct": protection_level_pct,
         "worst_case_pct_including_cost": worst_case_pct_including_cost,
         "max_upside_label": "Unlimited",
@@ -292,21 +291,22 @@ def build_insured_defense(
 def build_funded_defense(
     chain: pd.DataFrame,
     etf_price: float,
+    nanos_price: float,
     max_loss_pct: float = 0.02,
-    target_gain_pct: float | None = None,
+    target_gain_pct=None,
     max_near_zero_bps: float = 50,
 ):
     calls, puts = split_calls_puts(chain)
 
     puts = puts[
-        (puts["strike"] < etf_price)
+        (puts["strike"] < nanos_price)
         & (puts["bid"] > 0)
         & (puts["ask"] > 0)
         & (puts["mid"] > 0)
     ].copy()
 
     calls = calls[
-        (calls["strike"] > etf_price)
+        (calls["strike"] > nanos_price)
         & (calls["bid"] > 0)
         & (calls["ask"] > 0)
         & (calls["mid"] > 0)
@@ -316,11 +316,9 @@ def build_funded_defense(
         return None
 
     target_floor_return = -max_loss_pct
-    notional = etf_price
-    target_put_strike = etf_price * (1 - max_loss_pct)
+    notional = nanos_price
+    target_put_strike = nanos_price * (1 - max_loss_pct)
 
-    # Keep puts near the requested protection level.
-    # This prevents the engine from picking extremely low puts just because they are cheap.
     puts["put_strike_error"] = (puts["strike"] - target_put_strike).abs()
     puts = puts.sort_values(
         ["put_strike_error", "open_interest", "volume"],
@@ -330,28 +328,15 @@ def build_funded_defense(
     put_strikes = puts["strike"].to_numpy(dtype=float)
     put_costs = puts["mid"].to_numpy(dtype=float)
     put_asks = puts["ask"].to_numpy(dtype=float)
-    put_volumes = puts.get(
-        "volume",
-        pd.Series(0, index=puts.index)
-    ).fillna(0).to_numpy(dtype=float)
-    put_oi = puts.get(
-        "open_interest",
-        pd.Series(0, index=puts.index)
-    ).fillna(0).to_numpy(dtype=float)
+    put_volumes = puts.get("volume", pd.Series(0, index=puts.index)).fillna(0).to_numpy(dtype=float)
+    put_oi = puts.get("open_interest", pd.Series(0, index=puts.index)).fillna(0).to_numpy(dtype=float)
 
     call_strikes = calls["strike"].to_numpy(dtype=float)
     call_credits = calls["mid"].to_numpy(dtype=float)
     call_bids = calls["bid"].to_numpy(dtype=float)
-    call_volumes = calls.get(
-        "volume",
-        pd.Series(0, index=calls.index)
-    ).fillna(0).to_numpy(dtype=float)
-    call_oi = calls.get(
-        "open_interest",
-        pd.Series(0, index=calls.index)
-    ).fillna(0).to_numpy(dtype=float)
+    call_volumes = calls.get("volume", pd.Series(0, index=calls.index)).fillna(0).to_numpy(dtype=float)
+    call_oi = calls.get("open_interest", pd.Series(0, index=calls.index)).fillna(0).to_numpy(dtype=float)
 
-    # Put/call grid.
     net_cost = put_costs[:, None] - call_credits[None, :]
     net_cost_bps = net_cost / notional * 10000
     abs_net_cost_bps = np.abs(net_cost_bps)
@@ -365,7 +350,6 @@ def build_funded_defense(
     requested_floor_met = floor_return >= target_floor_return
     near_zero = abs_net_cost_bps <= max_near_zero_bps
 
-    # Prefer structures that meet the requested max loss and are near zero cost.
     preferred_mask = requested_floor_met & near_zero
 
     if np.any(preferred_mask):
@@ -399,8 +383,6 @@ def build_funded_defense(
             + liquidity
         )
     elif exact_floor_match:
-        # Main funded-defense behavior:
-        # meet requested max loss, minimize debit/credit, then maximize upside.
         score = (
             -abs_net_cost_bps * 1_000_000
             + cap_return * 100_000
@@ -408,7 +390,6 @@ def build_funded_defense(
             + liquidity
         )
     else:
-        # If requested floor cannot be met, return closest available floor.
         score = (
             floor_return * 1_000_000
             -abs_net_cost_bps * 100
@@ -462,12 +443,12 @@ def build_funded_defense(
         "put_cost_dollars": float(put["mid"]),
         "call_credit_dollars": float(call["mid"]),
         "net_cost_dollars": best_net_cost,
-        "net_cost_pct": best_net_cost / etf_price,
+        "net_cost_pct": best_net_cost / nanos_price,
         "net_cost_bps": best_net_cost_bps,
 
         "max_loss_pct": abs(best_floor_return),
         "floor_return": best_floor_return,
-        "price_upside_pct": (float(call["strike"]) - etf_price) / etf_price,
+        "price_upside_pct": (float(call["strike"]) - nanos_price) / nanos_price,
         "max_upside_pct": best_cap_return,
         "cap_return": best_cap_return,
 
@@ -497,9 +478,10 @@ def format_expiration_label(expiration_date: str) -> str:
 def build_products_for_expiration(
     expiration_date: str,
     etf_price: float,
+    nanos_price: float,
     target_income_pct: float = 0.01,
     max_loss_pct: float = 0.02,
-    target_gain_pct: float | None = None,
+    target_gain_pct=None,
 ):
     raw_chain = get_nanos_chain(expiration_date)
     chain = clean_nanos_chain(raw_chain)
@@ -511,17 +493,20 @@ def build_products_for_expiration(
         "income_defense": build_income_defense(
             chain=chain,
             etf_price=etf_price,
+            nanos_price=nanos_price,
             target_income_pct=target_income_pct,
         ),
         "funded_defense": build_funded_defense(
             chain=chain,
             etf_price=etf_price,
+            nanos_price=nanos_price,
             max_loss_pct=max_loss_pct,
             target_gain_pct=target_gain_pct,
         ),
         "insured_defense": build_insured_defense(
             chain=chain,
             etf_price=etf_price,
+            nanos_price=nanos_price,
             protection_pct=max_loss_pct,
         ),
     }
@@ -531,10 +516,11 @@ def build_weekly_outcomes_payload(
     etf_symbol: str = DEFAULT_ETF_SYMBOL,
     target_income_pct: float = 0.01,
     max_loss_pct: float = 0.02,
-    target_gain_pct: float = 0.05,
+    target_gain_pct=None,
     max_expirations: int = 6,
 ):
     etf_price = get_last_price(etf_symbol)
+    nanos_price = get_last_price(NANOS_SYMBOL)
 
     expirations_df = get_nanos_expirations_with_strikes()
 
@@ -543,7 +529,7 @@ def build_weekly_outcomes_payload(
             "symbol": NANOS_SYMBOL,
             "underlying": etf_symbol,
             "title": "Weekly Outcomes",
-            "subtitle": "Small-dollar S&P 500 outcomes built with NANOS.",
+            "subtitle": "Small-dollar S&P 500 outcomes.",
             "expirations": [],
         }
 
@@ -561,6 +547,7 @@ def build_weekly_outcomes_payload(
         products = build_products_for_expiration(
             expiration_date=exp,
             etf_price=etf_price,
+            nanos_price=nanos_price,
             target_income_pct=target_income_pct,
             max_loss_pct=max_loss_pct,
             target_gain_pct=target_gain_pct,
@@ -579,15 +566,22 @@ def build_weekly_outcomes_payload(
     payload = {
         "symbol": NANOS_SYMBOL,
         "underlying": etf_symbol,
+        "option_underlying": NANOS_SYMBOL,
         "title": "Weekly Outcomes",
-        "subtitle": "Small-dollar S&P 500 outcomes built with NANOS.",
+        "subtitle": "Small-dollar S&P 500 outcomes.",
         "minimum_strategy_size": round(etf_price, 2),
         "etf_price": etf_price,
+        "nanos_price": nanos_price,
         "contract_size": 1,
         "assumptions": {
             "etf_quantity": 1,
             "nanos_contracts": 1,
-            "note": "ETF and NANOS exposure are intended to move approximately 1-to-1. Actual outcomes may differ due to tracking, settlement, fees, taxes, and execution.",
+            "note": "Displayed outcomes use the option reference level for payoff math. ETF price is used as the user-facing strategy size reference.",
+        },
+        "quote_filter": {
+            "requires_nonzero_bid": True,
+            "requires_nonzero_ask": True,
+            "uses_last_price_fallback": False,
         },
         "default_inputs": {
             "target_income_pct": target_income_pct,
@@ -601,6 +595,8 @@ def build_weekly_outcomes_payload(
 
 
 if __name__ == "__main__":
+    import json
+
     result = build_weekly_outcomes_payload(
         etf_symbol="SPY",
         target_income_pct=0.01,
@@ -608,5 +604,4 @@ if __name__ == "__main__":
         target_gain_pct=None,
     )
 
-    import json
     print(json.dumps(result, indent=2))

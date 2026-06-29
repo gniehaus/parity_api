@@ -490,7 +490,7 @@ if __name__ == "__main__":
         etf_symbol="SPY",
         target_income_pct=0.01,
         max_loss_pct=0.02,
-        target_gain_pct: float | None = None,
+        target_gain_pct=None,
     )
 
     import json

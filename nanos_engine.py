@@ -4,7 +4,6 @@ ACCOUNT_ID = "6YB82973"
 TRADIER_BASE_URL = "https://api.tradier.com/v1"  # live
 
 
-
 import os
 import math
 import requests
@@ -295,6 +294,7 @@ def build_funded_defense(
     max_loss_pct: float = 0.02,
     target_gain_pct=None,
     max_near_zero_bps: float = 50,
+    max_debit_bps: float = 25,
 ):
     calls, puts = split_calls_puts(chain)
 
@@ -348,20 +348,34 @@ def build_funded_defense(
     cap_return = cap_value / notional - 1
 
     requested_floor_met = floor_return >= target_floor_return
+
+    acceptable_debit = (
+        (net_cost_bps >= 0)
+        & (net_cost_bps <= max_debit_bps)
+    )
+
     near_zero = abs_net_cost_bps <= max_near_zero_bps
 
-    preferred_mask = requested_floor_met & near_zero
+    preferred_mask = requested_floor_met & acceptable_debit
 
     if np.any(preferred_mask):
         selection_mask = preferred_mask
+        selection_mode = "small_debit_max_upside"
+        outside_tolerance = False
+        exact_floor_match = True
+    elif np.any(requested_floor_met & near_zero):
+        selection_mask = requested_floor_met & near_zero
+        selection_mode = "near_zero_fallback"
         outside_tolerance = False
         exact_floor_match = True
     elif np.any(requested_floor_met):
         selection_mask = requested_floor_met
+        selection_mode = "floor_met_fallback"
         outside_tolerance = True
         exact_floor_match = True
     else:
         selection_mask = np.isfinite(floor_return) & np.isfinite(cap_return)
+        selection_mode = "closest_available_floor"
         outside_tolerance = True
         exact_floor_match = False
 
@@ -375,10 +389,16 @@ def build_funded_defense(
     if target_gain_pct is not None:
         target_cap_return = target_gain_pct
         cap_error = np.abs(cap_return - target_cap_return)
-
         score = (
             -cap_error * 1_000_000
             -abs_net_cost_bps * 100
+            -bid_ask_drag_bps * 10
+            + liquidity
+        )
+    elif selection_mode == "small_debit_max_upside":
+        score = (
+            cap_return * 1_000_000
+            -net_cost_bps * 1_000
             -bid_ask_drag_bps * 10
             + liquidity
         )
@@ -412,13 +432,16 @@ def build_funded_defense(
     best_cap_return = float(cap_return[best_put_idx, best_call_idx])
     best_bid_ask_drag_bps = float(bid_ask_drag_bps[best_put_idx, best_call_idx])
     best_near_zero = bool(near_zero[best_put_idx, best_call_idx])
+    best_acceptable_debit = bool(acceptable_debit[best_put_idx, best_call_idx])
 
-    if abs(best_net_cost_bps) <= max_near_zero_bps:
+    if best_acceptable_debit:
+        cost_display_label = "small debit"
+    elif abs(best_net_cost_bps) <= max_near_zero_bps:
         cost_display_label = "approximately $0"
     elif best_net_cost > 0:
-        cost_display_label = "small debit"
+        cost_display_label = "debit"
     else:
-        cost_display_label = "small credit"
+        cost_display_label = "credit"
 
     return {
         "product_key": "funded_defense",
@@ -431,9 +454,12 @@ def build_funded_defense(
         "target_max_loss_pct": max_loss_pct,
         "requested_floor_met": bool(best_floor_return >= target_floor_return),
         "near_zero_cost_ok": best_near_zero,
+        "acceptable_debit": best_acceptable_debit,
+        "selection_mode": selection_mode,
         "outside_tolerance": outside_tolerance,
         "exact_floor_match": exact_floor_match,
         "max_near_zero_bps": max_near_zero_bps,
+        "max_debit_bps": max_debit_bps,
 
         "long_put_symbol": put.get("symbol"),
         "long_put_strike": float(put["strike"]),

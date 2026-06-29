@@ -415,16 +415,61 @@ def root():
 def health():
     return {"status": "healthy"}
 
+# @app.get("/weekly-outcomes")
+# def get_weekly_outcomes():
+#     try:
+#         payload = build_weekly_outcomes_payload(
+#             etf_symbol="SPY",
+#             target_income_pct=0.01,
+#             max_loss_pct=0.02,
+#             target_gain_pct=0.05,
+#             max_expirations=6,
+#         )
+#         return payload
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+from fastapi import Query, HTTPException
+
+def parse_pct(value, default=None):
+    if value is None:
+        return default
+    value = float(value)
+    return value / 100 if value > 1 else value
+
 @app.get("/weekly-outcomes")
-def get_weekly_outcomes():
+def get_weekly_outcomes(
+    ticker: str = Query("SPY"),
+    target_income: float | None = None,
+    target_income_pct: float | None = None,
+    max_loss: float | None = None,
+    max_loss_pct: float | None = None,
+    target_gain: float | None = None,
+    target_gain_pct: float | None = None,
+    max_expirations: int = 6,
+):
     try:
+        income = parse_pct(target_income_pct, 0.01)
+        if target_income is not None:
+            income = parse_pct(target_income)
+
+        loss = parse_pct(max_loss_pct, 0.02)
+        if max_loss is not None:
+            loss = parse_pct(max_loss)
+
+        gain = parse_pct(target_gain_pct, 0.05)
+        if target_gain is not None:
+            gain = parse_pct(target_gain)
+
         payload = build_weekly_outcomes_payload(
-            etf_symbol="SPY",
-            target_income_pct=0.01,
-            max_loss_pct=0.02,
-            target_gain_pct=0.05,
-            max_expirations=6,
+            etf_symbol=ticker.upper(),
+            target_income_pct=income,
+            max_loss_pct=loss,
+            target_gain_pct=gain,
+            max_expirations=max_expirations,
         )
+
         return payload
 
     except Exception as e:

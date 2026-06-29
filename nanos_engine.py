@@ -157,10 +157,20 @@ def clean_nanos_chain(df: pd.DataFrame) -> pd.DataFrame:
         if col in g.columns:
             g[col] = pd.to_numeric(g[col], errors="coerce")
 
-    g["mid"] = (g["bid"].fillna(0) + g["ask"].fillna(0)) / 2
-
-    # If bid/ask are missing but last exists, fallback to last.
-    g.loc[g["mid"] <= 0, "mid"] = g.loc[g["mid"] <= 0, "last"]
+    # Require a real two-sided market.
+    # Do not use stale last prices or one-sided quotes like bid=0 / ask=0.50.
+    g["has_two_sided_quote"] = (
+        g["bid"].notna()
+        & g["ask"].notna()
+        & (g["bid"] > 0)
+        & (g["ask"] > 0)
+    )
+    
+    g["mid"] = None
+    g.loc[g["has_two_sided_quote"], "mid"] = (
+        g.loc[g["has_two_sided_quote"], "bid"]
+        + g.loc[g["has_two_sided_quote"], "ask"]
+    ) / 2
 
     g["option_type"] = g["option_type"].str.lower()
 

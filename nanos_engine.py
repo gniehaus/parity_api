@@ -293,53 +293,150 @@ def build_funded_defense(
     etf_price: float,
     max_loss_pct: float = 0.02,
     target_gain_pct: float | None = None,
+    max_near_zero_bps: float = 50,
 ):
     calls, puts = split_calls_puts(chain)
 
-    target_put_strike = etf_price * (1 - max_loss_pct)
+    puts = puts[
+        (puts["strike"] < etf_price)
+        & (puts["bid"] > 0)
+        & (puts["ask"] > 0)
+        & (puts["mid"] > 0)
+    ].copy()
 
-    puts = puts[(puts["strike"] < etf_price) & (puts["mid"] > 0)].copy()
-    calls = calls[(calls["strike"] > etf_price) & (calls["mid"] > 0)].copy()
+    calls = calls[
+        (calls["strike"] > etf_price)
+        & (calls["bid"] > 0)
+        & (calls["ask"] > 0)
+        & (calls["mid"] > 0)
+    ].copy()
 
     if puts.empty or calls.empty:
         return None
 
-    put = nearest_row(puts, target_put_strike)
-    put_cost = float(put["mid"])
+    target_floor_return = -max_loss_pct
+    notional = etf_price
+    target_put_strike = etf_price * (1 - max_loss_pct)
 
-    calls = calls.copy()
-    calls["call_credit"] = calls["mid"].astype(float)
-    calls["net_cost"] = put_cost - calls["call_credit"]
-    calls["abs_net_cost"] = calls["net_cost"].abs()
-    calls["price_upside_pct"] = (calls["strike"] - etf_price) / etf_price
-    calls["max_upside_pct"] = (
-        calls["strike"] - etf_price - calls["net_cost"]
-    ) / etf_price
+    # Keep puts near the requested protection level.
+    # This prevents the engine from picking extremely low puts just because they are cheap.
+    puts["put_strike_error"] = (puts["strike"] - target_put_strike).abs()
+    puts = puts.sort_values(
+        ["put_strike_error", "open_interest", "volume"],
+        ascending=[True, False, False],
+    ).head(8).copy()
 
-    # Default funded-defense behavior:
-    # choose the call that creates the closest-to-zero debit/credit.
-    # Tie-breaker: prefer more upside, then better liquidity.
-    if target_gain_pct is None:
-        call = calls.sort_values(
-            ["abs_net_cost", "price_upside_pct", "open_interest", "volume"],
-            ascending=[True, False, False, False],
-        ).iloc[0]
+    put_strikes = puts["strike"].to_numpy(dtype=float)
+    put_costs = puts["mid"].to_numpy(dtype=float)
+    put_asks = puts["ask"].to_numpy(dtype=float)
+    put_volumes = puts.get(
+        "volume",
+        pd.Series(0, index=puts.index)
+    ).fillna(0).to_numpy(dtype=float)
+    put_oi = puts.get(
+        "open_interest",
+        pd.Series(0, index=puts.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    call_strikes = calls["strike"].to_numpy(dtype=float)
+    call_credits = calls["mid"].to_numpy(dtype=float)
+    call_bids = calls["bid"].to_numpy(dtype=float)
+    call_volumes = calls.get(
+        "volume",
+        pd.Series(0, index=calls.index)
+    ).fillna(0).to_numpy(dtype=float)
+    call_oi = calls.get(
+        "open_interest",
+        pd.Series(0, index=calls.index)
+    ).fillna(0).to_numpy(dtype=float)
+
+    # Put/call grid.
+    net_cost = put_costs[:, None] - call_credits[None, :]
+    net_cost_bps = net_cost / notional * 10000
+    abs_net_cost_bps = np.abs(net_cost_bps)
+
+    floor_value = put_strikes[:, None] - net_cost
+    cap_value = call_strikes[None, :] - net_cost
+
+    floor_return = floor_value / notional - 1
+    cap_return = cap_value / notional - 1
+
+    requested_floor_met = floor_return >= target_floor_return
+    near_zero = abs_net_cost_bps <= max_near_zero_bps
+
+    # Prefer structures that meet the requested max loss and are near zero cost.
+    preferred_mask = requested_floor_met & near_zero
+
+    if np.any(preferred_mask):
+        selection_mask = preferred_mask
+        outside_tolerance = False
+        exact_floor_match = True
+    elif np.any(requested_floor_met):
+        selection_mask = requested_floor_met
+        outside_tolerance = True
+        exact_floor_match = True
     else:
-        target_call_strike = etf_price * (1 + target_gain_pct)
-        calls["target_gain_error"] = (calls["strike"] - target_call_strike).abs()
+        selection_mask = np.isfinite(floor_return) & np.isfinite(cap_return)
+        outside_tolerance = True
+        exact_floor_match = False
 
-        call = calls.sort_values(
-            ["target_gain_error", "abs_net_cost", "open_interest", "volume"],
-            ascending=[True, True, False, False],
-        ).iloc[0]
+    worst_net_cost = put_asks[:, None] - call_bids[None, :]
+    bid_ask_drag_bps = (worst_net_cost - net_cost) / notional * 10000
 
-    call_credit = float(call["call_credit"])
-    net_cost = float(call["net_cost"])
+    total_volume = put_volumes[:, None] + call_volumes[None, :]
+    total_oi = put_oi[:, None] + call_oi[None, :]
+    liquidity = np.log1p(total_volume) + np.log1p(total_oi)
 
-    protection_pct = (etf_price - float(put["strike"])) / etf_price
-    price_upside_pct = (float(call["strike"]) - etf_price) / etf_price
-    max_upside_pct = (float(call["strike"]) - etf_price - net_cost) / etf_price
-    max_loss_pct_actual = protection_pct + (net_cost / etf_price)
+    if target_gain_pct is not None:
+        target_cap_return = target_gain_pct
+        cap_error = np.abs(cap_return - target_cap_return)
+
+        score = (
+            -cap_error * 1_000_000
+            -abs_net_cost_bps * 100
+            -bid_ask_drag_bps * 10
+            + liquidity
+        )
+    elif exact_floor_match:
+        # Main funded-defense behavior:
+        # meet requested max loss, minimize debit/credit, then maximize upside.
+        score = (
+            -abs_net_cost_bps * 1_000_000
+            + cap_return * 100_000
+            -bid_ask_drag_bps * 10
+            + liquidity
+        )
+    else:
+        # If requested floor cannot be met, return closest available floor.
+        score = (
+            floor_return * 1_000_000
+            -abs_net_cost_bps * 100
+            + cap_return * 10_000
+            -bid_ask_drag_bps * 10
+            + liquidity
+        )
+
+    score = np.where(selection_mask, score, -np.inf)
+
+    best_flat_idx = np.argmax(score)
+    best_put_idx, best_call_idx = np.unravel_index(best_flat_idx, score.shape)
+
+    put = puts.iloc[best_put_idx]
+    call = calls.iloc[best_call_idx]
+
+    best_net_cost = float(net_cost[best_put_idx, best_call_idx])
+    best_net_cost_bps = float(net_cost_bps[best_put_idx, best_call_idx])
+    best_floor_return = float(floor_return[best_put_idx, best_call_idx])
+    best_cap_return = float(cap_return[best_put_idx, best_call_idx])
+    best_bid_ask_drag_bps = float(bid_ask_drag_bps[best_put_idx, best_call_idx])
+    best_near_zero = bool(near_zero[best_put_idx, best_call_idx])
+
+    if abs(best_net_cost_bps) <= max_near_zero_bps:
+        cost_display_label = "approximately $0"
+    elif best_net_cost > 0:
+        cost_display_label = "small debit"
+    else:
+        cost_display_label = "small credit"
 
     return {
         "product_key": "funded_defense",
@@ -348,22 +445,39 @@ def build_funded_defense(
         "strategy": "buy_1_etf_share_buy_1_nanos_put_sell_1_nanos_call",
         "etf_quantity": 1,
         "nanos_contracts": 1,
+
+        "target_max_loss_pct": max_loss_pct,
+        "requested_floor_met": bool(best_floor_return >= target_floor_return),
+        "near_zero_cost_ok": best_near_zero,
+        "outside_tolerance": outside_tolerance,
+        "exact_floor_match": exact_floor_match,
+        "max_near_zero_bps": max_near_zero_bps,
+
         "long_put_symbol": put.get("symbol"),
         "long_put_strike": float(put["strike"]),
         "short_call_symbol": call.get("symbol"),
         "short_call_strike": float(call["strike"]),
-        "put_cost_dollars": put_cost,
-        "call_credit_dollars": call_credit,
-        "net_cost_dollars": net_cost,
-        "net_cost_pct": net_cost / etf_price,
-        "max_loss_pct": max_loss_pct_actual,
-        "price_upside_pct": price_upside_pct,
-        "max_upside_pct": max_upside_pct,
+
+        "put_cost_dollars": float(put["mid"]),
+        "call_credit_dollars": float(call["mid"]),
+        "net_cost_dollars": best_net_cost,
+        "net_cost_pct": best_net_cost / etf_price,
+        "net_cost_bps": best_net_cost_bps,
+
+        "max_loss_pct": abs(best_floor_return),
+        "floor_return": best_floor_return,
+        "price_upside_pct": (float(call["strike"]) - etf_price) / etf_price,
+        "max_upside_pct": best_cap_return,
+        "cap_return": best_cap_return,
+
+        "bid_ask_drag_bps": best_bid_ask_drag_bps,
+
         "display": {
-            "primary_metric": f"{max_loss_pct_actual * 100:.1f}%",
+            "primary_metric": f"{abs(best_floor_return) * 100:.1f}%",
             "primary_label": "Maximum loss",
-            "secondary_metric": f"{max_upside_pct * 100:.1f}%",
+            "secondary_metric": f"{best_cap_return * 100:.1f}%",
             "secondary_label": "Maximum upside",
+            "estimated_option_cost_label": cost_display_label,
             "explanation": "Protection is funded by giving up upside above the selected level.",
         },
     }

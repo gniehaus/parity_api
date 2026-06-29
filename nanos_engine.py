@@ -306,9 +306,23 @@ def build_funded_defense(
         return None
 
     put = nearest_row(puts, target_put_strike)
-    call = nearest_row(calls, target_call_strike)
-
+    
     put_cost = float(put["mid"])
+    
+    # For funded defense, the call should fund the selected put.
+    # Do not choose the call from a fixed target_gain unless explicitly requested.
+    if target_gain_pct is not None:
+        call = nearest_row(calls, target_call_strike)
+    else:
+        calls = calls.copy()
+        calls["credit_error"] = (calls["mid"] - put_cost).abs()
+        calls["price_upside_pct"] = (calls["strike"] - etf_price) / etf_price
+    
+        call = calls.sort_values(
+            ["credit_error", "price_upside_pct", "open_interest", "volume"],
+            ascending=[True, False, False, False],
+        ).iloc[0]
+    
     call_credit = float(call["mid"])
     net_cost = put_cost - call_credit
 

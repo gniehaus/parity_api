@@ -480,7 +480,7 @@ def get_weekly_outcomes():
     try:
         payload = build_weekly_outcomes_payload(
             etf_symbol="SPY",
-            income_targets=[0.005, 0.01, 0.015],
+            income_targets=[0.0025, 0.005, 0.0075],
             max_expirations=6,
         )
         return payload

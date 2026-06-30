@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from itertools import combinations
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -12,7 +12,6 @@ import pandas as pd
 from parity_collar_engine import (
     fetch_orats_chain,
     clean_chain,
-    select_single_expiry,
 )
 
 
@@ -37,6 +36,8 @@ class CollarCandidate:
     contracts: int
     stock_price: float
     stock_value: float
+    expiration: str
+    dte: float
     long_put: OptionLeg
     short_call: OptionLeg
     sleeve_max_loss_pct: float
@@ -46,6 +47,12 @@ class CollarCandidate:
 
 
 LAST_DEBUG = []
+
+
+def annualize_return(total_return: float, dte: float) -> float:
+    if dte <= 0:
+        return total_return
+    return (1 + total_return) ** (365 / dte) - 1
 
 
 def get_account_tier(amount: float) -> str:
@@ -67,6 +74,15 @@ def allowed_etfs(tier: str) -> list[str]:
         "tier_3": ["TQQQ", "UPRO", "EEM", "EFA"],
         "tier_4": ["SPY", "QQQ", "IWM", "EEM", "EFA"],
     }.get(tier, [])
+
+
+def min_collars_for_tier(tier: str) -> int:
+    return {
+        "tier_1": 1,
+        "tier_2": 2,
+        "tier_3": 2,
+        "tier_4": 3,
+    }.get(tier, 1)
 
 
 def max_collars_for_tier(tier: str) -> int:
@@ -111,27 +127,6 @@ def _num(row, names: list[str], default: float = 0.0) -> float:
     return float(default)
 
 
-def _stock_price(df: pd.DataFrame) -> float:
-    c = _col(df, [
-        "stockPrice", "stock_price", "underlyingPrice", "underlying_price",
-        "underlying", "spot", "price", "stkPx", "uPx", "last"
-    ])
-    if c:
-        vals = pd.to_numeric(df[c], errors="coerce").dropna()
-        if not vals.empty:
-            return float(vals.iloc[0])
-
-    # Fallback: infer from strike closest to where call/put mids are similar.
-    strike_col = _strike_col(df)
-    df2 = df.copy()
-    df2[strike_col] = pd.to_numeric(df2[strike_col], errors="coerce")
-    df2 = df2.dropna(subset=[strike_col])
-    if not df2.empty:
-        return float(df2[strike_col].median())
-
-    raise ValueError(f"Could not infer stock price. Columns: {list(df.columns)}")
-
-
 def _strike_col(df: pd.DataFrame) -> str:
     c = _col(df, ["strike", "strikePrice", "strike_price"])
     if not c:
@@ -139,12 +134,37 @@ def _strike_col(df: pd.DataFrame) -> str:
     return c
 
 
-def _expiration(df: pd.DataFrame) -> str:
-    c = _col(df, ["expiration", "expirDate", "expirationDate", "expDate", "expiry", "tradeDate"])
+def _dte_col(df: pd.DataFrame) -> str:
+    c = _col(df, ["dte", "daysToExpiration", "days_to_expiration"])
     if not c:
-        return "unknown"
-    vals = df[c].dropna()
-    return str(vals.iloc[0]) if not vals.empty else "unknown"
+        raise ValueError(f"Could not find dte column. Columns: {list(df.columns)}")
+    return c
+
+
+def _expiry_col(df: pd.DataFrame) -> str:
+    c = _col(df, ["expirDate", "expiration", "expirationDate", "expDate", "expiry"])
+    if not c:
+        raise ValueError(f"Could not find expiration column. Columns: {list(df.columns)}")
+    return c
+
+
+def _stock_price(df: pd.DataFrame) -> float:
+    c = _col(df, [
+        "stockPrice", "stock_price", "underlyingPrice", "underlying_price",
+        "underlying", "spot", "spotPrice", "price", "stkPx", "uPx", "last"
+    ])
+
+    if c:
+        vals = pd.to_numeric(df[c], errors="coerce").dropna()
+        if not vals.empty:
+            return float(vals.iloc[0])
+
+    strike_col = _strike_col(df)
+    vals = pd.to_numeric(df[strike_col], errors="coerce").dropna()
+    if not vals.empty:
+        return float(vals.median())
+
+    raise ValueError(f"Could not infer stock price. Columns: {list(df.columns)}")
 
 
 def _bid_ask_mid(row, option_type: str) -> tuple[float, float, float]:
@@ -165,18 +185,18 @@ def _bid_ask_mid(row, option_type: str) -> tuple[float, float, float]:
 
 def _volume_oi(row, option_type: str) -> tuple[int, int]:
     if option_type == "put":
-        vol = _num(row, ["putVolume", "pVolu", "pVolume", "put_volume", "volume"], 0)
+        volume = _num(row, ["putVolume", "pVolu", "pVolume", "put_volume", "volume"], 0)
         oi = _num(row, ["putOpenInterest", "pOpenInterest", "pOI", "put_open_interest", "open_interest"], 0)
     else:
-        vol = _num(row, ["callVolume", "cVolu", "cVolume", "call_volume", "volume"], 0)
+        volume = _num(row, ["callVolume", "cVolu", "cVolume", "call_volume", "volume"], 0)
         oi = _num(row, ["callOpenInterest", "cOpenInterest", "cOI", "call_open_interest", "open_interest"], 0)
 
-    return int(vol or 0), int(oi or 0)
+    return int(volume or 0), int(oi or 0)
 
 
 def _leg(row, option_type: str, side: str, strike: float, expiration: str) -> OptionLeg:
     bid, ask, mid = _bid_ask_mid(row, option_type)
-    vol, oi = _volume_oi(row, option_type)
+    volume, oi = _volume_oi(row, option_type)
 
     return OptionLeg(
         side=side,
@@ -186,9 +206,40 @@ def _leg(row, option_type: str, side: str, strike: float, expiration: str) -> Op
         bid=round(float(bid), 4),
         ask=round(float(ask), 4),
         mid=round(float(mid), 4),
-        volume=int(vol),
+        volume=int(volume),
         open_interest=int(oi),
     )
+
+
+def get_viable_expiry_groups(
+    chain: pd.DataFrame,
+    target_dte: int,
+    min_dte: int = 120,
+    max_dte: int = 750,
+    max_expiries: int = 4,
+) -> list[tuple[str, float, pd.DataFrame]]:
+    expiry_col = _expiry_col(chain)
+    dte_col = _dte_col(chain)
+
+    df = chain.copy()
+    df[dte_col] = pd.to_numeric(df[dte_col], errors="coerce")
+    df = df.dropna(subset=[dte_col, expiry_col])
+
+    grouped = []
+
+    for expiry, g in df.groupby(expiry_col):
+        dte_values = pd.to_numeric(g[dte_col], errors="coerce").dropna()
+        if dte_values.empty:
+            continue
+
+        dte = float(dte_values.iloc[0])
+
+        if min_dte <= dte <= max_dte:
+            grouped.append((str(expiry), dte, g.copy()))
+
+    grouped.sort(key=lambda x: abs(x[1] - target_dte))
+
+    return grouped[:max_expiries]
 
 
 def _liquidity_score(put: OptionLeg, call: OptionLeg) -> float:
@@ -196,14 +247,9 @@ def _liquidity_score(put: OptionLeg, call: OptionLeg) -> float:
     call_spread_pct = (call.ask - call.bid) / call.mid if call.mid > 0 else 1
 
     avg_spread_pct = max((put_spread_pct + call_spread_pct) / 2, 0)
-    total_oi = put.open_interest + call.open_interest
-    total_volume = put.volume + call.volume
-
     spread_score = max(0, 100 - avg_spread_pct * 400)
-    oi_score = min(100, total_oi / 10)
-    volume_score = min(100, total_volume / 2)
 
-    return round(spread_score * 0.60 + oi_score * 0.25 + volume_score * 0.15, 2)
+    return round(spread_score, 2)
 
 
 def collar_option_cost(c: CollarCandidate) -> float:
@@ -218,20 +264,39 @@ def collar_spread_cost(c: CollarCandidate) -> dict:
     put_spread = max(c.long_put.ask - c.long_put.bid, 0)
     call_spread = max(c.short_call.ask - c.short_call.bid, 0)
 
+    total_spread = (put_spread + call_spread) * 100 * c.contracts
+    net_mid = (c.long_put.mid - c.short_call.mid) * 100 * c.contracts
+    net_conservative = collar_option_cost(c)
+
     return {
         "put_bid_ask_spread": round(put_spread, 4),
         "call_bid_ask_spread": round(call_spread, 4),
-        "total_option_spread_dollars": round((put_spread + call_spread) * 100 * c.contracts, 2),
-        "net_option_mid_dollars": round((c.long_put.mid - c.short_call.mid) * 100 * c.contracts, 2),
-        "net_option_conservative_dollars": round(collar_option_cost(c), 2),
+        "total_option_spread_dollars": round(total_spread, 2),
+        "net_option_mid_dollars": round(net_mid, 2),
+        "net_option_conservative_dollars": round(net_conservative, 2),
+        "estimated_slippage_from_mid_dollars": round(net_conservative - net_mid, 2),
     }
+
+
+def execution_quality_passes(c: CollarCandidate) -> bool:
+    spread = collar_spread_cost(c)
+    capital = max(collar_capital_required(c), 1)
+
+    if spread["total_option_spread_dollars"] > 1000:
+        return False
+
+    if spread["total_option_spread_dollars"] / capital > 0.12:
+        return False
+
+    return True
 
 
 def build_collar_candidates_for_expiry(
     expiry_chain: pd.DataFrame,
     ticker: str,
-    max_candidates: int = 50,
-    min_liquidity_score: float = 0,
+    expiration: str,
+    dte: float,
+    max_candidates: int = 200,
 ) -> list[CollarCandidate]:
 
     if expiry_chain is None or expiry_chain.empty:
@@ -240,15 +305,20 @@ def build_collar_candidates_for_expiry(
     chain = expiry_chain.copy()
     strike_col = _strike_col(chain)
     stock_price = _stock_price(chain)
-    expiration = _expiration(chain)
     timestamp = datetime.now(timezone.utc).isoformat()
 
     chain[strike_col] = pd.to_numeric(chain[strike_col], errors="coerce")
     chain = chain.dropna(subset=[strike_col]).sort_values(strike_col)
 
-    # Wider filters for debugging / MVP.
-    puts = chain[(chain[strike_col] >= stock_price * 0.50) & (chain[strike_col] <= stock_price * 1.00)]
-    calls = chain[(chain[strike_col] >= stock_price * 1.01) & (chain[strike_col] <= stock_price * 2.50)]
+    puts = chain[
+        (chain[strike_col] >= stock_price * 0.30)
+        & (chain[strike_col] <= stock_price * 1.00)
+    ]
+
+    calls = chain[
+        (chain[strike_col] >= stock_price * 1.01)
+        & (chain[strike_col] <= stock_price * 3.00)
+    ]
 
     candidates = []
 
@@ -270,8 +340,8 @@ def build_collar_candidates_for_expiry(
             contracts = 1
             stock_value = stock_price * shares
             net_option_cost = (put.ask - call.bid) * 100
-
             capital = stock_value + net_option_cost
+
             if capital <= 0:
                 continue
 
@@ -284,38 +354,53 @@ def build_collar_candidates_for_expiry(
             if sleeve_max_loss_pct <= 0 or sleeve_max_gain_pct <= 0:
                 continue
 
-            liq = _liquidity_score(put, call)
-
-            if liq < min_liquidity_score:
-                continue
-
-            candidates.append(
-                CollarCandidate(
-                    ticker=ticker.upper(),
-                    exposure=exposure_name(ticker),
-                    shares=shares,
-                    contracts=contracts,
-                    stock_price=round(stock_price, 4),
-                    stock_value=round(stock_value, 2),
-                    long_put=put,
-                    short_call=call,
-                    sleeve_max_loss_pct=round(sleeve_max_loss_pct, 4),
-                    sleeve_max_gain_pct=round(sleeve_max_gain_pct, 4),
-                    liquidity_score=liq,
-                    quote_timestamp=timestamp,
-                )
+            candidate = CollarCandidate(
+                ticker=ticker.upper(),
+                exposure=exposure_name(ticker),
+                shares=shares,
+                contracts=contracts,
+                stock_price=round(stock_price, 4),
+                stock_value=round(stock_value, 2),
+                expiration=str(expiration),
+                dte=float(dte),
+                long_put=put,
+                short_call=call,
+                sleeve_max_loss_pct=round(sleeve_max_loss_pct, 4),
+                sleeve_max_gain_pct=round(sleeve_max_gain_pct, 4),
+                liquidity_score=_liquidity_score(put, call),
+                quote_timestamp=timestamp,
             )
 
-    candidates.sort(
-        key=lambda c: (
-            c.liquidity_score,
-            c.sleeve_max_gain_pct,
-            -c.sleeve_max_loss_pct,
-        ),
-        reverse=True,
-    )
+            if execution_quality_passes(candidate):
+                candidates.append(candidate)
 
-    return candidates[:max_candidates]
+    by_upside = sorted(
+        candidates,
+        key=lambda c: c.sleeve_max_gain_pct * (365 / max(c.dte, 1)),
+        reverse=True,
+    )[:max_candidates]
+
+    by_low_loss = sorted(
+        candidates,
+        key=lambda c: c.sleeve_max_loss_pct,
+    )[:max_candidates]
+
+    by_expiry_fit = sorted(
+        candidates,
+        key=lambda c: abs(c.dte - 365),
+    )[:max_candidates]
+
+    deduped = {}
+    for c in by_upside + by_low_loss + by_expiry_fit:
+        key = (
+            c.ticker,
+            c.expiration,
+            c.long_put.strike,
+            c.short_call.strike,
+        )
+        deduped[key] = c
+
+    return list(deduped.values())
 
 
 def generate_portfolio_collar_candidates(
@@ -329,6 +414,7 @@ def generate_portfolio_collar_candidates(
     LAST_DEBUG = []
 
     tier = get_account_tier(investment_amount)
+
     if tier == "below_minimum":
         return []
 
@@ -340,7 +426,7 @@ def generate_portfolio_collar_candidates(
             "stage": "start",
             "raw_rows": None,
             "clean_rows": None,
-            "expiry_rows": None,
+            "expiry_groups": [],
             "candidate_count": 0,
             "error": None,
         }
@@ -354,28 +440,66 @@ def generate_portfolio_collar_candidates(
             debug["clean_rows"] = len(chain)
             debug["clean_columns"] = list(chain.columns)
 
-            expiry_chain, selected_expiry_summary, _ = select_single_expiry(
-                chain,
+            expiry_groups = get_viable_expiry_groups(
+                chain=chain,
                 target_dte=time_horizon_days,
-                prefer_at_or_after=True,
-                max_dte_overage=250,
+                min_dte=max(120, time_horizon_days - 180),
+                max_dte=time_horizon_days + 390,
+                max_expiries=4,
             )
 
-            debug["selected_expiry"] = selected_expiry_summary
-            debug["expiry_rows"] = len(expiry_chain)
-            debug["expiry_columns"] = list(expiry_chain.columns)
+            ticker_candidates = []
 
-            candidates = build_collar_candidates_for_expiry(
-                expiry_chain=expiry_chain,
-                ticker=ticker,
-                max_candidates=50,
-                min_liquidity_score=0,
-            )
+            for expiry, dte, expiry_chain in expiry_groups:
+                candidates = build_collar_candidates_for_expiry(
+                    expiry_chain=expiry_chain,
+                    ticker=ticker,
+                    expiration=expiry,
+                    dte=dte,
+                    max_candidates=200,
+                )
 
-            debug["candidate_count"] = len(candidates)
+                debug["expiry_groups"].append({
+                    "expiration": expiry,
+                    "dte": dte,
+                    "rows": len(expiry_chain),
+                    "candidates": len(candidates),
+                })
+
+                ticker_candidates.extend(candidates)
+
+            by_upside = sorted(
+                ticker_candidates,
+                key=lambda c: c.sleeve_max_gain_pct * (365 / max(c.dte, 1)),
+                reverse=True,
+            )[:150]
+
+            by_low_loss = sorted(
+                ticker_candidates,
+                key=lambda c: c.sleeve_max_loss_pct,
+            )[:150]
+
+            by_expiry_fit = sorted(
+                ticker_candidates,
+                key=lambda c: abs(c.dte - time_horizon_days),
+            )[:150]
+
+            deduped = {}
+            for c in by_upside + by_low_loss + by_expiry_fit:
+                key = (
+                    c.ticker,
+                    c.expiration,
+                    c.long_put.strike,
+                    c.short_call.strike,
+                )
+                deduped[key] = c
+
+            ticker_candidates = list(deduped.values())
+
+            debug["candidate_count"] = len(ticker_candidates)
             debug["stage"] = "complete"
 
-            all_candidates.extend(candidates)
+            all_candidates.extend(ticker_candidates)
 
         except Exception as e:
             debug["stage"] = "error"
@@ -386,11 +510,32 @@ def generate_portfolio_collar_candidates(
     return all_candidates
 
 
+def build_portfolio_summary(
+    sleeves: list[dict],
+    investment_amount: float,
+    actual_max_loss_pct: float,
+    estimated_max_gain_pct: float,
+    estimated_max_gain_annualized_pct: float,
+) -> dict:
+    collar_amount = sum(s["allocation_dollars"] for s in sleeves if s["type"] == "collar")
+    treasury_amount = sum(s["allocation_dollars"] for s in sleeves if s["type"] == "treasury")
+
+    return {
+        "collar_allocation_dollars": round(collar_amount, 2),
+        "treasury_allocation_dollars": round(treasury_amount, 2),
+        "collar_allocation_pct": round(collar_amount / investment_amount, 4),
+        "treasury_allocation_pct": round(treasury_amount / investment_amount, 4),
+        "expected_floor_pct": round(-actual_max_loss_pct, 4),
+        "expected_cap_pct": round(estimated_max_gain_pct, 4),
+        "expected_cap_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
+    }
+
+
 def optimize_parity_portfolio(
     investment_amount: float,
     max_loss_pct: float,
     time_horizon_days: int,
-    collar_candidates: List[CollarCandidate],
+    collar_candidates: list[CollarCandidate],
     treasury_ticker: str = "SGOV",
     assumed_treasury_yield: float = 0.045,
 ) -> dict:
@@ -411,26 +556,44 @@ def optimize_parity_portfolio(
         and collar_capital_required(c) <= investment_amount
         and c.sleeve_max_loss_pct > 0
         and c.sleeve_max_gain_pct > 0
+        and execution_quality_passes(c)
     ]
 
+    min_n = min(min_collars_for_tier(tier), len(eligible))
     max_n = min(max_collars_for_tier(tier), len(eligible))
+
     possible = []
 
-    for n in range(1, max_n + 1):
+    for n in range(min_n, max_n + 1):
         for combo in combinations(eligible, n):
             tickers = [c.ticker for c in combo]
+
             if len(tickers) != len(set(tickers)):
                 continue
 
+            if tier == "tier_2":
+                required = set(allowed_etfs(tier))
+                if not required.issubset(set(tickers)):
+                    continue
+
             collar_capital = sum(collar_capital_required(c) for c in combo)
+
             if collar_capital > investment_amount:
                 continue
 
             treasury_amount = investment_amount - collar_capital
             treasury_pct = treasury_amount / investment_amount
 
-            loss_dollars = sum(collar_capital_required(c) * c.sleeve_max_loss_pct for c in combo)
-            gain_dollars = sum(collar_capital_required(c) * c.sleeve_max_gain_pct for c in combo)
+            loss_dollars = sum(
+                collar_capital_required(c) * c.sleeve_max_loss_pct
+                for c in combo
+            )
+
+            gain_dollars = sum(
+                collar_capital_required(c) * c.sleeve_max_gain_pct
+                for c in combo
+            )
+
             gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
 
             actual_loss_pct = loss_dollars / investment_amount
@@ -439,15 +602,22 @@ def optimize_parity_portfolio(
             if actual_loss_pct > max_loss_pct:
                 continue
 
-            avg_liq = sum(c.liquidity_score for c in combo) / len(combo)
+            avg_expiry_fit = sum(abs(c.dte - time_horizon_days) for c in combo) / len(combo)
 
-            # Single objective: maximize upside, with minor liquidity penalty/benefit.
-            score = actual_gain_pct * 100 * 0.75 + avg_liq * 0.25
+            weighted_dte = sum(
+                collar_capital_required(c) * c.dte for c in combo
+            ) / max(collar_capital, 1)
+
+            estimated_max_gain_annualized_pct = annualize_return(
+                actual_gain_pct,
+                weighted_dte,
+            )
 
             sleeves = []
 
             for c in combo:
                 capital = collar_capital_required(c)
+                spread = collar_spread_cost(c)
 
                 sleeves.append({
                     "type": "collar",
@@ -462,8 +632,15 @@ def optimize_parity_portfolio(
                     "contracts": c.contracts,
                     "stock_value": round(c.stock_value, 2),
 
+                    "expiration": c.expiration,
+                    "dte": c.dte,
+
                     "sleeve_max_loss_pct": round(c.sleeve_max_loss_pct, 4),
                     "sleeve_max_gain_pct": round(c.sleeve_max_gain_pct, 4),
+                    "sleeve_max_gain_annualized_pct": round(
+                        annualize_return(c.sleeve_max_gain_pct, c.dte),
+                        4,
+                    ),
 
                     "portfolio_max_loss_contribution_dollars": round(capital * c.sleeve_max_loss_pct, 2),
                     "portfolio_max_loss_contribution_pct": round((capital * c.sleeve_max_loss_pct) / investment_amount, 4),
@@ -474,7 +651,9 @@ def optimize_parity_portfolio(
                         "long_put": asdict(c.long_put),
                         "short_call": asdict(c.short_call),
                     },
-                    "option_execution": collar_spread_cost(c),
+
+                    "option_execution": spread,
+                    "execution_quality_passed": execution_quality_passes(c),
                     "liquidity_score": c.liquidity_score,
                     "quote_timestamp": c.quote_timestamp,
                 })
@@ -492,6 +671,7 @@ def optimize_parity_portfolio(
                 ),
                 "sleeve_max_loss_pct": 0,
                 "sleeve_max_gain_pct": round(assumed_treasury_yield * (time_horizon_days / 365), 4),
+                "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
             })
 
             warnings = []
@@ -501,8 +681,18 @@ def optimize_parity_portfolio(
                     "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
                 )
 
-            possible.append({
-                "score": round(score, 4),
+            for c in combo:
+                spread = collar_spread_cost(c)
+
+                if spread["total_option_spread_dollars"] > 400:
+                    warnings.append(f"{c.ticker} collar has a wide combined option spread.")
+
+                if abs(c.dte - time_horizon_days) > 120:
+                    warnings.append(
+                        f"{c.ticker} uses an expiration {int(c.dte)} days out, which differs from the requested {time_horizon_days}-day horizon."
+                    )
+
+            portfolio = {
                 "account_tier": tier,
                 "investment_amount": investment_amount,
                 "input_max_loss_pct": max_loss_pct,
@@ -510,17 +700,30 @@ def optimize_parity_portfolio(
                 "actual_max_loss_pct": round(actual_loss_pct, 4),
                 "estimated_max_gain_dollars": round(gain_dollars, 2),
                 "estimated_max_gain_pct": round(actual_gain_pct, 4),
+                "estimated_max_gain_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
+                "weighted_option_dte": round(weighted_dte, 1),
+                "avg_expiry_fit": round(avg_expiry_fit, 2),
                 "time_horizon_days": time_horizon_days,
                 "treasury_ticker": treasury_ticker,
                 "assumed_treasury_yield": assumed_treasury_yield,
                 "sleeves": sleeves,
                 "warnings": warnings,
-            })
+            }
+
+            portfolio["portfolio_summary"] = build_portfolio_summary(
+                sleeves=sleeves,
+                investment_amount=investment_amount,
+                actual_max_loss_pct=actual_loss_pct,
+                estimated_max_gain_pct=actual_gain_pct,
+                estimated_max_gain_annualized_pct=estimated_max_gain_annualized_pct,
+            )
+
+            possible.append(portfolio)
 
     if not possible:
         return {
             "status": "no_portfolio_found",
-            "message": "No executable portfolio met the user's account size and risk tolerance.",
+            "message": "No executable diversified portfolio met the user's account size and risk tolerance.",
             "investment_amount": investment_amount,
             "max_loss_pct": max_loss_pct,
             "account_tier": tier,
@@ -529,11 +732,18 @@ def optimize_parity_portfolio(
             "debug": LAST_DEBUG,
         }
 
-    possible.sort(key=lambda x: x["score"], reverse=True)
+    possible.sort(
+        key=lambda x: (
+            x["estimated_max_gain_annualized_pct"],
+            x["estimated_max_gain_pct"],
+            x["actual_max_loss_pct"],
+            -x["avg_expiry_fit"],
+        ),
+        reverse=True,
+    )
 
     return {
         "status": "success",
-        "recommended_portfolio": possible[0],
-        "alternatives": possible[1:4],
+        "portfolio": possible[0],
         "debug": LAST_DEBUG,
     }

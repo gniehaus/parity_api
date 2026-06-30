@@ -17,11 +17,10 @@ from parity_collar_engine import (
     make_json_safe,
 )
 
-from parity_portfolio_engine import (
+from parity_engine import (
     generate_portfolio_collar_candidates,
     optimize_parity_portfolio,
 )
-
 
 app = FastAPI(
     title="Parity Outcome API",

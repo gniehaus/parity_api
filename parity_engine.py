@@ -149,13 +149,13 @@ def _expiration(df: pd.DataFrame) -> str:
 
 def _bid_ask_mid(row, option_type: str) -> tuple[float, float, float]:
     if option_type == "put":
-        bid = _num(row, ["putBid", "pBid", "put_bid", "bid"])
-        ask = _num(row, ["putAsk", "pAsk", "put_ask", "ask"])
-        mid = _num(row, ["putMid", "pMid", "put_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
+        bid = _num(row, ["putBidPrice", "putBid", "pBid", "put_bid", "bid"])
+        ask = _num(row, ["putAskPrice", "putAsk", "pAsk", "put_ask", "ask"])
+        mid = _num(row, ["putValue", "putMid", "pMid", "put_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
     else:
-        bid = _num(row, ["callBid", "cBid", "call_bid", "bid"])
-        ask = _num(row, ["callAsk", "cAsk", "call_ask", "ask"])
-        mid = _num(row, ["callMid", "cMid", "call_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
+        bid = _num(row, ["callBidPrice", "callBid", "cBid", "call_bid", "bid"])
+        ask = _num(row, ["callAskPrice", "callAsk", "cAsk", "call_ask", "ask"])
+        mid = _num(row, ["callValue", "callMid", "cMid", "call_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
 
     if mid <= 0 and bid > 0 and ask > 0:
         mid = (bid + ask) / 2

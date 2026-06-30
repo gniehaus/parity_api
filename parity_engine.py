@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from itertools import combinations
-from typing import Any, List, Optional
+from typing import List, Optional
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -16,14 +16,10 @@ from parity_collar_engine import (
 )
 
 
-# ----------------------------
-# Data models
-# ----------------------------
-
 @dataclass
 class OptionLeg:
-    side: str              # "buy" or "sell"
-    option_type: str       # "put" or "call"
+    side: str
+    option_type: str
     strike: float
     expiration: str
     bid: float
@@ -49,9 +45,8 @@ class CollarCandidate:
     quote_timestamp: str
 
 
-# ----------------------------
-# Account tier / universe
-# ----------------------------
+LAST_DEBUG = []
+
 
 def get_account_tier(amount: float) -> str:
     if amount < 10_000:
@@ -95,117 +90,123 @@ def exposure_name(ticker: str) -> str:
     }.get(ticker.upper(), ticker.upper())
 
 
-# ----------------------------
-# Column helpers
-# ----------------------------
-
-def _first_existing_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
-    lower_map = {c.lower(): c for c in df.columns}
-    for name in candidates:
-        if name in df.columns:
-            return name
-        if name.lower() in lower_map:
-            return lower_map[name.lower()]
+def _col(df: pd.DataFrame, names: list[str]) -> Optional[str]:
+    lower = {c.lower(): c for c in df.columns}
+    for n in names:
+        if n in df.columns:
+            return n
+        if n.lower() in lower:
+            return lower[n.lower()]
     return None
 
 
-def _get_stock_price(df: pd.DataFrame) -> float:
-    col = _first_existing_col(
-        df,
-        [
-            "stockPrice",
-            "stock_price",
-            "underlyingPrice",
-            "underlying_price",
-            "spot",
-            "underlying",
-            "price",
-            "stkPx",
-            "uPx",
-        ],
-    )
-    if col is None:
-        raise ValueError(f"Could not find stock price column. Columns: {list(df.columns)}")
-
-    value = pd.to_numeric(df[col], errors="coerce").dropna()
-    if value.empty:
-        raise ValueError("Stock price column exists but has no numeric values.")
-
-    return float(value.iloc[0])
-
-
-def _get_strike_col(df: pd.DataFrame) -> str:
-    col = _first_existing_col(df, ["strike", "strikePrice", "strike_price"])
-    if col is None:
-        raise ValueError(f"Could not find strike column. Columns: {list(df.columns)}")
-    return col
-
-
-def _get_expiration_value(df: pd.DataFrame) -> str:
-    col = _first_existing_col(df, ["expiration", "expirDate", "expirationDate", "expDate", "expiry"])
-    if col is None:
-        return "unknown"
-    value = df[col].dropna()
-    return str(value.iloc[0]) if not value.empty else "unknown"
-
-
-def _get_numeric(row: pd.Series, names: list[str], default: float = 0.0) -> float:
-    for name in names:
-        if name in row.index:
-            val = pd.to_numeric(row[name], errors="coerce")
-            if pd.notna(val):
-                return float(val)
-
-        lower_map = {str(c).lower(): c for c in row.index}
-        if name.lower() in lower_map:
-            real_name = lower_map[name.lower()]
-            val = pd.to_numeric(row[real_name], errors="coerce")
-            if pd.notna(val):
-                return float(val)
-
+def _num(row, names: list[str], default: float = 0.0) -> float:
+    lower = {str(c).lower(): c for c in row.index}
+    for n in names:
+        c = n if n in row.index else lower.get(n.lower())
+        if c is not None:
+            v = pd.to_numeric(row[c], errors="coerce")
+            if pd.notna(v):
+                return float(v)
     return float(default)
 
 
-def _get_bid_ask_mid(row: pd.Series, option_type: str) -> tuple[float, float, float]:
-    """
-    Supports both normalized rows and ORATS-style call/put columns.
-    """
+def _stock_price(df: pd.DataFrame) -> float:
+    c = _col(df, [
+        "stockPrice", "stock_price", "underlyingPrice", "underlying_price",
+        "underlying", "spot", "price", "stkPx", "uPx", "last"
+    ])
+    if c:
+        vals = pd.to_numeric(df[c], errors="coerce").dropna()
+        if not vals.empty:
+            return float(vals.iloc[0])
 
+    # Fallback: infer from strike closest to where call/put mids are similar.
+    strike_col = _strike_col(df)
+    df2 = df.copy()
+    df2[strike_col] = pd.to_numeric(df2[strike_col], errors="coerce")
+    df2 = df2.dropna(subset=[strike_col])
+    if not df2.empty:
+        return float(df2[strike_col].median())
+
+    raise ValueError(f"Could not infer stock price. Columns: {list(df.columns)}")
+
+
+def _strike_col(df: pd.DataFrame) -> str:
+    c = _col(df, ["strike", "strikePrice", "strike_price"])
+    if not c:
+        raise ValueError(f"Could not find strike column. Columns: {list(df.columns)}")
+    return c
+
+
+def _expiration(df: pd.DataFrame) -> str:
+    c = _col(df, ["expiration", "expirDate", "expirationDate", "expDate", "expiry", "tradeDate"])
+    if not c:
+        return "unknown"
+    vals = df[c].dropna()
+    return str(vals.iloc[0]) if not vals.empty else "unknown"
+
+
+def _bid_ask_mid(row, option_type: str) -> tuple[float, float, float]:
     if option_type == "put":
-        bid = _get_numeric(row, ["putBid", "pBid", "bid", "put_bid"])
-        ask = _get_numeric(row, ["putAsk", "pAsk", "ask", "put_ask"])
-        mid = _get_numeric(row, ["putMid", "pMid", "mid", "put_mid"], default=(bid + ask) / 2 if ask > 0 else bid)
+        bid = _num(row, ["putBid", "pBid", "put_bid", "bid"])
+        ask = _num(row, ["putAsk", "pAsk", "put_ask", "ask"])
+        mid = _num(row, ["putMid", "pMid", "put_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
     else:
-        bid = _get_numeric(row, ["callBid", "cBid", "bid", "call_bid"])
-        ask = _get_numeric(row, ["callAsk", "cAsk", "ask", "call_ask"])
-        mid = _get_numeric(row, ["callMid", "cMid", "mid", "call_mid"], default=(bid + ask) / 2 if ask > 0 else bid)
+        bid = _num(row, ["callBid", "cBid", "call_bid", "bid"])
+        ask = _num(row, ["callAsk", "cAsk", "call_ask", "ask"])
+        mid = _num(row, ["callMid", "cMid", "call_mid", "mid"], (bid + ask) / 2 if ask > 0 else bid)
 
-    if mid == 0 and bid > 0 and ask > 0:
+    if mid <= 0 and bid > 0 and ask > 0:
         mid = (bid + ask) / 2
 
-    return float(bid), float(ask), float(mid)
+    return bid, ask, mid
 
 
-def _get_volume_oi(row: pd.Series, option_type: str) -> tuple[int, int]:
+def _volume_oi(row, option_type: str) -> tuple[int, int]:
     if option_type == "put":
-        volume = _get_numeric(row, ["putVolume", "pVolu", "pVolume", "volume", "put_volume"], 0)
-        oi = _get_numeric(row, ["putOpenInterest", "pOpenInterest", "pOI", "open_interest", "put_open_interest"], 0)
+        vol = _num(row, ["putVolume", "pVolu", "pVolume", "put_volume", "volume"], 0)
+        oi = _num(row, ["putOpenInterest", "pOpenInterest", "pOI", "put_open_interest", "open_interest"], 0)
     else:
-        volume = _get_numeric(row, ["callVolume", "cVolu", "cVolume", "volume", "call_volume"], 0)
-        oi = _get_numeric(row, ["callOpenInterest", "cOpenInterest", "cOI", "open_interest", "call_open_interest"], 0)
+        vol = _num(row, ["callVolume", "cVolu", "cVolume", "call_volume", "volume"], 0)
+        oi = _num(row, ["callOpenInterest", "cOpenInterest", "cOI", "call_open_interest", "open_interest"], 0)
 
-    return int(volume or 0), int(oi or 0)
+    return int(vol or 0), int(oi or 0)
 
 
-# ----------------------------
-# Collar math
-# ----------------------------
+def _leg(row, option_type: str, side: str, strike: float, expiration: str) -> OptionLeg:
+    bid, ask, mid = _bid_ask_mid(row, option_type)
+    vol, oi = _volume_oi(row, option_type)
+
+    return OptionLeg(
+        side=side,
+        option_type=option_type,
+        strike=float(strike),
+        expiration=str(expiration),
+        bid=round(float(bid), 4),
+        ask=round(float(ask), 4),
+        mid=round(float(mid), 4),
+        volume=int(vol),
+        open_interest=int(oi),
+    )
+
+
+def _liquidity_score(put: OptionLeg, call: OptionLeg) -> float:
+    put_spread_pct = (put.ask - put.bid) / put.mid if put.mid > 0 else 1
+    call_spread_pct = (call.ask - call.bid) / call.mid if call.mid > 0 else 1
+
+    avg_spread_pct = max((put_spread_pct + call_spread_pct) / 2, 0)
+    total_oi = put.open_interest + call.open_interest
+    total_volume = put.volume + call.volume
+
+    spread_score = max(0, 100 - avg_spread_pct * 400)
+    oi_score = min(100, total_oi / 10)
+    volume_score = min(100, total_volume / 2)
+
+    return round(spread_score * 0.60 + oi_score * 0.25 + volume_score * 0.15, 2)
+
 
 def collar_option_cost(c: CollarCandidate) -> float:
-    """
-    Conservative executable estimate:
-    buy put at ask, sell call at bid.
-    """
     return (c.long_put.ask - c.short_call.bid) * 100 * c.contracts
 
 
@@ -217,152 +218,73 @@ def collar_spread_cost(c: CollarCandidate) -> dict:
     put_spread = max(c.long_put.ask - c.long_put.bid, 0)
     call_spread = max(c.short_call.ask - c.short_call.bid, 0)
 
-    gross_spread = (put_spread + call_spread) * 100 * c.contracts
-    net_option_mid = (c.long_put.mid - c.short_call.mid) * 100 * c.contracts
-    net_option_worst = collar_option_cost(c)
-
     return {
         "put_bid_ask_spread": round(put_spread, 4),
         "call_bid_ask_spread": round(call_spread, 4),
-        "total_option_spread_dollars": round(gross_spread, 2),
-        "net_option_mid_dollars": round(net_option_mid, 2),
-        "net_option_conservative_dollars": round(net_option_worst, 2),
+        "total_option_spread_dollars": round((put_spread + call_spread) * 100 * c.contracts, 2),
+        "net_option_mid_dollars": round((c.long_put.mid - c.short_call.mid) * 100 * c.contracts, 2),
+        "net_option_conservative_dollars": round(collar_option_cost(c), 2),
     }
-
-
-def _liquidity_score(long_put: OptionLeg, short_call: OptionLeg) -> float:
-    """
-    Simple 0-100 score. Tune later with real fills.
-    """
-    put_spread_pct = (long_put.ask - long_put.bid) / long_put.mid if long_put.mid > 0 else 1
-    call_spread_pct = (short_call.ask - short_call.bid) / short_call.mid if short_call.mid > 0 else 1
-
-    avg_spread_pct = max((put_spread_pct + call_spread_pct) / 2, 0)
-    total_oi = long_put.open_interest + short_call.open_interest
-    total_volume = long_put.volume + short_call.volume
-
-    spread_score = max(0, 100 - avg_spread_pct * 500)
-    oi_score = min(100, total_oi / 20)
-    volume_score = min(100, total_volume / 5)
-
-    return round(spread_score * 0.55 + oi_score * 0.30 + volume_score * 0.15, 2)
-
-
-def _build_leg(row: pd.Series, option_type: str, side: str, strike: float, expiration: str) -> OptionLeg:
-    bid, ask, mid = _get_bid_ask_mid(row, option_type)
-    volume, oi = _get_volume_oi(row, option_type)
-
-    return OptionLeg(
-        side=side,
-        option_type=option_type,
-        strike=float(strike),
-        expiration=str(expiration),
-        bid=round(float(bid), 4),
-        ask=round(float(ask), 4),
-        mid=round(float(mid), 4),
-        volume=int(volume),
-        open_interest=int(oi),
-    )
 
 
 def build_collar_candidates_for_expiry(
     expiry_chain: pd.DataFrame,
     ticker: str,
-    max_candidates: int = 40,
-    min_liquidity_score: float = 50,
+    max_candidates: int = 50,
+    min_liquidity_score: float = 0,
 ) -> list[CollarCandidate]:
-    """
-    Generates classic collars:
-    - Long 100 shares
-    - Buy put below/near spot
-    - Sell call above spot
-
-    It searches many put/call combinations and returns candidates ranked by
-    liquidity and max gain.
-    """
 
     if expiry_chain is None or expiry_chain.empty:
         return []
 
     chain = expiry_chain.copy()
-    strike_col = _get_strike_col(chain)
-    stock_price = _get_stock_price(chain)
-    expiration = _get_expiration_value(chain)
-    quote_timestamp = datetime.now(timezone.utc).isoformat()
+    strike_col = _strike_col(chain)
+    stock_price = _stock_price(chain)
+    expiration = _expiration(chain)
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     chain[strike_col] = pd.to_numeric(chain[strike_col], errors="coerce")
     chain = chain.dropna(subset=[strike_col]).sort_values(strike_col)
 
-    puts = chain[chain[strike_col] <= stock_price].copy()
-    calls = chain[chain[strike_col] >= stock_price].copy()
+    # Wider filters for debugging / MVP.
+    puts = chain[(chain[strike_col] >= stock_price * 0.50) & (chain[strike_col] <= stock_price * 1.00)]
+    calls = chain[(chain[strike_col] >= stock_price * 1.01) & (chain[strike_col] <= stock_price * 2.50)]
 
-    if puts.empty or calls.empty:
-        return []
-
-    candidates: list[CollarCandidate] = []
-
-    # Limit search to realistic collar strikes.
-    # Puts: 5% to 40% below spot.
-    # Calls: 5% to 100% above spot.
-    puts = puts[
-        (puts[strike_col] >= stock_price * 0.60)
-        & (puts[strike_col] <= stock_price * 0.98)
-    ]
-
-    calls = calls[
-        (calls[strike_col] >= stock_price * 1.03)
-        & (calls[strike_col] <= stock_price * 2.00)
-    ]
+    candidates = []
 
     for _, put_row in puts.iterrows():
         put_strike = float(put_row[strike_col])
-        long_put = _build_leg(
-            row=put_row,
-            option_type="put",
-            side="buy",
-            strike=put_strike,
-            expiration=expiration,
-        )
+        put = _leg(put_row, "put", "buy", put_strike, expiration)
 
-        if long_put.ask <= 0:
+        if put.ask <= 0:
             continue
 
         for _, call_row in calls.iterrows():
             call_strike = float(call_row[strike_col])
-            short_call = _build_leg(
-                row=call_row,
-                option_type="call",
-                side="sell",
-                strike=call_strike,
-                expiration=expiration,
-            )
+            call = _leg(call_row, "call", "sell", call_strike, expiration)
 
-            if short_call.bid <= 0:
+            if call.bid <= 0:
                 continue
 
-            contracts = 1
             shares = 100
+            contracts = 1
             stock_value = stock_price * shares
-            net_option_cost = (long_put.ask - short_call.bid) * 100
+            net_option_cost = (put.ask - call.bid) * 100
 
-            # Conservative downside:
-            # if ETF expires below put, value = put strike * 100
-            # plus/minus conservative option cost.
-            sleeve_max_loss_dollars = max(
-                0,
-                stock_value + net_option_cost - (put_strike * 100),
-            )
-            sleeve_max_loss_pct = sleeve_max_loss_dollars / max(stock_value + net_option_cost, 1)
+            capital = stock_value + net_option_cost
+            if capital <= 0:
+                continue
 
-            # Conservative upside:
-            # if ETF expires above call, value = call strike * 100
-            sleeve_max_gain_dollars = max(
-                0,
-                (call_strike * 100) - stock_value - net_option_cost,
-            )
-            sleeve_max_gain_pct = sleeve_max_gain_dollars / max(stock_value + net_option_cost, 1)
+            max_loss_dollars = max(0, capital - put_strike * 100)
+            max_gain_dollars = max(0, call_strike * 100 - capital)
 
-            liq = _liquidity_score(long_put, short_call)
+            sleeve_max_loss_pct = max_loss_dollars / capital
+            sleeve_max_gain_pct = max_gain_dollars / capital
+
+            if sleeve_max_loss_pct <= 0 or sleeve_max_gain_pct <= 0:
+                continue
+
+            liq = _liquidity_score(put, call)
 
             if liq < min_liquidity_score:
                 continue
@@ -375,12 +297,12 @@ def build_collar_candidates_for_expiry(
                     contracts=contracts,
                     stock_price=round(stock_price, 4),
                     stock_value=round(stock_value, 2),
-                    long_put=long_put,
-                    short_call=short_call,
+                    long_put=put,
+                    short_call=call,
                     sleeve_max_loss_pct=round(sleeve_max_loss_pct, 4),
                     sleeve_max_gain_pct=round(sleeve_max_gain_pct, 4),
                     liquidity_score=liq,
-                    quote_timestamp=quote_timestamp,
+                    quote_timestamp=timestamp,
                 )
             )
 
@@ -401,27 +323,36 @@ def generate_portfolio_collar_candidates(
     investment_amount: float,
     max_loss_pct: float,
     time_horizon_days: int,
-    objective: str = "growth",
 ) -> list[CollarCandidate]:
-    """
-    Called by api.py /portfolio.
 
-    Fetches ORATS chains for the eligible ETF universe,
-    chooses the closest usable expiration, and generates executable collar candidates.
-    """
+    global LAST_DEBUG
+    LAST_DEBUG = []
 
     tier = get_account_tier(investment_amount)
-
     if tier == "below_minimum":
         return []
 
-    tickers = allowed_etfs(tier)
-    all_candidates: list[CollarCandidate] = []
+    all_candidates = []
 
-    for ticker in tickers:
+    for ticker in allowed_etfs(tier):
+        debug = {
+            "ticker": ticker,
+            "stage": "start",
+            "raw_rows": None,
+            "clean_rows": None,
+            "expiry_rows": None,
+            "candidate_count": 0,
+            "error": None,
+        }
+
         try:
             raw_df = fetch_orats_chain(ticker=ticker, token=token)
+            debug["raw_rows"] = len(raw_df)
+            debug["raw_columns"] = list(raw_df.columns)
+
             chain = clean_chain(raw_df, ticker=ticker)
+            debug["clean_rows"] = len(chain)
+            debug["clean_columns"] = list(chain.columns)
 
             expiry_chain, selected_expiry_summary, _ = select_single_expiry(
                 chain,
@@ -430,31 +361,35 @@ def generate_portfolio_collar_candidates(
                 max_dte_overage=250,
             )
 
+            debug["selected_expiry"] = selected_expiry_summary
+            debug["expiry_rows"] = len(expiry_chain)
+            debug["expiry_columns"] = list(expiry_chain.columns)
+
             candidates = build_collar_candidates_for_expiry(
                 expiry_chain=expiry_chain,
                 ticker=ticker,
-                max_candidates=30,
-                min_liquidity_score=50,
+                max_candidates=50,
+                min_liquidity_score=0,
             )
+
+            debug["candidate_count"] = len(candidates)
+            debug["stage"] = "complete"
 
             all_candidates.extend(candidates)
 
         except Exception as e:
-            print(f"[portfolio_engine] Skipping {ticker}: {e}")
-            continue
+            debug["stage"] = "error"
+            debug["error"] = repr(e)
+
+        LAST_DEBUG.append(debug)
 
     return all_candidates
 
-
-# ----------------------------
-# Portfolio optimizer
-# ----------------------------
 
 def optimize_parity_portfolio(
     investment_amount: float,
     max_loss_pct: float,
     time_horizon_days: int,
-    objective: str,
     collar_candidates: List[CollarCandidate],
     treasury_ticker: str = "SGOV",
     assumed_treasury_yield: float = 0.045,
@@ -467,65 +402,52 @@ def optimize_parity_portfolio(
             "status": "below_minimum",
             "minimum_account_size": 10000,
             "message": "Minimum account size is $10,000.",
+            "debug": LAST_DEBUG,
         }
 
     eligible = [
         c for c in collar_candidates
         if c.ticker in allowed_etfs(tier)
-        and c.liquidity_score >= 50
         and collar_capital_required(c) <= investment_amount
         and c.sleeve_max_loss_pct > 0
         and c.sleeve_max_gain_pct > 0
     ]
 
     max_n = min(max_collars_for_tier(tier), len(eligible))
-    possible_portfolios = []
+    possible = []
 
     for n in range(1, max_n + 1):
         for combo in combinations(eligible, n):
-            # Prevent duplicate tickers in same portfolio.
             tickers = [c.ticker for c in combo]
             if len(tickers) != len(set(tickers)):
                 continue
 
             collar_capital = sum(collar_capital_required(c) for c in combo)
-
             if collar_capital > investment_amount:
                 continue
 
             treasury_amount = investment_amount - collar_capital
-
-            portfolio_max_loss_dollars = sum(
-                collar_capital_required(c) * c.sleeve_max_loss_pct
-                for c in combo
-            )
-
-            portfolio_max_gain_dollars = sum(
-                collar_capital_required(c) * c.sleeve_max_gain_pct
-                for c in combo
-            ) + treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
-
-            actual_max_loss_pct = portfolio_max_loss_dollars / investment_amount
-            actual_max_gain_pct = portfolio_max_gain_dollars / investment_amount
-
-            if actual_max_loss_pct > max_loss_pct:
-                continue
-
-            avg_liquidity = sum(c.liquidity_score for c in combo) / len(combo)
             treasury_pct = treasury_amount / investment_amount
 
-            if objective == "growth":
-                score = actual_max_gain_pct * 100 * 0.60 + avg_liquidity * 0.30 - n * 0.50
-            elif objective == "balanced":
-                score = actual_max_gain_pct * 100 * 0.45 + avg_liquidity * 0.35 + treasury_pct * 10
-            else:
-                score = actual_max_gain_pct * 100 * 0.30 + avg_liquidity * 0.30 + treasury_pct * 25
+            loss_dollars = sum(collar_capital_required(c) * c.sleeve_max_loss_pct for c in combo)
+            gain_dollars = sum(collar_capital_required(c) * c.sleeve_max_gain_pct for c in combo)
+            gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
+
+            actual_loss_pct = loss_dollars / investment_amount
+            actual_gain_pct = gain_dollars / investment_amount
+
+            if actual_loss_pct > max_loss_pct:
+                continue
+
+            avg_liq = sum(c.liquidity_score for c in combo) / len(combo)
+
+            # Single objective: maximize upside, with minor liquidity penalty/benefit.
+            score = actual_gain_pct * 100 * 0.75 + avg_liq * 0.25
 
             sleeves = []
 
             for c in combo:
                 capital = collar_capital_required(c)
-                spread = collar_spread_cost(c)
 
                 sleeves.append({
                     "type": "collar",
@@ -533,6 +455,7 @@ def optimize_parity_portfolio(
                     "exposure": c.exposure,
                     "allocation_dollars": round(capital, 2),
                     "allocation_pct": round(capital / investment_amount, 4),
+                    "minimum_executable_collar_cost": round(capital, 2),
 
                     "stock_price": c.stock_price,
                     "shares": c.shares,
@@ -551,8 +474,7 @@ def optimize_parity_portfolio(
                         "long_put": asdict(c.long_put),
                         "short_call": asdict(c.short_call),
                     },
-
-                    "option_execution": spread,
+                    "option_execution": collar_spread_cost(c),
                     "liquidity_score": c.liquidity_score,
                     "quote_timestamp": c.quote_timestamp,
                 })
@@ -569,34 +491,25 @@ def optimize_parity_portfolio(
                     2,
                 ),
                 "sleeve_max_loss_pct": 0,
-                "sleeve_max_gain_pct": round(
-                    assumed_treasury_yield * (time_horizon_days / 365),
-                    4,
-                ),
+                "sleeve_max_gain_pct": round(assumed_treasury_yield * (time_horizon_days / 365), 4),
             })
 
             warnings = []
-
-            for c in combo:
-                spread = collar_spread_cost(c)
-                if spread["total_option_spread_dollars"] > 100:
-                    warnings.append(f"{c.ticker} collar has a wide combined option spread.")
 
             if any(c.ticker in ["TQQQ", "UPRO"] for c in combo):
                 warnings.append(
                     "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
                 )
 
-            possible_portfolios.append({
+            possible.append({
                 "score": round(score, 4),
                 "account_tier": tier,
                 "investment_amount": investment_amount,
                 "input_max_loss_pct": max_loss_pct,
-                "actual_max_loss_dollars": round(portfolio_max_loss_dollars, 2),
-                "actual_max_loss_pct": round(actual_max_loss_pct, 4),
-                "estimated_max_gain_dollars": round(portfolio_max_gain_dollars, 2),
-                "estimated_max_gain_pct": round(actual_max_gain_pct, 4),
-                "objective": objective,
+                "actual_max_loss_dollars": round(loss_dollars, 2),
+                "actual_max_loss_pct": round(actual_loss_pct, 4),
+                "estimated_max_gain_dollars": round(gain_dollars, 2),
+                "estimated_max_gain_pct": round(actual_gain_pct, 4),
                 "time_horizon_days": time_horizon_days,
                 "treasury_ticker": treasury_ticker,
                 "assumed_treasury_yield": assumed_treasury_yield,
@@ -604,7 +517,7 @@ def optimize_parity_portfolio(
                 "warnings": warnings,
             })
 
-    if not possible_portfolios:
+    if not possible:
         return {
             "status": "no_portfolio_found",
             "message": "No executable portfolio met the user's account size and risk tolerance.",
@@ -613,12 +526,14 @@ def optimize_parity_portfolio(
             "account_tier": tier,
             "eligible_candidate_count": len(eligible),
             "raw_candidate_count": len(collar_candidates),
+            "debug": LAST_DEBUG,
         }
 
-    possible_portfolios.sort(key=lambda x: x["score"], reverse=True)
+    possible.sort(key=lambda x: x["score"], reverse=True)
 
     return {
         "status": "success",
-        "recommended_portfolio": possible_portfolios[0],
-        "alternatives": possible_portfolios[1:4],
+        "recommended_portfolio": possible[0],
+        "alternatives": possible[1:4],
+        "debug": LAST_DEBUG,
     }

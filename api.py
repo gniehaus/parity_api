@@ -22,9 +22,10 @@ from parity_engine import (
     optimize_parity_portfolio,
 )
 
+
 app = FastAPI(
     title="Parity Outcome API",
-    version="3.0.0",
+    version="3.1.0",
 )
 
 app.add_middleware(
@@ -40,7 +41,6 @@ class PortfolioRequest(BaseModel):
     investment_amount: float = Field(..., description="Example: 25000")
     max_loss_pct: float = Field(..., description="Example: 0.10 = 10% max portfolio loss")
     time_horizon_days: int = Field(default=365)
-    objective: Literal["growth", "balanced", "income"] = Field(default="growth")
     assumed_treasury_yield: float = Field(default=0.045)
 
 
@@ -51,51 +51,46 @@ class RecommendationRequest(BaseModel):
     target_gain: float = Field(default=0.08)
     assumed_dividend_yield: float = Field(default=0.0)
     target_buffer_pct: float = Field(default=0.10)
-
     investment_amount: float | None = None
     protection_style: Literal["hard_floor", "buffer", "show_both"] | None = None
     risk_profile: Literal["conservative", "balanced", "growth"] | None = None
 
 
 class MarriedPutRequest(BaseModel):
-    ticker: str = Field(..., description="Example: TSLA")
-    horizon: int = Field(..., description="Target protection period in days")
-    protection: float = Field(..., description="Example: 0.10 = 10%")
-    assumed_dividend_yield: float = Field(default=0.0)
+    ticker: str
+    horizon: int
+    protection: float
+    assumed_dividend_yield: float = 0.0
     investment_amount: float | None = None
 
 
 class CoveredCallRequest(BaseModel):
-    ticker: str = Field(..., description="Example: TSLA")
-    horizon: int = Field(..., description="Target income period in days")
-    target_income: float = Field(..., description="Example: 0.05 = 5%")
-    assumed_dividend_yield: float = Field(default=0.0)
+    ticker: str
+    horizon: int
+    target_income: float
+    assumed_dividend_yield: float = 0.0
     investment_amount: float | None = None
 
 
 class MarketplaceRequest(BaseModel):
-    ticker: str = Field(..., description="Example: TSLA")
-    horizon: int = Field(..., description="Target period in days")
-    max_loss: float = Field(default=0.10)
-    target_income: float = Field(default=0.05)
-    target_gain: float = Field(default=0.08)
-    assumed_dividend_yield: float = Field(default=0.0)
+    ticker: str
+    horizon: int
+    max_loss: float = 0.10
+    target_income: float = 0.05
+    target_gain: float = 0.08
+    assumed_dividend_yield: float = 0.0
     investment_amount: float | None = None
 
 
 def get_orats_token() -> str:
     token = os.getenv("ORATS_TOKEN")
     if not token:
-        raise HTTPException(
-            status_code=500,
-            detail="Missing ORATS_TOKEN environment variable",
-        )
+        raise HTTPException(status_code=500, detail="Missing ORATS_TOKEN environment variable")
     return token
 
 
 def get_selected_expiry_chain(ticker: str, horizon: int):
     token = get_orats_token()
-
     raw_df = fetch_orats_chain(ticker=ticker, token=token)
     chain = clean_chain(raw_df, ticker=ticker)
 
@@ -103,7 +98,7 @@ def get_selected_expiry_chain(ticker: str, horizon: int):
         chain,
         target_dte=horizon,
         prefer_at_or_after=True,
-        max_dte_overage=60,
+        max_dte_overage=250,
     )
 
     return expiry_chain, selected_expiry_summary
@@ -114,15 +109,8 @@ def root():
     return {
         "status": "ok",
         "service": "Parity Outcome API",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "main_endpoint": "POST /portfolio",
-        "products": [
-            "portfolio",
-            "defined_range",
-            "insured_upside",
-            "income",
-            "weekly_outcomes",
-        ],
     }
 
 
@@ -133,45 +121,26 @@ def health():
 
 @app.post("/portfolio")
 def get_portfolio(request: PortfolioRequest):
-    """
-    Main Parity endpoint.
-
-    Inputs:
-    - investment_amount
-    - max_loss_pct
-    - time_horizon_days
-    - objective
-
-    Output:
-    - Account-size based collar portfolio
-    - SGOV treasury sleeve
-    - Dollar allocation by sleeve
-    - Assumed max loss / max gain by sleeve
-    - Option bid/ask spread data
-    """
     try:
         token = get_orats_token()
 
         collar_candidates = generate_portfolio_collar_candidates(
-            token=token,
-            investment_amount=request.investment_amount,
-            max_loss_pct=request.max_loss_pct,
-            time_horizon_days=request.time_horizon_days,
-            objective=request.objective,
-        )
-
+        token=token,
+        investment_amount=request.investment_amount,
+        max_loss_pct=request.max_loss_pct,
+        time_horizon_days=request.time_horizon_days,
+    )
+    
         portfolio = optimize_parity_portfolio(
-            investment_amount=request.investment_amount,
-            max_loss_pct=request.max_loss_pct,
-            time_horizon_days=request.time_horizon_days,
-            objective=request.objective,
-            collar_candidates=collar_candidates,
-            treasury_ticker="SGOV",
-            assumed_treasury_yield=request.assumed_treasury_yield,
-        )
+        investment_amount=request.investment_amount,
+        max_loss_pct=request.max_loss_pct,
+        time_horizon_days=request.time_horizon_days,
+        collar_candidates=collar_candidates,
+        treasury_ticker="SGOV",
+        assumed_treasury_yield=request.assumed_treasury_yield,
+    )
 
         portfolio["request"] = request.model_dump()
-
         return make_json_safe(portfolio)
 
     except HTTPException:
@@ -189,20 +158,14 @@ def get_weekly_outcomes():
             max_expirations=6,
         )
         return make_json_safe(payload)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/recommendations")
 def get_recommendations(request: RecommendationRequest):
-    """
-    Legacy endpoint.
-    Keep so Base44 does not break immediately.
-    """
     try:
         token = get_orats_token()
-
         df = fetch_orats_chain(ticker=request.ticker, token=token)
 
         payload = build_defined_outcome_recommendations(
@@ -216,7 +179,6 @@ def get_recommendations(request: RecommendationRequest):
         )
 
         payload["request"] = request.model_dump()
-
         return make_json_safe(payload)
 
     except HTTPException:
@@ -227,10 +189,6 @@ def get_recommendations(request: RecommendationRequest):
 
 @app.post("/married-put")
 def get_married_put(request: MarriedPutRequest):
-    """
-    Product: Insured Upside
-    Long stock + long put.
-    """
     try:
         expiry_chain, selected_expiry_summary = get_selected_expiry_chain(
             ticker=request.ticker,
@@ -244,14 +202,10 @@ def get_married_put(request: MarriedPutRequest):
         )
 
         if result is None:
-            raise HTTPException(
-                status_code=404,
-                detail="No married put found for the requested inputs.",
-            )
+            raise HTTPException(status_code=404, detail="No married put found.")
 
         result["selected_expiry"] = selected_expiry_summary
         result["request"] = request.model_dump()
-
         return make_json_safe(result)
 
     except HTTPException:
@@ -262,10 +216,6 @@ def get_married_put(request: MarriedPutRequest):
 
 @app.post("/covered-call")
 def get_covered_call(request: CoveredCallRequest):
-    """
-    Product: Income
-    Long stock + short call.
-    """
     try:
         expiry_chain, selected_expiry_summary = get_selected_expiry_chain(
             ticker=request.ticker,
@@ -279,14 +229,10 @@ def get_covered_call(request: CoveredCallRequest):
         )
 
         if result is None:
-            raise HTTPException(
-                status_code=404,
-                detail="No covered call found for the requested inputs.",
-            )
+            raise HTTPException(status_code=404, detail="No covered call found.")
 
         result["selected_expiry"] = selected_expiry_summary
         result["request"] = request.model_dump()
-
         return make_json_safe(result)
 
     except HTTPException:
@@ -297,16 +243,8 @@ def get_covered_call(request: CoveredCallRequest):
 
 @app.post("/marketplace")
 def get_marketplace_products(request: MarketplaceRequest):
-    """
-    Legacy marketplace endpoint.
-    Returns:
-    - Defined Range
-    - Insured Upside
-    - Income
-    """
     try:
         token = get_orats_token()
-
         df = fetch_orats_chain(ticker=request.ticker, token=token)
 
         legacy_payload = build_defined_outcome_recommendations(

@@ -790,7 +790,7 @@ def generate_portfolio_collar_candidates(
                 chain=chain,
                 target_dte=time_horizon_days,
                 min_dte=time_horizon_days,
-                max_dte=time_horizon_days + 180,
+                max_dte=time_horizon_days + 365,
                 max_expiries=4,
             )
 

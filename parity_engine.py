@@ -61,6 +61,26 @@ def annualize_return(total_return: float, dte: float) -> float:
     return (1 + total_return) ** (365 / dte) - 1
 
 
+def horizon_return_from_annual(annual_return: float, horizon_days: float) -> float:
+    if horizon_days <= 0:
+        return annual_return
+    return (1 + annual_return) ** (horizon_days / 365) - 1
+
+
+def normalize_return_to_horizon(total_return: float, source_dte: float, target_horizon_days: float) -> float:
+    """
+    Converts a return earned over source_dte into a target-horizon return
+    using annualized compounding.
+
+    This is used for comparing sleeves with different expirations on the
+    same horizon. It assumes the current collar economics can be rolled at
+    similar terms, so the UI should label this as horizon-normalized rather
+    than guaranteed contractual return.
+    """
+    annual_return = annualize_return(total_return, source_dte)
+    return horizon_return_from_annual(annual_return, target_horizon_days)
+
+
 def get_dividend_yield(ticker: str, dividend_yields: Optional[dict[str, float]] = None) -> float:
     if not dividend_yields:
         return 0.0
@@ -407,6 +427,18 @@ def _liquidity_score(put: OptionLeg, call: OptionLeg) -> float:
 
 
 def collar_option_cost(c: CollarCandidate) -> float:
+    """
+    Pricing assumption used for modeled portfolio economics.
+
+    We use midpoint pricing for the optimization and displayed modeled
+    outcome, while separately reporting conservative executable cost
+    using buy-at-ask / sell-at-bid in collar_spread_cost().
+    """
+    return (c.long_put.mid - c.short_call.mid) * 100 * c.contracts
+
+
+def collar_executable_cost(c: CollarCandidate) -> float:
+    """Conservative executable cost: buy put at ask, sell call at bid."""
     return (c.long_put.ask - c.short_call.bid) * 100 * c.contracts
 
 
@@ -426,6 +458,14 @@ def collar_annualized_gain_dollars(c: CollarCandidate) -> float:
     return collar_capital_required(c) * annualize_return(c.sleeve_max_gain_pct, c.dte)
 
 
+def collar_horizon_normalized_gain_dollars(c: CollarCandidate, horizon_days: int) -> float:
+    return collar_capital_required(c) * normalize_return_to_horizon(
+        c.sleeve_max_gain_pct,
+        c.dte,
+        horizon_days,
+    )
+
+
 def collar_efficiency(c: CollarCandidate) -> float:
     return collar_annualized_gain_dollars(c) / max(collar_loss_dollars(c), 1)
 
@@ -436,7 +476,7 @@ def collar_spread_cost(c: CollarCandidate) -> dict:
 
     total_spread = (put_spread + call_spread) * 100 * c.contracts
     net_mid = (c.long_put.mid - c.short_call.mid) * 100 * c.contracts
-    net_conservative = collar_option_cost(c)
+    net_conservative = collar_executable_cost(c)
 
     return {
         "put_bid_ask_spread": round(put_spread, 4),
@@ -542,14 +582,15 @@ def build_collar_candidates_for_expiry(
             contracts = 1
             stock_value = stock_price * shares
 
-            # Conservative executable collar cost:
-            # buy the put at ask and sell the call at bid.
+            # Modeled collar cost uses midpoint pricing.
             # Positive = debit paid. Negative = credit received.
-            net_option_cost = (put.ask - call.bid) * 100
+            # Conservative executable cost is still reported separately.
+            net_option_cost = (put.mid - call.mid) * 100
             net_option_cost_bps = (net_option_cost / stock_value) * 10_000 if stock_value > 0 else 0.0
 
             # Do not allow expensive debit/credit collars into the optimizer.
-            # We are not modeling theta/option decay, so only keep near-zero-cost structures.
+            # We are not modeling theta/option decay, so only keep near-zero-cost
+            # structures using the modeled midpoint option cost.
             if abs(net_option_cost_bps) > max_net_option_cost_bps:
                 continue
 
@@ -1113,21 +1154,42 @@ def optimize_parity_portfolio(
     treasury_amount = investment_amount - collar_capital
 
     loss_dollars = sum(collar_loss_dollars(c) * lots for c, lots in selected)
-    gain_dollars = sum(collar_gain_dollars(c) * lots for c, lots in selected)
+
+    # Current contractual cycle gain = what the selected collars can make
+    # through their actual expirations, plus treasury income over the user's horizon.
+    current_cycle_collar_gain_dollars = sum(collar_gain_dollars(c) * lots for c, lots in selected)
+
+    # Horizon-normalized gain = converts each selected collar's cap to the
+    # requested horizon using annualized compounding. This creates an apples-to-
+    # apples risk/return comparison across different option expirations.
+    horizon_normalized_collar_gain_dollars = sum(
+        collar_horizon_normalized_gain_dollars(c, time_horizon_days) * lots
+        for c, lots in selected
+    )
+
     dividend_income_dollars = sum(c.expected_dividend_dollars * lots for c, lots in selected)
     option_gain_dollars = sum(c.option_max_gain_dollars * lots for c, lots in selected)
 
-    gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
+    treasury_return_for_horizon = horizon_return_from_annual(
+        assumed_treasury_yield,
+        time_horizon_days,
+    )
+    treasury_gain_dollars = treasury_amount * treasury_return_for_horizon
+
+    current_cycle_gain_dollars = current_cycle_collar_gain_dollars + treasury_gain_dollars
+    gain_dollars = horizon_normalized_collar_gain_dollars + treasury_gain_dollars
 
     actual_loss_pct = loss_dollars / investment_amount
     actual_gain_pct = gain_dollars / investment_amount
+    current_cycle_gain_pct = current_cycle_gain_dollars / investment_amount
 
     weighted_dte = sum(
         collar_capital_required(c) * lots * c.dte
         for c, lots in selected
     ) / max(collar_capital, 1)
 
-    estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, weighted_dte)
+    estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, time_horizon_days)
+    current_cycle_max_gain_annualized_pct = annualize_return(current_cycle_gain_pct, weighted_dte)
 
     sleeves = []
 
@@ -1164,11 +1226,23 @@ def optimize_parity_portfolio(
                 annualize_return(c.sleeve_max_gain_pct, c.dte),
                 4,
             ),
+            "sleeve_max_gain_horizon_normalized_pct": round(
+                normalize_return_to_horizon(c.sleeve_max_gain_pct, c.dte, time_horizon_days),
+                4,
+            ),
 
             "portfolio_max_loss_contribution_dollars": round(collar_loss_dollars(c) * lots, 2),
             "portfolio_max_loss_contribution_pct": round((collar_loss_dollars(c) * lots) / investment_amount, 4),
             "portfolio_max_gain_contribution_dollars": round(collar_gain_dollars(c) * lots, 2),
             "portfolio_max_gain_contribution_pct": round((collar_gain_dollars(c) * lots) / investment_amount, 4),
+            "portfolio_max_gain_contribution_horizon_normalized_dollars": round(
+                collar_horizon_normalized_gain_dollars(c, time_horizon_days) * lots,
+                2,
+            ),
+            "portfolio_max_gain_contribution_horizon_normalized_pct": round(
+                (collar_horizon_normalized_gain_dollars(c, time_horizon_days) * lots) / investment_amount,
+                4,
+            ),
 
             "option_legs": {
                 "long_put": asdict(c.long_put),
@@ -1191,11 +1265,11 @@ def optimize_parity_portfolio(
         "allocation_pct": round(treasury_amount / investment_amount, 4),
         "assumed_yield": assumed_treasury_yield,
         "estimated_income_dollars": round(
-            treasury_amount * assumed_treasury_yield * (time_horizon_days / 365),
+            treasury_gain_dollars,
             2,
         ),
         "sleeve_max_loss_pct": 0,
-        "sleeve_max_gain_pct": round(assumed_treasury_yield * (time_horizon_days / 365), 4),
+        "sleeve_max_gain_pct": round(treasury_return_for_horizon, 4),
         "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
     })
 
@@ -1237,6 +1311,12 @@ def optimize_parity_portfolio(
         "estimated_dividend_income_dollars": round(dividend_income_dollars, 2),
         "estimated_max_gain_pct": round(actual_gain_pct, 4),
         "estimated_max_gain_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
+        "current_cycle_max_gain_dollars": round(current_cycle_gain_dollars, 2),
+        "current_cycle_max_gain_pct": round(current_cycle_gain_pct, 4),
+        "current_cycle_max_gain_annualized_pct": round(current_cycle_max_gain_annualized_pct, 4),
+        "treasury_return_for_horizon_pct": round(treasury_return_for_horizon, 4),
+        "excess_max_gain_over_treasury_pct": round(actual_gain_pct - treasury_return_for_horizon, 4),
+        "risk_reward_ratio": round(actual_gain_pct / actual_loss_pct, 4) if actual_loss_pct > 0 else None,
         "weighted_option_dte": round(weighted_dte, 1),
         "time_horizon_days": time_horizon_days,
         "treasury_ticker": treasury_ticker,

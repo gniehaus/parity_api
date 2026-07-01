@@ -61,6 +61,29 @@ def annualize_return(total_return: float, dte: float) -> float:
     return (1 + total_return) ** (365 / dte) - 1
 
 
+def annualize_loss(total_loss_pct: float, dte: float) -> float:
+    """
+    Annualizes a positive loss percentage using wealth-multiple compounding.
+
+    Example:
+        total_loss_pct = 0.02 over 180 days
+        annualized_loss = abs((1 - 0.02) ** (365 / 180) - 1)
+                        ≈ 0.040
+
+    Returns a positive number for display and comparison.
+    """
+    if dte <= 0:
+        return total_loss_pct
+
+    loss = max(float(total_loss_pct or 0.0), 0.0)
+
+    if loss >= 1:
+        return 1.0
+
+    annualized_return = (1 - loss) ** (365 / dte) - 1
+    return abs(annualized_return)
+
+
 def horizon_return_from_annual(annual_return: float, horizon_days: float) -> float:
     if horizon_days <= 0:
         return annual_return
@@ -811,6 +834,7 @@ def make_treasury_only_portfolio(
             "input_max_loss_pct": max_loss_pct,
             "actual_max_loss_dollars": 0,
             "actual_max_loss_pct": 0,
+            "estimated_max_loss_annualized_pct": 0,
             "estimated_max_gain_dollars": round(income, 2),
             "estimated_max_gain_pct": round(total_return, 4),
             "estimated_max_gain_annualized_pct": assumed_treasury_yield,
@@ -844,6 +868,7 @@ def make_treasury_only_portfolio(
                 "collar_allocation_pct": 0,
                 "treasury_allocation_pct": 1.0,
                 "expected_floor_pct": 0,
+                "expected_floor_annualized_pct": 0,
                 "expected_cap_pct": round(total_return, 4),
                 "expected_cap_annualized_pct": assumed_treasury_yield,
             },
@@ -856,6 +881,7 @@ def build_portfolio_summary(
     sleeves: list[dict],
     investment_amount: float,
     actual_max_loss_pct: float,
+    estimated_max_loss_annualized_pct: float,
     estimated_max_gain_pct: float,
     estimated_max_gain_annualized_pct: float,
 ) -> dict:
@@ -868,6 +894,7 @@ def build_portfolio_summary(
         "collar_allocation_pct": round(collar_amount / investment_amount, 4),
         "treasury_allocation_pct": round(treasury_amount / investment_amount, 4),
         "expected_floor_pct": round(-actual_max_loss_pct, 4),
+        "expected_floor_annualized_pct": round(-estimated_max_loss_annualized_pct, 4),
         "expected_cap_pct": round(estimated_max_gain_pct, 4),
         "expected_cap_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
     }
@@ -1197,7 +1224,9 @@ def optimize_parity_portfolio(
         for c, lots in selected
     ) / max(collar_capital, 1)
 
+    estimated_max_loss_annualized_pct = annualize_loss(actual_loss_pct, time_horizon_days)
     estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, time_horizon_days)
+    current_cycle_max_loss_annualized_pct = annualize_loss(actual_loss_pct, weighted_dte)
     current_cycle_max_gain_annualized_pct = annualize_return(current_cycle_gain_pct, weighted_dte)
 
     sleeves = []
@@ -1230,6 +1259,10 @@ def optimize_parity_portfolio(
             "dte": c.dte,
 
             "sleeve_max_loss_pct": round(c.sleeve_max_loss_pct, 4),
+            "sleeve_max_loss_annualized_pct": round(
+                annualize_loss(c.sleeve_max_loss_pct, c.dte),
+                4,
+            ),
             "sleeve_max_gain_pct": round(c.sleeve_max_gain_pct, 4),
             "sleeve_max_gain_annualized_pct": round(
                 annualize_return(c.sleeve_max_gain_pct, c.dte),
@@ -1278,6 +1311,7 @@ def optimize_parity_portfolio(
             2,
         ),
         "sleeve_max_loss_pct": 0,
+        "sleeve_max_loss_annualized_pct": 0,
         "sleeve_max_gain_pct": round(treasury_return_for_horizon, 4),
         "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
     })
@@ -1315,6 +1349,8 @@ def optimize_parity_portfolio(
         "max_allowed_sleeve_loss_pct": round(max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference), 4),
         "actual_max_loss_dollars": round(loss_dollars, 2),
         "actual_max_loss_pct": round(actual_loss_pct, 4),
+        "estimated_max_loss_annualized_pct": round(estimated_max_loss_annualized_pct, 4),
+        "current_cycle_max_loss_annualized_pct": round(current_cycle_max_loss_annualized_pct, 4),
         "estimated_max_gain_dollars": round(gain_dollars, 2),
         "estimated_option_max_gain_dollars": round(option_gain_dollars, 2),
         "estimated_dividend_income_dollars": round(dividend_income_dollars, 2),
@@ -1345,6 +1381,7 @@ def optimize_parity_portfolio(
         sleeves=sleeves,
         investment_amount=investment_amount,
         actual_max_loss_pct=actual_loss_pct,
+        estimated_max_loss_annualized_pct=estimated_max_loss_annualized_pct,
         estimated_max_gain_pct=actual_gain_pct,
         estimated_max_gain_annualized_pct=estimated_max_gain_annualized_pct,
     )

@@ -789,7 +789,7 @@ def generate_portfolio_collar_candidates(
             expiry_groups = get_viable_expiry_groups(
                 chain=chain,
                 target_dte=time_horizon_days,
-                min_dte=time_horizon_days,
+                min_dte=time_horizon_days-100,
                 max_dte=time_horizon_days + 365,
                 max_expiries=4,
             )

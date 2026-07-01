@@ -1284,9 +1284,20 @@ def optimize_parity_portfolio(
     ) / max(collar_capital, 1)
 
     estimated_max_loss_annualized_pct = annualize_loss(actual_loss_pct, time_horizon_days)
-    estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, time_horizon_days)
+
+    # IMPORTANT:
+    # actual_gain_pct is built from horizon_normalized_collar_gain_dollars,
+    # which already converts each collar's actual expiration return into the
+    # requested user horizon. Annualizing actual_gain_pct again would annualize
+    # a horizon-normalized number a second time and can create inflated /
+    # nonsensical API values for short horizons.
+    #
+    # For display/API purposes, use the current contractual cycle annualized
+    # return below, which is based on the actual collar cycle economics rather
+    # than the already-normalized horizon return.
     current_cycle_max_loss_annualized_pct = annualize_loss(actual_loss_pct, weighted_dte)
     current_cycle_max_gain_annualized_pct = annualize_return(current_cycle_gain_pct, weighted_dte)
+    estimated_max_gain_annualized_pct = current_cycle_max_gain_annualized_pct
 
     sleeves = []
 

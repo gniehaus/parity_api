@@ -926,9 +926,8 @@ def get_constraint_set(tier: str, max_loss_pct: float, growth_preference: str = 
             "collar_capital_reward": pref["collar_capital_reward"],
             "risk_usage_reward": pref["risk_usage_reward"],
             "sleeve_reward": pref["sleeve_reward"],
-            # First pass: require every ticker in the tier that has feasible
-            # candidates to be represented at least once. If this cannot be
-            # solved, the relaxed pass below allows the optimizer to drop one.
+            # Product rule: require every allowed ticker with feasible candidates
+            # to be represented with at least one actual lot.
             "require_all_tickers": True,
         },
         {
@@ -943,7 +942,7 @@ def get_constraint_set(tier: str, max_loss_pct: float, growth_preference: str = 
             "collar_capital_reward": pref["collar_capital_reward"],
             "risk_usage_reward": pref["risk_usage_reward"],
             "sleeve_reward": pref["sleeve_reward"],
-            "require_all_tickers": False,
+            "require_all_tickers": True,
         },
         {
             "name": "return_maximized",
@@ -957,7 +956,7 @@ def get_constraint_set(tier: str, max_loss_pct: float, growth_preference: str = 
             "collar_capital_reward": pref["collar_capital_reward"],
             "risk_usage_reward": pref["risk_usage_reward"],
             "sleeve_reward": 0.0,
-            "require_all_tickers": False,
+            "require_all_tickers": True,
         },
     ]
 
@@ -989,6 +988,10 @@ def solve_milp_for_constraints(
         y[i] = pulp.LpVariable(f"y_{i}", lowBound=0, upBound=1, cat="Binary")
 
         model += x[i] <= max_lots * y[i]
+        # If y[i] marks a candidate as selected, require at least one lot.
+        # Without this, the model can set y=1 and x=0 to satisfy
+        # "require all tickers" without actually buying the collar.
+        model += x[i] >= y[i]
 
     collar_capital_expr = pulp.lpSum(
         x[i] * collar_capital_required(c) for i, c in enumerate(eligible)
@@ -1073,6 +1076,12 @@ def solve_milp_for_constraints(
         lots = int(round(x[i].value() or 0))
         if lots > 0:
             selected.append((c, lots))
+
+    if constraints.get("require_all_tickers", False):
+        required_tickers = {c.ticker for c in eligible}
+        selected_tickers = {c.ticker for c, _ in selected}
+        if not required_tickers.issubset(selected_tickers):
+            return "MissingRequiredTicker", []
 
     return status, selected
 

@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from itertools import combinations
 from typing import Optional
 from datetime import datetime, timezone
 
 import pandas as pd
 
-from parity_collar_engine import (
-    fetch_orats_chain,
-    clean_chain,
-)
+from parity_collar_engine import fetch_orats_chain, clean_chain
 
 
 @dataclass
@@ -76,24 +72,6 @@ def allowed_etfs(tier: str) -> list[str]:
     }.get(tier, [])
 
 
-def min_collars_for_tier(tier: str) -> int:
-    return {
-        "tier_1": 1,
-        "tier_2": 2,
-        "tier_3": 2,
-        "tier_4": 3,
-    }.get(tier, 1)
-
-
-def max_collars_for_tier(tier: str) -> int:
-    return {
-        "tier_1": 1,
-        "tier_2": 2,
-        "tier_3": 3,
-        "tier_4": 5,
-    }.get(tier, 0)
-
-
 def exposure_name(ticker: str) -> str:
     return {
         "TQQQ": "U.S. Growth",
@@ -151,7 +129,7 @@ def _expiry_col(df: pd.DataFrame) -> str:
 def _stock_price(df: pd.DataFrame) -> float:
     c = _col(df, [
         "stockPrice", "stock_price", "underlyingPrice", "underlying_price",
-        "underlying", "spot", "spotPrice", "price", "stkPx", "uPx", "last"
+        "spot", "spotPrice", "price", "last"
     ])
 
     if c:
@@ -164,7 +142,7 @@ def _stock_price(df: pd.DataFrame) -> float:
     if not vals.empty:
         return float(vals.median())
 
-    raise ValueError(f"Could not infer stock price. Columns: {list(df.columns)}")
+    raise ValueError("Could not infer stock price.")
 
 
 def _bid_ask_mid(row, option_type: str) -> tuple[float, float, float]:
@@ -238,18 +216,14 @@ def get_viable_expiry_groups(
             grouped.append((str(expiry), dte, g.copy()))
 
     grouped.sort(key=lambda x: abs(x[1] - target_dte))
-
     return grouped[:max_expiries]
 
 
 def _liquidity_score(put: OptionLeg, call: OptionLeg) -> float:
     put_spread_pct = (put.ask - put.bid) / put.mid if put.mid > 0 else 1
     call_spread_pct = (call.ask - call.bid) / call.mid if call.mid > 0 else 1
-
     avg_spread_pct = max((put_spread_pct + call_spread_pct) / 2, 0)
-    spread_score = max(0, 100 - avg_spread_pct * 400)
-
-    return round(spread_score, 2)
+    return round(max(0, 100 - avg_spread_pct * 400), 2)
 
 
 def collar_option_cost(c: CollarCandidate) -> float:
@@ -258,6 +232,23 @@ def collar_option_cost(c: CollarCandidate) -> float:
 
 def collar_capital_required(c: CollarCandidate) -> float:
     return c.stock_value + collar_option_cost(c)
+
+
+def collar_loss_dollars(c: CollarCandidate) -> float:
+    return collar_capital_required(c) * c.sleeve_max_loss_pct
+
+
+def collar_gain_dollars(c: CollarCandidate) -> float:
+    return collar_capital_required(c) * c.sleeve_max_gain_pct
+
+
+def collar_annualized_gain_dollars(c: CollarCandidate) -> float:
+    return collar_capital_required(c) * annualize_return(c.sleeve_max_gain_pct, c.dte)
+
+
+def collar_efficiency(c: CollarCandidate) -> float:
+    loss = max(collar_loss_dollars(c), 1)
+    return collar_annualized_gain_dollars(c) / loss
 
 
 def collar_spread_cost(c: CollarCandidate) -> dict:
@@ -296,7 +287,6 @@ def build_collar_candidates_for_expiry(
     ticker: str,
     expiration: str,
     dte: float,
-    max_candidates: int = 200,
 ) -> list[CollarCandidate]:
 
     if expiry_chain is None or expiry_chain.empty:
@@ -313,12 +303,57 @@ def build_collar_candidates_for_expiry(
     puts = chain[
         (chain[strike_col] >= stock_price * 0.30)
         & (chain[strike_col] <= stock_price * 1.00)
-    ]
+    ].copy()
 
     calls = chain[
         (chain[strike_col] >= stock_price * 1.01)
         & (chain[strike_col] <= stock_price * 3.00)
-    ]
+    ].copy()
+
+    if puts.empty or calls.empty:
+        return []
+
+    # Instead of brute forcing every put/call combination, keep targeted strikes:
+    # - low-loss puts near spot
+    # - lower-cost puts farther OTM
+    # - calls near spot for income
+    # - calls farther OTM for upside
+    puts["put_moneyness"] = puts[strike_col] / stock_price
+    calls["call_moneyness"] = calls[strike_col] / stock_price
+
+    put_targets = [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60, 0.50]
+    call_targets = [1.05, 1.10, 1.15, 1.25, 1.40, 1.60, 2.00, 2.50]
+
+    selected_puts = []
+    selected_calls = []
+
+    for target in put_targets:
+        nearest = (
+            puts.assign(distance=(puts["put_moneyness"] - target).abs())
+            .sort_values("distance")
+            .head(2)
+        )
+        selected_puts.append(nearest)
+
+    for target in call_targets:
+        nearest = (
+            calls.assign(distance=(calls["call_moneyness"] - target).abs())
+            .sort_values("distance")
+            .head(2)
+        )
+        selected_calls.append(nearest)
+
+    puts = (
+        pd.concat(selected_puts)
+        .drop_duplicates(subset=[strike_col])
+        .sort_values(strike_col)
+    )
+
+    calls = (
+        pd.concat(selected_calls)
+        .drop_duplicates(subset=[strike_col])
+        .sort_values(strike_col)
+    )
 
     candidates = []
 
@@ -374,30 +409,42 @@ def build_collar_candidates_for_expiry(
             if execution_quality_passes(candidate):
                 candidates.append(candidate)
 
+    return candidates
+
+def pareto_reduce(candidates: list[CollarCandidate], max_per_etf: int = 10) -> list[CollarCandidate]:
+    """
+    Keep the Pareto frontier:
+    no collar should be kept if another collar has lower/equal loss
+    and higher/equal annualized gain.
+    """
+    frontier = []
+
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda c: (c.sleeve_max_loss_pct, -annualize_return(c.sleeve_max_gain_pct, c.dte)),
+    )
+
+    best_gain_so_far = -1.0
+
+    for c in sorted_candidates:
+        annual_gain = annualize_return(c.sleeve_max_gain_pct, c.dte)
+
+        if annual_gain > best_gain_so_far:
+            frontier.append(c)
+            best_gain_so_far = annual_gain
+
+    # Keep a balanced mix: efficient, low-loss, and high-upside.
+    by_efficiency = sorted(frontier, key=collar_efficiency, reverse=True)[:max_per_etf]
+    by_low_loss = sorted(frontier, key=lambda c: c.sleeve_max_loss_pct)[:max_per_etf]
     by_upside = sorted(
-        candidates,
-        key=lambda c: c.sleeve_max_gain_pct * (365 / max(c.dte, 1)),
+        frontier,
+        key=lambda c: annualize_return(c.sleeve_max_gain_pct, c.dte),
         reverse=True,
-    )[:max_candidates]
-
-    by_low_loss = sorted(
-        candidates,
-        key=lambda c: c.sleeve_max_loss_pct,
-    )[:max_candidates]
-
-    by_expiry_fit = sorted(
-        candidates,
-        key=lambda c: abs(c.dte - 365),
-    )[:max_candidates]
+    )[:max_per_etf]
 
     deduped = {}
-    for c in by_upside + by_low_loss + by_expiry_fit:
-        key = (
-            c.ticker,
-            c.expiration,
-            c.long_put.strike,
-            c.short_call.strike,
-        )
+    for c in by_efficiency + by_low_loss + by_upside:
+        key = (c.ticker, c.expiration, c.long_put.strike, c.short_call.strike)
         deduped[key] = c
 
     return list(deduped.values())
@@ -427,7 +474,8 @@ def generate_portfolio_collar_candidates(
             "raw_rows": None,
             "clean_rows": None,
             "expiry_groups": [],
-            "candidate_count": 0,
+            "candidate_count_before_pareto": 0,
+            "candidate_count_after_pareto": 0,
             "error": None,
         }
 
@@ -456,7 +504,6 @@ def generate_portfolio_collar_candidates(
                     ticker=ticker,
                     expiration=expiry,
                     dte=dte,
-                    max_candidates=200,
                 )
 
                 debug["expiry_groups"].append({
@@ -468,35 +515,14 @@ def generate_portfolio_collar_candidates(
 
                 ticker_candidates.extend(candidates)
 
-            by_upside = sorted(
+            debug["candidate_count_before_pareto"] = len(ticker_candidates)
+
+            ticker_candidates = pareto_reduce(
                 ticker_candidates,
-                key=lambda c: c.sleeve_max_gain_pct * (365 / max(c.dte, 1)),
-                reverse=True,
-            )[:150]
+                max_per_etf=10,
+            )
 
-            by_low_loss = sorted(
-                ticker_candidates,
-                key=lambda c: c.sleeve_max_loss_pct,
-            )[:150]
-
-            by_expiry_fit = sorted(
-                ticker_candidates,
-                key=lambda c: abs(c.dte - time_horizon_days),
-            )[:150]
-
-            deduped = {}
-            for c in by_upside + by_low_loss + by_expiry_fit:
-                key = (
-                    c.ticker,
-                    c.expiration,
-                    c.long_put.strike,
-                    c.short_call.strike,
-                )
-                deduped[key] = c
-
-            ticker_candidates = list(deduped.values())
-
-            debug["candidate_count"] = len(ticker_candidates)
+            debug["candidate_count_after_pareto"] = len(ticker_candidates)
             debug["stage"] = "complete"
 
             all_candidates.extend(ticker_candidates)
@@ -508,6 +534,62 @@ def generate_portfolio_collar_candidates(
         LAST_DEBUG.append(debug)
 
     return all_candidates
+
+
+def make_treasury_only_portfolio(
+    investment_amount: float,
+    max_loss_pct: float,
+    time_horizon_days: int,
+    treasury_ticker: str,
+    assumed_treasury_yield: float,
+    tier: str,
+    reason: str,
+) -> dict:
+    income = investment_amount * assumed_treasury_yield * (time_horizon_days / 365)
+    total_return = income / investment_amount
+
+    return {
+        "status": "success",
+        "portfolio": {
+            "portfolio_type": "treasury_only_fallback",
+            "account_tier": tier,
+            "investment_amount": investment_amount,
+            "input_max_loss_pct": max_loss_pct,
+            "actual_max_loss_dollars": 0,
+            "actual_max_loss_pct": 0,
+            "estimated_max_gain_dollars": round(income, 2),
+            "estimated_max_gain_pct": round(total_return, 4),
+            "estimated_max_gain_annualized_pct": assumed_treasury_yield,
+            "time_horizon_days": time_horizon_days,
+            "treasury_ticker": treasury_ticker,
+            "assumed_treasury_yield": assumed_treasury_yield,
+            "sleeves": [
+                {
+                    "type": "treasury",
+                    "ticker": treasury_ticker,
+                    "exposure": "Treasury Sleeve",
+                    "allocation_dollars": round(investment_amount, 2),
+                    "allocation_pct": 1.0,
+                    "assumed_yield": assumed_treasury_yield,
+                    "estimated_income_dollars": round(income, 2),
+                    "sleeve_max_loss_pct": 0,
+                    "sleeve_max_gain_pct": round(total_return, 4),
+                    "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
+                }
+            ],
+            "warnings": [reason],
+            "portfolio_summary": {
+                "collar_allocation_dollars": 0,
+                "treasury_allocation_dollars": round(investment_amount, 2),
+                "collar_allocation_pct": 0,
+                "treasury_allocation_pct": 1.0,
+                "expected_floor_pct": 0,
+                "expected_cap_pct": round(total_return, 4),
+                "expected_cap_annualized_pct": assumed_treasury_yield,
+            },
+        },
+        "debug": LAST_DEBUG,
+    }
 
 
 def build_portfolio_summary(
@@ -559,191 +641,222 @@ def optimize_parity_portfolio(
         and execution_quality_passes(c)
     ]
 
-    min_n = min(min_collars_for_tier(tier), len(eligible))
-    max_n = min(max_collars_for_tier(tier), len(eligible))
+    if not eligible:
+        return make_treasury_only_portfolio(
+            investment_amount,
+            max_loss_pct,
+            time_horizon_days,
+            treasury_ticker,
+            assumed_treasury_yield,
+            tier,
+            "No executable collar passed the current option filters, so the portfolio is allocated to the Treasury sleeve.",
+        )
 
-    possible = []
+    risk_budget = investment_amount * max_loss_pct
+    risk_remaining = risk_budget
+    capital_remaining = investment_amount
 
-    for n in range(min_n, max_n + 1):
-        for combo in combinations(eligible, n):
-            tickers = [c.ticker for c in combo]
+    max_concentration_pct = {
+        "tier_1": 1.00,
+        "tier_2": 0.50,
+        "tier_3": 0.40,
+        "tier_4": 0.35,
+    }.get(tier, 0.40)
 
-            if len(tickers) != len(set(tickers)):
-                continue
+    positions: list[tuple[CollarCandidate, int]] = []
 
-            if tier == "tier_2":
-                required = set(allowed_etfs(tier))
-                if not required.issubset(set(tickers)):
-                    continue
+    # Sort by annualized gain per dollar of risk consumed.
+    ranked = sorted(eligible, key=collar_efficiency, reverse=True)
 
-            collar_capital = sum(collar_capital_required(c) for c in combo)
+    used_tickers = set()
 
-            if collar_capital > investment_amount:
-                continue
+    for c in ranked:
+        capital = collar_capital_required(c)
+        loss = collar_loss_dollars(c)
 
-            treasury_amount = investment_amount - collar_capital
-            treasury_pct = treasury_amount / investment_amount
+        if capital <= 0 or loss <= 0:
+            continue
 
-            loss_dollars = sum(
-                collar_capital_required(c) * c.sleeve_max_loss_pct
-                for c in combo
-            )
+        if capital > capital_remaining:
+            continue
 
-            gain_dollars = sum(
-                collar_capital_required(c) * c.sleeve_max_gain_pct
-                for c in combo
-            )
+        if loss > risk_remaining:
+            continue
 
-            gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
+        current_ticker_capital = sum(
+            collar_capital_required(pos) * lots
+            for pos, lots in positions
+            if pos.ticker == c.ticker
+        )
 
-            actual_loss_pct = loss_dollars / investment_amount
-            actual_gain_pct = gain_dollars / investment_amount
+        max_capital_for_ticker = investment_amount * max_concentration_pct
+        remaining_ticker_capacity = max_capital_for_ticker - current_ticker_capital
 
-            if actual_loss_pct > max_loss_pct:
-                continue
+        if remaining_ticker_capacity < capital:
+            continue
 
-            avg_expiry_fit = sum(abs(c.dte - time_horizon_days) for c in combo) / len(combo)
+        max_by_capital = int(capital_remaining // capital)
+        max_by_risk = int(risk_remaining // loss)
+        max_by_concentration = int(remaining_ticker_capacity // capital)
 
-            weighted_dte = sum(
-                collar_capital_required(c) * c.dte for c in combo
-            ) / max(collar_capital, 1)
+        max_lots = min(max_by_capital, max_by_risk, max_by_concentration)
 
-            estimated_max_gain_annualized_pct = annualize_return(
-                actual_gain_pct,
-                weighted_dte,
-            )
+        if max_lots <= 0:
+            continue
 
-            sleeves = []
+        # MVP: use one lot per ETF first to maintain diversification.
+        # Larger accounts can allow more lots per ETF after initial rollout.
+        lots = 1
 
-            for c in combo:
-                capital = collar_capital_required(c)
-                spread = collar_spread_cost(c)
+        positions.append((c, lots))
+        used_tickers.add(c.ticker)
 
-                sleeves.append({
-                    "type": "collar",
-                    "ticker": c.ticker,
-                    "exposure": c.exposure,
-                    "allocation_dollars": round(capital, 2),
-                    "allocation_pct": round(capital / investment_amount, 4),
-                    "minimum_executable_collar_cost": round(capital, 2),
+        capital_remaining -= capital * lots
+        risk_remaining -= loss * lots
 
-                    "stock_price": c.stock_price,
-                    "shares": c.shares,
-                    "contracts": c.contracts,
-                    "stock_value": round(c.stock_value, 2),
+    if not positions:
+        return make_treasury_only_portfolio(
+            investment_amount,
+            max_loss_pct,
+            time_horizon_days,
+            treasury_ticker,
+            assumed_treasury_yield,
+            tier,
+            "The selected max loss target is tighter than the minimum collar size allows, so the portfolio is allocated to the Treasury sleeve.",
+        )
 
-                    "expiration": c.expiration,
-                    "dte": c.dte,
+    treasury_amount = capital_remaining
+    collar_capital = sum(collar_capital_required(c) * lots for c, lots in positions)
 
-                    "sleeve_max_loss_pct": round(c.sleeve_max_loss_pct, 4),
-                    "sleeve_max_gain_pct": round(c.sleeve_max_gain_pct, 4),
-                    "sleeve_max_gain_annualized_pct": round(
-                        annualize_return(c.sleeve_max_gain_pct, c.dte),
-                        4,
-                    ),
+    loss_dollars = sum(collar_loss_dollars(c) * lots for c, lots in positions)
+    gain_dollars = sum(collar_gain_dollars(c) * lots for c, lots in positions)
 
-                    "portfolio_max_loss_contribution_dollars": round(capital * c.sleeve_max_loss_pct, 2),
-                    "portfolio_max_loss_contribution_pct": round((capital * c.sleeve_max_loss_pct) / investment_amount, 4),
-                    "portfolio_max_gain_contribution_dollars": round(capital * c.sleeve_max_gain_pct, 2),
-                    "portfolio_max_gain_contribution_pct": round((capital * c.sleeve_max_gain_pct) / investment_amount, 4),
+    gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
 
-                    "option_legs": {
-                        "long_put": asdict(c.long_put),
-                        "short_call": asdict(c.short_call),
-                    },
+    actual_loss_pct = loss_dollars / investment_amount
+    actual_gain_pct = gain_dollars / investment_amount
 
-                    "option_execution": spread,
-                    "execution_quality_passed": execution_quality_passes(c),
-                    "liquidity_score": c.liquidity_score,
-                    "quote_timestamp": c.quote_timestamp,
-                })
+    weighted_dte = sum(
+        collar_capital_required(c) * lots * c.dte
+        for c, lots in positions
+    ) / max(collar_capital, 1)
 
-            sleeves.append({
-                "type": "treasury",
-                "ticker": treasury_ticker,
-                "exposure": "Treasury Sleeve",
-                "allocation_dollars": round(treasury_amount, 2),
-                "allocation_pct": round(treasury_pct, 4),
-                "assumed_yield": assumed_treasury_yield,
-                "estimated_income_dollars": round(
-                    treasury_amount * assumed_treasury_yield * (time_horizon_days / 365),
-                    2,
-                ),
-                "sleeve_max_loss_pct": 0,
-                "sleeve_max_gain_pct": round(assumed_treasury_yield * (time_horizon_days / 365), 4),
-                "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
-            })
+    estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, weighted_dte)
 
-            warnings = []
+    sleeves = []
 
-            if any(c.ticker in ["TQQQ", "UPRO"] for c in combo):
-                warnings.append(
-                    "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
-                )
+    for c, lots in positions:
+        capital = collar_capital_required(c) * lots
+        spread = collar_spread_cost(c)
 
-            for c in combo:
-                spread = collar_spread_cost(c)
+        sleeves.append({
+            "type": "collar",
+            "ticker": c.ticker,
+            "exposure": c.exposure,
+            "allocation_dollars": round(capital, 2),
+            "allocation_pct": round(capital / investment_amount, 4),
+            "minimum_executable_collar_cost": round(collar_capital_required(c), 2),
 
-                if spread["total_option_spread_dollars"] > 400:
-                    warnings.append(f"{c.ticker} collar has a wide combined option spread.")
+            "stock_price": c.stock_price,
+            "shares": c.shares * lots,
+            "contracts": c.contracts * lots,
+            "lots": lots,
+            "stock_value": round(c.stock_value * lots, 2),
 
-                if abs(c.dte - time_horizon_days) > 120:
-                    warnings.append(
-                        f"{c.ticker} uses an expiration {int(c.dte)} days out, which differs from the requested {time_horizon_days}-day horizon."
-                    )
+            "expiration": c.expiration,
+            "dte": c.dte,
 
-            portfolio = {
-                "account_tier": tier,
-                "investment_amount": investment_amount,
-                "input_max_loss_pct": max_loss_pct,
-                "actual_max_loss_dollars": round(loss_dollars, 2),
-                "actual_max_loss_pct": round(actual_loss_pct, 4),
-                "estimated_max_gain_dollars": round(gain_dollars, 2),
-                "estimated_max_gain_pct": round(actual_gain_pct, 4),
-                "estimated_max_gain_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
-                "weighted_option_dte": round(weighted_dte, 1),
-                "avg_expiry_fit": round(avg_expiry_fit, 2),
-                "time_horizon_days": time_horizon_days,
-                "treasury_ticker": treasury_ticker,
-                "assumed_treasury_yield": assumed_treasury_yield,
-                "sleeves": sleeves,
-                "warnings": warnings,
-            }
+            "sleeve_max_loss_pct": round(c.sleeve_max_loss_pct, 4),
+            "sleeve_max_gain_pct": round(c.sleeve_max_gain_pct, 4),
+            "sleeve_max_gain_annualized_pct": round(
+                annualize_return(c.sleeve_max_gain_pct, c.dte),
+                4,
+            ),
 
-            portfolio["portfolio_summary"] = build_portfolio_summary(
-                sleeves=sleeves,
-                investment_amount=investment_amount,
-                actual_max_loss_pct=actual_loss_pct,
-                estimated_max_gain_pct=actual_gain_pct,
-                estimated_max_gain_annualized_pct=estimated_max_gain_annualized_pct,
-            )
+            "portfolio_max_loss_contribution_dollars": round(collar_loss_dollars(c) * lots, 2),
+            "portfolio_max_loss_contribution_pct": round((collar_loss_dollars(c) * lots) / investment_amount, 4),
+            "portfolio_max_gain_contribution_dollars": round(collar_gain_dollars(c) * lots, 2),
+            "portfolio_max_gain_contribution_pct": round((collar_gain_dollars(c) * lots) / investment_amount, 4),
 
-            possible.append(portfolio)
+            "option_legs": {
+                "long_put": asdict(c.long_put),
+                "short_call": asdict(c.short_call),
+            },
 
-    if not possible:
-        return {
-            "status": "no_portfolio_found",
-            "message": "No executable diversified portfolio met the user's account size and risk tolerance.",
-            "investment_amount": investment_amount,
-            "max_loss_pct": max_loss_pct,
-            "account_tier": tier,
-            "eligible_candidate_count": len(eligible),
-            "raw_candidate_count": len(collar_candidates),
-            "debug": LAST_DEBUG,
-        }
+            "option_execution": spread,
+            "execution_quality_passed": execution_quality_passes(c),
+            "liquidity_score": c.liquidity_score,
+            "efficiency": round(collar_efficiency(c), 4),
+            "quote_timestamp": c.quote_timestamp,
+        })
 
-    possible.sort(
-        key=lambda x: (
-            x["estimated_max_gain_annualized_pct"],
-            x["estimated_max_gain_pct"],
-            x["actual_max_loss_pct"],
-            -x["avg_expiry_fit"],
+    sleeves.append({
+        "type": "treasury",
+        "ticker": treasury_ticker,
+        "exposure": "Treasury Sleeve",
+        "allocation_dollars": round(treasury_amount, 2),
+        "allocation_pct": round(treasury_amount / investment_amount, 4),
+        "assumed_yield": assumed_treasury_yield,
+        "estimated_income_dollars": round(
+            treasury_amount * assumed_treasury_yield * (time_horizon_days / 365),
+            2,
         ),
-        reverse=True,
+        "sleeve_max_loss_pct": 0,
+        "sleeve_max_gain_pct": round(assumed_treasury_yield * (time_horizon_days / 365), 4),
+        "sleeve_max_gain_annualized_pct": assumed_treasury_yield,
+    })
+
+    warnings = []
+
+    if any(c.ticker in ["TQQQ", "UPRO"] for c, _ in positions):
+        warnings.append(
+            "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
+        )
+
+    for c, _ in positions:
+        spread = collar_spread_cost(c)
+
+        if spread["total_option_spread_dollars"] > 400:
+            warnings.append(f"{c.ticker} collar has a wide combined option spread.")
+
+        if abs(c.dte - time_horizon_days) > 120:
+            warnings.append(
+                f"{c.ticker} uses an expiration {int(c.dte)} days out, which differs from the requested {time_horizon_days}-day horizon."
+            )
+
+    portfolio = {
+        "portfolio_type": "risk_budget_greedy",
+        "account_tier": tier,
+        "investment_amount": investment_amount,
+        "input_max_loss_pct": max_loss_pct,
+        "actual_max_loss_dollars": round(loss_dollars, 2),
+        "actual_max_loss_pct": round(actual_loss_pct, 4),
+        "estimated_max_gain_dollars": round(gain_dollars, 2),
+        "estimated_max_gain_pct": round(actual_gain_pct, 4),
+        "estimated_max_gain_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
+        "weighted_option_dte": round(weighted_dte, 1),
+        "time_horizon_days": time_horizon_days,
+        "treasury_ticker": treasury_ticker,
+        "assumed_treasury_yield": assumed_treasury_yield,
+        "risk_budget_dollars": round(risk_budget, 2),
+        "risk_used_dollars": round(loss_dollars, 2),
+        "risk_remaining_dollars": round(max(risk_budget - loss_dollars, 0), 2),
+        "capital_used_dollars": round(investment_amount - treasury_amount, 2),
+        "capital_remaining_dollars": round(treasury_amount, 2),
+        "sleeves": sleeves,
+        "warnings": warnings,
+    }
+
+    portfolio["portfolio_summary"] = build_portfolio_summary(
+        sleeves=sleeves,
+        investment_amount=investment_amount,
+        actual_max_loss_pct=actual_loss_pct,
+        estimated_max_gain_pct=actual_gain_pct,
+        estimated_max_gain_annualized_pct=estimated_max_gain_annualized_pct,
     )
 
     return {
         "status": "success",
-        "portfolio": possible[0],
+        "portfolio": portfolio,
         "debug": LAST_DEBUG,
     }

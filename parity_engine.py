@@ -1,4 +1,5 @@
 # parity_engine.py
+# Full replacement file
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from typing import Optional
 from datetime import datetime, timezone
 
 import pandas as pd
+import pulp
 
 from parity_collar_engine import fetch_orats_chain, clean_chain
 
@@ -28,6 +30,7 @@ class OptionLeg:
 class CollarCandidate:
     ticker: str
     exposure: str
+    bucket: str
     shares: int
     contracts: int
     stock_price: float
@@ -40,6 +43,13 @@ class CollarCandidate:
     sleeve_max_gain_pct: float
     liquidity_score: float
     quote_timestamp: str
+    assumed_dividend_yield: float = 0.0
+    expected_dividend_dollars: float = 0.0
+    option_max_gain_dollars: float = 0.0
+    option_max_loss_dollars: float = 0.0
+    net_option_cost_dollars: float = 0.0
+    net_option_cost_bps: float = 0.0
+    max_allowed_sleeve_loss_pct: float = 0.0
 
 
 LAST_DEBUG = []
@@ -51,25 +61,180 @@ def annualize_return(total_return: float, dte: float) -> float:
     return (1 + total_return) ** (365 / dte) - 1
 
 
+def get_dividend_yield(ticker: str, dividend_yields: Optional[dict[str, float]] = None) -> float:
+    if not dividend_yields:
+        return 0.0
+
+    value = dividend_yields.get(ticker.upper(), 0.0)
+
+    try:
+        value = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+    # Accept either decimal form, e.g. 0.025, or percent form, e.g. 2.5.
+    if value > 1:
+        value = value / 100
+
+    return max(value, 0.0)
+
+
+def normalize_growth_preference(value: str | None) -> str:
+    value = (value or "balanced").lower().strip()
+
+    if value in ["conservative", "protect", "capital_preservation"]:
+        return "conservative"
+    if value in ["balanced", "default"]:
+        return "balanced"
+    if value in ["growth", "more_growth"]:
+        return "growth"
+    if value in ["maximum_growth", "max_growth", "aggressive"]:
+        return "maximum_growth"
+
+    return "balanced"
+
+
+def growth_preference_config(growth_preference: str) -> dict:
+    growth_preference = normalize_growth_preference(growth_preference)
+
+    return {
+        "conservative": {
+            "collar_capital_reward": 0.02,
+            "risk_usage_reward": 0.01,
+            "sleeve_reward": 75.0,
+            "max_lots_per_candidate": 5,
+            "min_sleeve_boost": 1,
+        },
+        "balanced": {
+            "collar_capital_reward": 0.08,
+            "risk_usage_reward": 0.02,
+            "sleeve_reward": 75.0,
+            "max_lots_per_candidate": 8,
+            "min_sleeve_boost": 1,
+        },
+        "growth": {
+            "collar_capital_reward": 0.15,
+            "risk_usage_reward": 0.03,
+            "sleeve_reward": 50.0,
+            "max_lots_per_candidate": 10,
+            "min_sleeve_boost": 0,
+        },
+        "maximum_growth": {
+            "collar_capital_reward": 0.25,
+            "risk_usage_reward": 0.04,
+            "sleeve_reward": 25.0,
+            "max_lots_per_candidate": 12,
+            "min_sleeve_boost": 0,
+        },
+    }[growth_preference]
+
+
+def max_allowed_sleeve_loss_pct(
+    portfolio_max_loss_pct: float,
+    growth_preference: str = "balanced",
+) -> float:
+    """
+    Product guardrail for sleeve-level loss.
+
+    Portfolio max loss is a weighted average of sleeve losses, so a sleeve
+    may have more loss than the portfolio target. But it should scale with
+    the user-selected portfolio floor and should never become a deep-disaster
+    hedge like a 40% max-loss collar for a 2% or 5% portfolio.
+
+    Piecewise behavior:
+      - conservative: 1.5x portfolio max loss
+      - balanced:     2.0x portfolio max loss
+      - growth:       2.5x portfolio max loss
+      - max growth:   3.0x portfolio max loss
+
+    Always enforce a 5% practical minimum and 30% absolute maximum.
+    """
+    pref = normalize_growth_preference(growth_preference)
+
+    multiplier = {
+        "conservative": 1.5,
+        "balanced": 2.0,
+        "growth": 2.5,
+        "maximum_growth": 3.0,
+    }.get(pref, 2.0)
+
+    try:
+        target = float(portfolio_max_loss_pct or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+
+    return min(0.30, max(0.05, target * multiplier))
+
+
+def max_ticker_gain_contribution_pct(
+    portfolio_max_loss_pct: float,
+    growth_preference: str = "balanced",
+) -> float:
+    """
+    Product guardrail for upside concentration.
+
+    We do not want one sleeve to drive most of the portfolio's max gain.
+    This caps each ticker's total max-gain contribution as a percentage
+    of the full portfolio value. It scales with the user's selected
+    portfolio max loss and growth preference.
+
+    Example:
+      10% max-loss + growth => 6% max gain contribution per ticker.
+
+    This keeps the optimizer from making one big directional bet while
+    still allowing growth portfolios to have more upside concentration
+    than conservative portfolios.
+    """
+    pref = normalize_growth_preference(growth_preference)
+
+    multiplier = {
+        "conservative": 0.40,
+        "balanced": 0.50,
+        "growth": 0.60,
+        "maximum_growth": 0.75,
+    }.get(pref, 0.50)
+
+    try:
+        target = float(portfolio_max_loss_pct or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+
+    return min(0.08, max(0.025, target * multiplier))
+
+
 def get_account_tier(amount: float) -> str:
     if amount < 10_000:
         return "below_minimum"
     if amount < 25_000:
         return "tier_1"
-    if amount < 75_000:
+    if amount < 100_000:
         return "tier_2"
     if amount < 250_000:
         return "tier_3"
     return "tier_4"
 
 
-def allowed_etfs(tier: str) -> list[str]:
-    return {
+def allowed_etfs(tier: str, include_bitcoin: bool = False) -> list[str]:
+    universe = {
+        # $10k-$25k
         "tier_1": ["TQQQ"],
-        "tier_2": ["TQQQ", "EEM"],
-        "tier_3": ["TQQQ", "UPRO", "EEM", "EFA"],
-        "tier_4": ["SPY", "QQQ", "IWM", "EEM", "EFA"],
-    }.get(tier, [])
+
+        # $25k-$100k
+        "tier_2": ["TQQQ", "EEM", "EFA"],
+
+        # $100k-$250k
+        "tier_3": ["TQQQ", "IWM", "EEM", "EFA"],
+
+        # $250k+
+        # Tier 4 upgrades from TQQQ to QQQ to avoid leveraged ETF reset/path dependency.
+        "tier_4": ["QQQ", "IWM", "EEM", "EFA"],
+    }.get(tier, []).copy()
+
+    # Bitcoin is always opt-in and starts at Tier 2.
+    if include_bitcoin and tier in ["tier_2", "tier_3", "tier_4"]:
+        universe.append("IBIT")
+
+    return universe
 
 
 def exposure_name(ticker: str) -> str:
@@ -81,7 +246,22 @@ def exposure_name(ticker: str) -> str:
         "SPY": "U.S. Large Cap",
         "QQQ": "Technology Growth",
         "IWM": "U.S. Small Cap",
+        "IBIT": "Bitcoin",
     }.get(ticker.upper(), ticker.upper())
+
+
+def correlation_bucket(ticker: str) -> str:
+    return {
+        "TQQQ": "leveraged_us_equity",
+        "UPRO": "leveraged_us_equity",
+        "SPXL": "leveraged_us_equity",
+        "SPY": "us_equity",
+        "QQQ": "us_growth",
+        "IWM": "us_small_cap",
+        "EEM": "emerging_markets",
+        "EFA": "developed_international",
+        "IBIT": "bitcoin",
+    }.get(ticker.upper(), "other")
 
 
 def _col(df: pd.DataFrame, names: list[str]) -> Optional[str]:
@@ -247,8 +427,7 @@ def collar_annualized_gain_dollars(c: CollarCandidate) -> float:
 
 
 def collar_efficiency(c: CollarCandidate) -> float:
-    loss = max(collar_loss_dollars(c), 1)
-    return collar_annualized_gain_dollars(c) / loss
+    return collar_annualized_gain_dollars(c) / max(collar_loss_dollars(c), 1)
 
 
 def collar_spread_cost(c: CollarCandidate) -> dict:
@@ -287,6 +466,9 @@ def build_collar_candidates_for_expiry(
     ticker: str,
     expiration: str,
     dte: float,
+    dividend_yields: Optional[dict[str, float]] = None,
+    max_net_option_cost_bps: float = 50.0,
+    max_sleeve_loss_pct: float = 0.30,
 ) -> list[CollarCandidate]:
 
     if expiry_chain is None or expiry_chain.empty:
@@ -296,6 +478,7 @@ def build_collar_candidates_for_expiry(
     strike_col = _strike_col(chain)
     stock_price = _stock_price(chain)
     timestamp = datetime.now(timezone.utc).isoformat()
+    assumed_dividend_yield = get_dividend_yield(ticker, dividend_yields)
 
     chain[strike_col] = pd.to_numeric(chain[strike_col], errors="coerce")
     chain = chain.dropna(subset=[strike_col]).sort_values(strike_col)
@@ -313,47 +496,31 @@ def build_collar_candidates_for_expiry(
     if puts.empty or calls.empty:
         return []
 
-    # Instead of brute forcing every put/call combination, keep targeted strikes:
-    # - low-loss puts near spot
-    # - lower-cost puts farther OTM
-    # - calls near spot for income
-    # - calls farther OTM for upside
     puts["put_moneyness"] = puts[strike_col] / stock_price
     calls["call_moneyness"] = calls[strike_col] / stock_price
 
-    put_targets = [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60, 0.50]
-    call_targets = [1.05, 1.10, 1.15, 1.25, 1.40, 1.60, 2.00, 2.50]
+    put_targets = [0.98, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60, 0.50, 0.40]
+    call_targets = [1.03, 1.05, 1.10, 1.15, 1.25, 1.40, 1.60, 2.00, 2.50]
 
     selected_puts = []
     selected_calls = []
 
     for target in put_targets:
-        nearest = (
+        selected_puts.append(
             puts.assign(distance=(puts["put_moneyness"] - target).abs())
             .sort_values("distance")
             .head(2)
         )
-        selected_puts.append(nearest)
 
     for target in call_targets:
-        nearest = (
+        selected_calls.append(
             calls.assign(distance=(calls["call_moneyness"] - target).abs())
             .sort_values("distance")
             .head(2)
         )
-        selected_calls.append(nearest)
 
-    puts = (
-        pd.concat(selected_puts)
-        .drop_duplicates(subset=[strike_col])
-        .sort_values(strike_col)
-    )
-
-    calls = (
-        pd.concat(selected_calls)
-        .drop_duplicates(subset=[strike_col])
-        .sort_values(strike_col)
-    )
+    puts = pd.concat(selected_puts).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
+    calls = pd.concat(selected_calls).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
 
     candidates = []
 
@@ -374,17 +541,45 @@ def build_collar_candidates_for_expiry(
             shares = 100
             contracts = 1
             stock_value = stock_price * shares
+
+            # Conservative executable collar cost:
+            # buy the put at ask and sell the call at bid.
+            # Positive = debit paid. Negative = credit received.
             net_option_cost = (put.ask - call.bid) * 100
+            net_option_cost_bps = (net_option_cost / stock_value) * 10_000 if stock_value > 0 else 0.0
+
+            # Do not allow expensive debit/credit collars into the optimizer.
+            # We are not modeling theta/option decay, so only keep near-zero-cost structures.
+            if abs(net_option_cost_bps) > max_net_option_cost_bps:
+                continue
+
             capital = stock_value + net_option_cost
 
             if capital <= 0:
                 continue
 
-            max_loss_dollars = max(0, capital - put_strike * 100)
-            max_gain_dollars = max(0, call_strike * 100 - capital)
+            expected_dividend_dollars = (
+                stock_value
+                * assumed_dividend_yield
+                * (float(dte) / 365.25)
+            )
+
+            floor_value = put_strike * 100 + expected_dividend_dollars
+            cap_value = call_strike * 100 + expected_dividend_dollars
+
+            max_loss_dollars = max(0, capital - floor_value)
+            option_max_gain_dollars = max(0, call_strike * 100 - capital)
+            max_gain_dollars = max(0, cap_value - capital)
 
             sleeve_max_loss_pct = max_loss_dollars / capital
             sleeve_max_gain_pct = max_gain_dollars / capital
+
+            # Product guardrail: zero-cost collars can otherwise select very deep
+            # OTM puts. That may be mathematically feasible at the portfolio level,
+            # but it creates ugly sleeves (for example, 40% max-loss TQQQ collars).
+            # Keep each sleeve's floor reasonably tied to the user's portfolio floor.
+            if sleeve_max_loss_pct > max_sleeve_loss_pct:
+                continue
 
             if sleeve_max_loss_pct <= 0 or sleeve_max_gain_pct <= 0:
                 continue
@@ -392,6 +587,7 @@ def build_collar_candidates_for_expiry(
             candidate = CollarCandidate(
                 ticker=ticker.upper(),
                 exposure=exposure_name(ticker),
+                bucket=correlation_bucket(ticker),
                 shares=shares,
                 contracts=contracts,
                 stock_price=round(stock_price, 4),
@@ -404,6 +600,13 @@ def build_collar_candidates_for_expiry(
                 sleeve_max_gain_pct=round(sleeve_max_gain_pct, 4),
                 liquidity_score=_liquidity_score(put, call),
                 quote_timestamp=timestamp,
+                assumed_dividend_yield=round(assumed_dividend_yield, 6),
+                expected_dividend_dollars=round(expected_dividend_dollars, 2),
+                option_max_gain_dollars=round(option_max_gain_dollars, 2),
+                option_max_loss_dollars=round(max_loss_dollars, 2),
+                net_option_cost_dollars=round(net_option_cost, 2),
+                net_option_cost_bps=round(net_option_cost_bps, 2),
+                max_allowed_sleeve_loss_pct=round(max_sleeve_loss_pct, 4),
             )
 
             if execution_quality_passes(candidate):
@@ -411,29 +614,26 @@ def build_collar_candidates_for_expiry(
 
     return candidates
 
-def pareto_reduce(candidates: list[CollarCandidate], max_per_etf: int = 10) -> list[CollarCandidate]:
-    """
-    Keep the Pareto frontier:
-    no collar should be kept if another collar has lower/equal loss
-    and higher/equal annualized gain.
-    """
+
+def pareto_reduce(candidates: list[CollarCandidate], max_per_etf: int = 12) -> list[CollarCandidate]:
     frontier = []
 
     sorted_candidates = sorted(
         candidates,
-        key=lambda c: (c.sleeve_max_loss_pct, -annualize_return(c.sleeve_max_gain_pct, c.dte)),
+        key=lambda c: (
+            c.sleeve_max_loss_pct,
+            -annualize_return(c.sleeve_max_gain_pct, c.dte),
+        ),
     )
 
     best_gain_so_far = -1.0
 
     for c in sorted_candidates:
         annual_gain = annualize_return(c.sleeve_max_gain_pct, c.dte)
-
         if annual_gain > best_gain_so_far:
             frontier.append(c)
             best_gain_so_far = annual_gain
 
-    # Keep a balanced mix: efficient, low-loss, and high-upside.
     by_efficiency = sorted(frontier, key=collar_efficiency, reverse=True)[:max_per_etf]
     by_low_loss = sorted(frontier, key=lambda c: c.sleeve_max_loss_pct)[:max_per_etf]
     by_upside = sorted(
@@ -455,21 +655,31 @@ def generate_portfolio_collar_candidates(
     investment_amount: float,
     max_loss_pct: float,
     time_horizon_days: int,
+    include_bitcoin: bool = False,
+    dividend_yields: Optional[dict[str, float]] = None,
+    max_net_option_cost_bps: float = 50.0,
+    growth_preference: str = "balanced",
 ) -> list[CollarCandidate]:
 
     global LAST_DEBUG
     LAST_DEBUG = []
 
     tier = get_account_tier(investment_amount)
+    growth_preference = normalize_growth_preference(growth_preference)
+    max_sleeve_loss = max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference)
 
     if tier == "below_minimum":
         return []
 
     all_candidates = []
 
-    for ticker in allowed_etfs(tier):
+    for ticker in allowed_etfs(tier, include_bitcoin=include_bitcoin):
         debug = {
             "ticker": ticker,
+            "assumed_dividend_yield": get_dividend_yield(ticker, dividend_yields),
+            "max_net_option_cost_bps": max_net_option_cost_bps,
+            "growth_preference": growth_preference,
+            "max_allowed_sleeve_loss_pct": max_sleeve_loss,
             "stage": "start",
             "raw_rows": None,
             "clean_rows": None,
@@ -504,6 +714,9 @@ def generate_portfolio_collar_candidates(
                     ticker=ticker,
                     expiration=expiry,
                     dte=dte,
+                    dividend_yields=dividend_yields,
+                    max_net_option_cost_bps=max_net_option_cost_bps,
+                    max_sleeve_loss_pct=max_sleeve_loss,
                 )
 
                 debug["expiry_groups"].append({
@@ -519,7 +732,7 @@ def generate_portfolio_collar_candidates(
 
             ticker_candidates = pareto_reduce(
                 ticker_candidates,
-                max_per_etf=10,
+                max_per_etf=12,
             )
 
             debug["candidate_count_after_pareto"] = len(ticker_candidates)
@@ -563,11 +776,17 @@ def make_treasury_only_portfolio(
             "time_horizon_days": time_horizon_days,
             "treasury_ticker": treasury_ticker,
             "assumed_treasury_yield": assumed_treasury_yield,
+            "risk_budget_dollars": round(investment_amount * max_loss_pct, 2),
+            "risk_used_dollars": 0,
+            "risk_remaining_dollars": round(investment_amount * max_loss_pct, 2),
+            "capital_used_dollars": 0,
+            "capital_remaining_dollars": round(investment_amount, 2),
             "sleeves": [
                 {
                     "type": "treasury",
                     "ticker": treasury_ticker,
                     "exposure": "Treasury Sleeve",
+                    "bucket": "treasury",
                     "allocation_dollars": round(investment_amount, 2),
                     "allocation_pct": 1.0,
                     "assumed_yield": assumed_treasury_yield,
@@ -613,6 +832,210 @@ def build_portfolio_summary(
     }
 
 
+def min_non_treasury_sleeves_for_tier(tier: str, max_loss_pct: float) -> int:
+    if tier == "tier_1":
+        return 1
+    if max_loss_pct <= 0.03:
+        return 2
+    if tier == "tier_2":
+        return 2
+    if tier == "tier_3":
+        return 2
+    if tier == "tier_4":
+        return 3
+    return 1
+
+
+def get_constraint_set(tier: str, max_loss_pct: float, growth_preference: str = "balanced") -> list[dict]:
+    growth_preference = normalize_growth_preference(growth_preference)
+    pref = growth_preference_config(growth_preference)
+
+    min_sleeves = min_non_treasury_sleeves_for_tier(tier, max_loss_pct)
+    min_sleeves = max(1, min_sleeves + pref["min_sleeve_boost"])
+
+    if growth_preference == "conservative":
+        ticker_cap = {"tier_1": 1.00, "tier_2": 0.50, "tier_3": 0.40, "tier_4": 0.30}.get(tier, 0.40)
+        ticker_risk = {"tier_1": 1.00, "tier_2": 0.60, "tier_3": 0.50, "tier_4": 0.45}.get(tier, 0.50)
+        bucket_risk = {"tier_1": 1.00, "tier_2": 0.70, "tier_3": 0.60, "tier_4": 0.55}.get(tier, 0.60)
+    elif growth_preference == "balanced":
+        ticker_cap = {"tier_1": 1.00, "tier_2": 0.55, "tier_3": 0.45, "tier_4": 0.35}.get(tier, 0.45)
+        ticker_risk = {"tier_1": 1.00, "tier_2": 0.70, "tier_3": 0.60, "tier_4": 0.50}.get(tier, 0.60)
+        bucket_risk = {"tier_1": 1.00, "tier_2": 0.80, "tier_3": 0.70, "tier_4": 0.60}.get(tier, 0.70)
+    elif growth_preference == "growth":
+        ticker_cap = {"tier_1": 1.00, "tier_2": 0.65, "tier_3": 0.55, "tier_4": 0.45}.get(tier, 0.55)
+        ticker_risk = {"tier_1": 1.00, "tier_2": 0.80, "tier_3": 0.70, "tier_4": 0.60}.get(tier, 0.70)
+        bucket_risk = {"tier_1": 1.00, "tier_2": 0.90, "tier_3": 0.80, "tier_4": 0.70}.get(tier, 0.80)
+    else:
+        ticker_cap = {"tier_1": 1.00, "tier_2": 0.80, "tier_3": 0.70, "tier_4": 0.60}.get(tier, 0.70)
+        ticker_risk = 1.00
+        bucket_risk = 1.00
+
+    gain_cap = max_ticker_gain_contribution_pct(max_loss_pct, growth_preference)
+
+    return [
+        {
+            "name": f"{growth_preference}_diversified",
+            "growth_preference": growth_preference,
+            "min_sleeves": min_sleeves,
+            "max_ticker_capital_pct": ticker_cap,
+            "max_ticker_risk_pct": ticker_risk,
+            "max_bucket_risk_pct": bucket_risk,
+            "max_ticker_gain_contribution_pct": gain_cap,
+            "max_lots_per_candidate": pref["max_lots_per_candidate"],
+            "collar_capital_reward": pref["collar_capital_reward"],
+            "risk_usage_reward": pref["risk_usage_reward"],
+            "sleeve_reward": pref["sleeve_reward"],
+            # First pass: require every ticker in the tier that has feasible
+            # candidates to be represented at least once. If this cannot be
+            # solved, the relaxed pass below allows the optimizer to drop one.
+            "require_all_tickers": True,
+        },
+        {
+            "name": f"{growth_preference}_relaxed",
+            "growth_preference": growth_preference,
+            "min_sleeves": max(1, min_sleeves - 1),
+            "max_ticker_capital_pct": min(1.0, ticker_cap + 0.15),
+            "max_ticker_risk_pct": min(1.0, ticker_risk + 0.15),
+            "max_bucket_risk_pct": min(1.0, bucket_risk + 0.15),
+            "max_ticker_gain_contribution_pct": min(0.12, gain_cap * 1.25),
+            "max_lots_per_candidate": pref["max_lots_per_candidate"],
+            "collar_capital_reward": pref["collar_capital_reward"],
+            "risk_usage_reward": pref["risk_usage_reward"],
+            "sleeve_reward": pref["sleeve_reward"],
+            "require_all_tickers": False,
+        },
+        {
+            "name": "return_maximized",
+            "growth_preference": growth_preference,
+            "min_sleeves": 1,
+            "max_ticker_capital_pct": 1.0,
+            "max_ticker_risk_pct": 1.0,
+            "max_bucket_risk_pct": 1.0,
+            "max_ticker_gain_contribution_pct": 1.0,
+            "max_lots_per_candidate": pref["max_lots_per_candidate"],
+            "collar_capital_reward": pref["collar_capital_reward"],
+            "risk_usage_reward": pref["risk_usage_reward"],
+            "sleeve_reward": 0.0,
+            "require_all_tickers": False,
+        },
+    ]
+
+
+def solve_milp_for_constraints(
+    eligible: list[CollarCandidate],
+    investment_amount: float,
+    max_loss_pct: float,
+    time_horizon_days: int,
+    assumed_treasury_yield: float,
+    constraints: dict,
+) -> tuple[str, list[tuple[CollarCandidate, int]]]:
+
+    risk_budget = investment_amount * max_loss_pct
+    model = pulp.LpProblem("Parity_Portfolio", pulp.LpMaximize)
+
+    x = {}
+    y = {}
+
+    for i, c in enumerate(eligible):
+        cap = collar_capital_required(c)
+        loss = max(collar_loss_dollars(c), 1)
+
+        max_lots_by_capital = int(investment_amount // cap)
+        max_lots_by_risk = int(risk_budget // loss)
+        max_lots = max(0, min(max_lots_by_capital, max_lots_by_risk, constraints["max_lots_per_candidate"]))
+
+        x[i] = pulp.LpVariable(f"x_{i}", lowBound=0, upBound=max_lots, cat="Integer")
+        y[i] = pulp.LpVariable(f"y_{i}", lowBound=0, upBound=1, cat="Binary")
+
+        model += x[i] <= max_lots * y[i]
+
+    collar_capital_expr = pulp.lpSum(
+        x[i] * collar_capital_required(c) for i, c in enumerate(eligible)
+    )
+
+    collar_loss_expr = pulp.lpSum(
+        x[i] * collar_loss_dollars(c) for i, c in enumerate(eligible)
+    )
+
+    model += collar_capital_expr <= investment_amount
+    model += collar_loss_expr <= risk_budget
+
+    for ticker in set(c.ticker for c in eligible):
+        idxs = [i for i, c in enumerate(eligible) if c.ticker == ticker]
+
+        # At most one strike/expiration structure per ticker.
+        # Lots can still be greater than one on the selected structure.
+        model += pulp.lpSum(y[i] for i in idxs) <= 1
+
+        # Optional first-pass product constraint:
+        # In diversified mode, require each allowed ticker that has feasible
+        # candidates to appear at least once. If this makes the solve
+        # infeasible, optimize_parity_portfolio falls through to relaxed mode,
+        # where this requirement is disabled.
+        if constraints.get("require_all_tickers", False):
+            model += pulp.lpSum(y[i] for i in idxs) >= 1
+
+        model += (
+            pulp.lpSum(x[i] * collar_capital_required(eligible[i]) for i in idxs)
+            <= investment_amount * constraints["max_ticker_capital_pct"]
+        )
+
+        model += (
+            pulp.lpSum(x[i] * collar_loss_dollars(eligible[i]) for i in idxs)
+            <= risk_budget * constraints["max_ticker_risk_pct"]
+        )
+
+        # Upside concentration guardrail:
+        # No single ticker should drive most of the portfolio max gain.
+        # This uses total collar max gain, including expected dividends if supplied.
+        model += (
+            pulp.lpSum(x[i] * collar_gain_dollars(eligible[i]) for i in idxs)
+            <= investment_amount * constraints["max_ticker_gain_contribution_pct"]
+        )
+
+    for bucket in set(c.bucket for c in eligible):
+        idxs = [i for i, c in enumerate(eligible) if c.bucket == bucket]
+        model += (
+            pulp.lpSum(x[i] * collar_loss_dollars(eligible[i]) for i in idxs)
+            <= risk_budget * constraints["max_bucket_risk_pct"]
+        )
+
+    if constraints["min_sleeves"] > 1:
+        model += pulp.lpSum(y[i] for i in range(len(eligible))) >= constraints["min_sleeves"]
+
+    collar_annualized_gain_expr = pulp.lpSum(
+        x[i] * collar_annualized_gain_dollars(c) for i, c in enumerate(eligible)
+    )
+
+    sgov_income_expr = (
+        investment_amount - collar_capital_expr
+    ) * assumed_treasury_yield
+
+    model += (
+        collar_annualized_gain_expr
+        + sgov_income_expr
+        + constraints["collar_capital_reward"] * collar_capital_expr
+        + constraints["risk_usage_reward"] * collar_loss_expr
+        + constraints["sleeve_reward"] * pulp.lpSum(y[i] for i in range(len(eligible)))
+    )
+
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=5)
+    result_status = model.solve(solver)
+    status = pulp.LpStatus[result_status]
+
+    selected = []
+
+    if status not in ["Optimal", "Feasible"]:
+        return status, selected
+
+    for i, c in enumerate(eligible):
+        lots = int(round(x[i].value() or 0))
+        if lots > 0:
+            selected.append((c, lots))
+
+    return status, selected
+
+
 def optimize_parity_portfolio(
     investment_amount: float,
     max_loss_pct: float,
@@ -620,8 +1043,11 @@ def optimize_parity_portfolio(
     collar_candidates: list[CollarCandidate],
     treasury_ticker: str = "SGOV",
     assumed_treasury_yield: float = 0.045,
+    growth_preference: str = "balanced",
+    include_bitcoin: bool = False,
 ) -> dict:
 
+    growth_preference = normalize_growth_preference(growth_preference)
     tier = get_account_tier(investment_amount)
 
     if tier == "below_minimum":
@@ -634,7 +1060,7 @@ def optimize_parity_portfolio(
 
     eligible = [
         c for c in collar_candidates
-        if c.ticker in allowed_etfs(tier)
+        if c.ticker in allowed_etfs(tier, include_bitcoin=include_bitcoin)
         and collar_capital_required(c) <= investment_amount
         and c.sleeve_max_loss_pct > 0
         and c.sleeve_max_gain_pct > 0
@@ -652,69 +1078,25 @@ def optimize_parity_portfolio(
             "No executable collar passed the current option filters, so the portfolio is allocated to the Treasury sleeve.",
         )
 
-    risk_budget = investment_amount * max_loss_pct
-    risk_remaining = risk_budget
-    capital_remaining = investment_amount
+    selected = []
+    optimizer_status = "Not Solved"
+    constraint_mode_used = None
 
-    max_concentration_pct = {
-        "tier_1": 1.00,
-        "tier_2": 0.50,
-        "tier_3": 0.40,
-        "tier_4": 0.35,
-    }.get(tier, 0.40)
-
-    positions: list[tuple[CollarCandidate, int]] = []
-
-    # Sort by annualized gain per dollar of risk consumed.
-    ranked = sorted(eligible, key=collar_efficiency, reverse=True)
-
-    used_tickers = set()
-
-    for c in ranked:
-        capital = collar_capital_required(c)
-        loss = collar_loss_dollars(c)
-
-        if capital <= 0 or loss <= 0:
-            continue
-
-        if capital > capital_remaining:
-            continue
-
-        if loss > risk_remaining:
-            continue
-
-        current_ticker_capital = sum(
-            collar_capital_required(pos) * lots
-            for pos, lots in positions
-            if pos.ticker == c.ticker
+    for constraint_set in get_constraint_set(tier, max_loss_pct, growth_preference):
+        optimizer_status, selected = solve_milp_for_constraints(
+            eligible=eligible,
+            investment_amount=investment_amount,
+            max_loss_pct=max_loss_pct,
+            time_horizon_days=time_horizon_days,
+            assumed_treasury_yield=assumed_treasury_yield,
+            constraints=constraint_set,
         )
 
-        max_capital_for_ticker = investment_amount * max_concentration_pct
-        remaining_ticker_capacity = max_capital_for_ticker - current_ticker_capital
+        if selected:
+            constraint_mode_used = constraint_set["name"]
+            break
 
-        if remaining_ticker_capacity < capital:
-            continue
-
-        max_by_capital = int(capital_remaining // capital)
-        max_by_risk = int(risk_remaining // loss)
-        max_by_concentration = int(remaining_ticker_capacity // capital)
-
-        max_lots = min(max_by_capital, max_by_risk, max_by_concentration)
-
-        if max_lots <= 0:
-            continue
-
-        # MVP: use one lot per ETF first to maintain diversification.
-        # Larger accounts can allow more lots per ETF after initial rollout.
-        lots = 1
-
-        positions.append((c, lots))
-        used_tickers.add(c.ticker)
-
-        capital_remaining -= capital * lots
-        risk_remaining -= loss * lots
-
-    if not positions:
+    if not selected:
         return make_treasury_only_portfolio(
             investment_amount,
             max_loss_pct,
@@ -722,14 +1104,18 @@ def optimize_parity_portfolio(
             treasury_ticker,
             assumed_treasury_yield,
             tier,
-            "The selected max loss target is tighter than the minimum collar size allows, so the portfolio is allocated to the Treasury sleeve.",
+            "The selected max loss target is tighter than the minimum executable collar size allows, so the portfolio is allocated to the Treasury sleeve.",
         )
 
-    treasury_amount = capital_remaining
-    collar_capital = sum(collar_capital_required(c) * lots for c, lots in positions)
+    risk_budget = investment_amount * max_loss_pct
 
-    loss_dollars = sum(collar_loss_dollars(c) * lots for c, lots in positions)
-    gain_dollars = sum(collar_gain_dollars(c) * lots for c, lots in positions)
+    collar_capital = sum(collar_capital_required(c) * lots for c, lots in selected)
+    treasury_amount = investment_amount - collar_capital
+
+    loss_dollars = sum(collar_loss_dollars(c) * lots for c, lots in selected)
+    gain_dollars = sum(collar_gain_dollars(c) * lots for c, lots in selected)
+    dividend_income_dollars = sum(c.expected_dividend_dollars * lots for c, lots in selected)
+    option_gain_dollars = sum(c.option_max_gain_dollars * lots for c, lots in selected)
 
     gain_dollars += treasury_amount * assumed_treasury_yield * (time_horizon_days / 365)
 
@@ -738,21 +1124,21 @@ def optimize_parity_portfolio(
 
     weighted_dte = sum(
         collar_capital_required(c) * lots * c.dte
-        for c, lots in positions
+        for c, lots in selected
     ) / max(collar_capital, 1)
 
     estimated_max_gain_annualized_pct = annualize_return(actual_gain_pct, weighted_dte)
 
     sleeves = []
 
-    for c, lots in positions:
+    for c, lots in selected:
         capital = collar_capital_required(c) * lots
-        spread = collar_spread_cost(c)
 
         sleeves.append({
             "type": "collar",
             "ticker": c.ticker,
             "exposure": c.exposure,
+            "bucket": c.bucket,
             "allocation_dollars": round(capital, 2),
             "allocation_pct": round(capital / investment_amount, 4),
             "minimum_executable_collar_cost": round(collar_capital_required(c), 2),
@@ -762,6 +1148,12 @@ def optimize_parity_portfolio(
             "contracts": c.contracts * lots,
             "lots": lots,
             "stock_value": round(c.stock_value * lots, 2),
+            "assumed_dividend_yield": round(c.assumed_dividend_yield, 6),
+            "expected_dividend_dollars": round(c.expected_dividend_dollars * lots, 2),
+            "net_option_cost_dollars": round(c.net_option_cost_dollars * lots, 2),
+            "net_option_cost_bps": round(c.net_option_cost_bps, 2),
+            "option_max_gain_dollars": round(c.option_max_gain_dollars * lots, 2),
+            "total_max_gain_dollars": round(collar_gain_dollars(c) * lots, 2),
 
             "expiration": c.expiration,
             "dte": c.dte,
@@ -783,7 +1175,7 @@ def optimize_parity_portfolio(
                 "short_call": asdict(c.short_call),
             },
 
-            "option_execution": spread,
+            "option_execution": collar_spread_cost(c),
             "execution_quality_passed": execution_quality_passes(c),
             "liquidity_score": c.liquidity_score,
             "efficiency": round(collar_efficiency(c), 4),
@@ -794,6 +1186,7 @@ def optimize_parity_portfolio(
         "type": "treasury",
         "ticker": treasury_ticker,
         "exposure": "Treasury Sleeve",
+        "bucket": "treasury",
         "allocation_dollars": round(treasury_amount, 2),
         "allocation_pct": round(treasury_amount / investment_amount, 4),
         "assumed_yield": assumed_treasury_yield,
@@ -808,12 +1201,12 @@ def optimize_parity_portfolio(
 
     warnings = []
 
-    if any(c.ticker in ["TQQQ", "UPRO"] for c, _ in positions):
+    if any(c.ticker in ["TQQQ", "UPRO"] for c, _ in selected):
         warnings.append(
             "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
         )
 
-    for c, _ in positions:
+    for c, _ in selected:
         spread = collar_spread_cost(c)
 
         if spread["total_option_spread_dollars"] > 400:
@@ -824,14 +1217,24 @@ def optimize_parity_portfolio(
                 f"{c.ticker} uses an expiration {int(c.dte)} days out, which differs from the requested {time_horizon_days}-day horizon."
             )
 
+    bucket_risk = {}
+    for c, lots in selected:
+        bucket_risk[c.bucket] = bucket_risk.get(c.bucket, 0) + collar_loss_dollars(c) * lots
+
     portfolio = {
-        "portfolio_type": "risk_budget_greedy",
+        "portfolio_type": "milp_diversified_risk_budget_optimizer",
+        "optimizer_status": optimizer_status,
+        "constraint_mode_used": constraint_mode_used,
+        "growth_preference": growth_preference,
         "account_tier": tier,
         "investment_amount": investment_amount,
         "input_max_loss_pct": max_loss_pct,
+        "max_allowed_sleeve_loss_pct": round(max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference), 4),
         "actual_max_loss_dollars": round(loss_dollars, 2),
         "actual_max_loss_pct": round(actual_loss_pct, 4),
         "estimated_max_gain_dollars": round(gain_dollars, 2),
+        "estimated_option_max_gain_dollars": round(option_gain_dollars, 2),
+        "estimated_dividend_income_dollars": round(dividend_income_dollars, 2),
         "estimated_max_gain_pct": round(actual_gain_pct, 4),
         "estimated_max_gain_annualized_pct": round(estimated_max_gain_annualized_pct, 4),
         "weighted_option_dte": round(weighted_dte, 1),
@@ -841,8 +1244,10 @@ def optimize_parity_portfolio(
         "risk_budget_dollars": round(risk_budget, 2),
         "risk_used_dollars": round(loss_dollars, 2),
         "risk_remaining_dollars": round(max(risk_budget - loss_dollars, 0), 2),
-        "capital_used_dollars": round(investment_amount - treasury_amount, 2),
+        "capital_used_dollars": round(collar_capital, 2),
         "capital_remaining_dollars": round(treasury_amount, 2),
+        "non_treasury_sleeve_count": len(selected),
+        "bucket_risk_dollars": {k: round(v, 2) for k, v in bucket_risk.items()},
         "sleeves": sleeves,
         "warnings": warnings,
     }

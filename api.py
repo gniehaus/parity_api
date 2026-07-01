@@ -1,6 +1,6 @@
 import os
 from typing import Literal
-
+from typing import Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -41,7 +41,9 @@ class PortfolioRequest(BaseModel):
     investment_amount: float = Field(..., description="Example: 25000")
     max_loss_pct: float = Field(..., description="Example: 0.10 = 10% max portfolio loss")
     time_horizon_days: int = Field(default=365)
+    growth_preference: str = "balanced"
     assumed_treasury_yield: float = Field(default=0.045)
+    dividend_yields: Dict[str, float] = {}
 
 
 class RecommendationRequest(BaseModel):
@@ -125,20 +127,23 @@ def get_portfolio(request: PortfolioRequest):
         token = get_orats_token()
 
         collar_candidates = generate_portfolio_collar_candidates(
-        token=token,
-        investment_amount=request.investment_amount,
-        max_loss_pct=request.max_loss_pct,
-        time_horizon_days=request.time_horizon_days,
-    )
+            token=token,
+            investment_amount=request.investment_amount,
+            max_loss_pct=request.max_loss_pct,
+            time_horizon_days=request.time_horizon_days,
+            dividend_yields=request.dividend_yields,
+            growth_preference=request.growth_preference,
+        )
     
         portfolio = optimize_parity_portfolio(
-        investment_amount=request.investment_amount,
-        max_loss_pct=request.max_loss_pct,
-        time_horizon_days=request.time_horizon_days,
-        collar_candidates=collar_candidates,
-        treasury_ticker="SGOV",
-        assumed_treasury_yield=request.assumed_treasury_yield,
-    )
+            investment_amount=request.investment_amount,
+            max_loss_pct=request.max_loss_pct,
+            time_horizon_days=request.time_horizon_days,
+            collar_candidates=collar_candidates,
+            treasury_ticker="SGOV",
+            assumed_treasury_yield=request.assumed_treasury_yield,
+            growth_preference=request.growth_preference,
+        )
 
         portfolio["request"] = request.model_dump()
         return make_json_safe(portfolio)

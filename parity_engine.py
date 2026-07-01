@@ -190,7 +190,7 @@ def max_allowed_sleeve_loss_pct(
       - growth:       2.5x portfolio max loss
       - max growth:   3.0x portfolio max loss
 
-    Always enforce a 5% practical minimum and 30% absolute maximum.
+    Always enforce a 7.5% practical minimum and 30% absolute maximum.
     """
     pref = normalize_growth_preference(growth_preference)
 
@@ -206,7 +206,7 @@ def max_allowed_sleeve_loss_pct(
     except (TypeError, ValueError):
         target = 0.0
 
-    return min(0.30, max(0.05, target * multiplier))
+    return min(0.30, max(0.075, target * multiplier))
 
 
 def max_ticker_gain_contribution_pct(
@@ -470,7 +470,19 @@ def collar_capital_required(c: CollarCandidate) -> float:
 
 
 def collar_loss_dollars(c: CollarCandidate) -> float:
+    """Gross option-floor loss before portfolio-level income offsets.
+
+    Dividends and Treasury income are treated as a portfolio-level cash
+    pool that can offset losses across all sleeves. That means TQQQ can
+    benefit from EEM/EFA dividends at the portfolio level, instead of each
+    sleeve only benefiting from its own income.
+    """
     return collar_capital_required(c) * c.sleeve_max_loss_pct
+
+
+def collar_loss_dollars_after_dividends(c: CollarCandidate) -> float:
+    """Deprecated compatibility wrapper. Use collar_loss_dollars()."""
+    return max(0.0, collar_loss_dollars(c))
 
 
 def collar_gain_dollars(c: CollarCandidate) -> float:
@@ -562,7 +574,16 @@ def build_collar_candidates_for_expiry(
     puts["put_moneyness"] = puts[strike_col] / stock_price
     calls["call_moneyness"] = calls[strike_col] / stock_price
 
-    put_targets = [0.98, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60, 0.50, 0.40]
+    # Search fixed put moneyness targets.
+    # Do NOT shift put targets for dividends here. Dividends are treated
+    # exactly once as a shared portfolio-level income pool in the MILP.
+    # Shifting targets here and also netting dividends in the MILP would
+    # create inconsistent filtering and/or double counting.
+    put_targets = [
+        0.99, 0.98, 0.975, 0.95, 0.925, 0.90,
+        0.85, 0.80, 0.75, 0.70, 0.60, 0.50, 0.40,
+    ]
+
     call_targets = [1.03, 1.05, 1.10, 1.15, 1.25, 1.40, 1.60, 2.00, 2.50]
 
     selected_puts = []
@@ -628,7 +649,10 @@ def build_collar_candidates_for_expiry(
                 * (float(dte) / 365.25)
             )
 
-            floor_value = put_strike * 100 + expected_dividend_dollars
+            # Gross option floor excludes dividends. Dividends are later
+            # pooled at the portfolio level and can offset losses across
+            # all sleeves. Max gain still includes expected dividends.
+            floor_value = put_strike * 100
             cap_value = call_strike * 100 + expected_dividend_dollars
 
             max_loss_dollars = max(0, capital - floor_value)
@@ -998,6 +1022,12 @@ def solve_milp_for_constraints(
 ) -> tuple[str, list[tuple[CollarCandidate, int]]]:
 
     risk_budget = investment_amount * max_loss_pct
+    treasury_return_for_horizon = horizon_return_from_annual(
+        assumed_treasury_yield,
+        time_horizon_days,
+    )
+    max_possible_treasury_offset = investment_amount * treasury_return_for_horizon
+
     model = pulp.LpProblem("Parity_Portfolio", pulp.LpMaximize)
 
     x = {}
@@ -1005,11 +1035,11 @@ def solve_milp_for_constraints(
 
     for i, c in enumerate(eligible):
         cap = collar_capital_required(c)
-        loss = max(collar_loss_dollars(c), 1)
-
+        # Do not pre-filter lots by sleeve-level risk. Portfolio-level
+        # dividends and Treasury income can offset losses across sleeves, so
+        # the exact net-risk test belongs in the MILP constraint below.
         max_lots_by_capital = int(investment_amount // cap)
-        max_lots_by_risk = int(risk_budget // loss)
-        max_lots = max(0, min(max_lots_by_capital, max_lots_by_risk, constraints["max_lots_per_candidate"]))
+        max_lots = max(0, min(max_lots_by_capital, constraints["max_lots_per_candidate"]))
 
         x[i] = pulp.LpVariable(f"x_{i}", lowBound=0, upBound=max_lots, cat="Integer")
         y[i] = pulp.LpVariable(f"y_{i}", lowBound=0, upBound=1, cat="Binary")
@@ -1024,12 +1054,32 @@ def solve_milp_for_constraints(
         x[i] * collar_capital_required(c) for i, c in enumerate(eligible)
     )
 
-    collar_loss_expr = pulp.lpSum(
-        x[i] * collar_loss_dollars(c) for i, c in enumerate(eligible)
+    gross_collar_loss_expr = pulp.lpSum(
+        x[i] * collar_loss_dollars(c)
+        for i, c in enumerate(eligible)
+    )
+
+    dividend_income_expr_for_loss = pulp.lpSum(
+        x[i] * c.expected_dividend_dollars
+        for i, c in enumerate(eligible)
+    )
+
+    treasury_income_expr_for_loss = (
+        investment_amount - collar_capital_expr
+    ) * treasury_return_for_horizon
+
+    net_loss_expr = (
+        gross_collar_loss_expr
+        - dividend_income_expr_for_loss
+        - treasury_income_expr_for_loss
     )
 
     model += collar_capital_expr <= investment_amount
-    model += collar_loss_expr <= risk_budget
+    # Economic max-loss constraint:
+    # All expected dividends and Treasury income are treated as one portfolio
+    # cash pool. That income offsets gross collar floor losses across all
+    # sleeves, including non-dividend payers like TQQQ.
+    model += net_loss_expr <= risk_budget
 
     for ticker in set(c.ticker for c in eligible):
         idxs = [i for i, c in enumerate(eligible) if c.ticker == ticker]
@@ -1051,25 +1101,20 @@ def solve_milp_for_constraints(
             <= investment_amount * constraints["max_ticker_capital_pct"]
         )
 
-        model += (
-            pulp.lpSum(x[i] * collar_loss_dollars(eligible[i]) for i in idxs)
-            <= risk_budget * constraints["max_ticker_risk_pct"]
-        )
+        # Do not apply a hard per-ticker risk constraint here. Downside risk is
+        # controlled at the portfolio level after pooling all dividends and
+        # Treasury income. A ticker-level risk cap would prevent income from
+        # one sleeve from offsetting another sleeve's loss.
 
-        # Upside concentration guardrail:
-        # No single ticker should drive most of the portfolio max gain.
-        # This uses total collar max gain, including expected dividends if supplied.
-        model += (
-            pulp.lpSum(x[i] * collar_gain_dollars(eligible[i]) for i in idxs)
-            <= investment_amount * constraints["max_ticker_gain_contribution_pct"]
-        )
+        # Do not apply a hard per-ticker upside cap here.
+        # For small accounts, requiring every ETF plus a hard upside-contribution
+        # cap can make the MILP infeasible because one minimum executable lot can
+        # exceed the cap. Upside concentration should be handled in the objective
+        # or UI warnings, not as a hard feasibility constraint.
 
-    for bucket in set(c.bucket for c in eligible):
-        idxs = [i for i, c in enumerate(eligible) if c.bucket == bucket]
-        model += (
-            pulp.lpSum(x[i] * collar_loss_dollars(eligible[i]) for i in idxs)
-            <= risk_budget * constraints["max_bucket_risk_pct"]
-        )
+    # Do not apply hard bucket-level risk constraints for the same reason:
+    # max loss is now measured at the total portfolio level after the shared
+    # income pool offsets gross collar floor losses.
 
     if constraints["min_sleeves"] > 1:
         model += pulp.lpSum(y[i] for i in range(len(eligible))) >= constraints["min_sleeves"]
@@ -1080,13 +1125,13 @@ def solve_milp_for_constraints(
 
     sgov_income_expr = (
         investment_amount - collar_capital_expr
-    ) * assumed_treasury_yield
+    ) * treasury_return_for_horizon
 
     model += (
         collar_annualized_gain_expr
         + sgov_income_expr
         + constraints["collar_capital_reward"] * collar_capital_expr
-        + constraints["risk_usage_reward"] * collar_loss_expr
+        + constraints["risk_usage_reward"] * net_loss_expr
         + constraints["sleeve_reward"] * pulp.lpSum(y[i] for i in range(len(eligible)))
     )
 
@@ -1189,7 +1234,10 @@ def optimize_parity_portfolio(
     collar_capital = sum(collar_capital_required(c) * lots for c, lots in selected)
     treasury_amount = investment_amount - collar_capital
 
-    loss_dollars = sum(collar_loss_dollars(c) * lots for c, lots in selected)
+    gross_collar_loss_dollars = sum(
+        collar_loss_dollars(c) * lots
+        for c, lots in selected
+    )
 
     # Current contractual cycle gain = what the selected collars can make
     # through their actual expirations, plus treasury income over the user's horizon.
@@ -1211,6 +1259,17 @@ def optimize_parity_portfolio(
         time_horizon_days,
     )
     treasury_gain_dollars = treasury_amount * treasury_return_for_horizon
+
+    # Portfolio max loss is economically income-adjusted:
+    # gross collar floor loss minus the shared portfolio income pool
+    # from dividends and Treasury income. This lets EEM/EFA dividends
+    # offset losses from TQQQ or any other sleeve.
+    loss_dollars = max(
+        0.0,
+        gross_collar_loss_dollars
+        - dividend_income_dollars
+        - treasury_gain_dollars,
+    )
 
     current_cycle_gain_dollars = current_cycle_collar_gain_dollars + treasury_gain_dollars
     gain_dollars = horizon_normalized_collar_gain_dollars + treasury_gain_dollars
@@ -1349,6 +1408,9 @@ def optimize_parity_portfolio(
         "max_allowed_sleeve_loss_pct": round(max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference), 4),
         "actual_max_loss_dollars": round(loss_dollars, 2),
         "actual_max_loss_pct": round(actual_loss_pct, 4),
+        "gross_collar_max_loss_dollars": round(gross_collar_loss_dollars, 2),
+        "dividend_loss_offset_dollars": round(dividend_income_dollars, 2),
+        "treasury_loss_offset_dollars": round(treasury_gain_dollars, 2),
         "estimated_max_loss_annualized_pct": round(estimated_max_loss_annualized_pct, 4),
         "current_cycle_max_loss_annualized_pct": round(current_cycle_max_loss_annualized_pct, 4),
         "estimated_max_gain_dollars": round(gain_dollars, 2),

@@ -42,7 +42,7 @@ class PortfolioRequest(BaseModel):
     max_loss_pct: float = Field(..., description="Example: 0.10 = 10% max portfolio loss")
     time_horizon_days: int = Field(default=365)
     growth_preference: str = "balanced"
-    assumed_treasury_yield: float = Field(default=0.045)
+    assumed_treasury_yield: float = Field(default=0.035)
     dividend_yields: Dict[str, float] = {}
 
 

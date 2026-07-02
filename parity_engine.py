@@ -574,37 +574,70 @@ def build_collar_candidates_for_expiry(
     puts["put_moneyness"] = puts[strike_col] / stock_price
     calls["call_moneyness"] = calls[strike_col] / stock_price
 
-    # Search fixed put moneyness targets.
-    # Do NOT shift put targets for dividends here. Dividends are treated
-    # exactly once as a shared portfolio-level income pool in the MILP.
-    # Shifting targets here and also netting dividends in the MILP would
-    # create inconsistent filtering and/or double counting.
-    put_targets = [
-        0.99, 0.98, 0.975, 0.95, 0.925, 0.90,
-        0.85, 0.80, 0.75, 0.70, 0.60, 0.50, 0.40,
-    ]
+    # Dynamic strike search instead of fixed moneyness targets.
+    # The old engine searched fixed targets like 95%, 90%, 85% puts and
+    # 103%, 105%, 110% calls. That can miss the actual best strikes when
+    # liquidity is concentrated between those target levels. Here we let the
+    # market decide which strikes are usable, then evaluate every remaining
+    # put/call pair in the loop below.
 
-    call_targets = [1.03, 1.05, 1.10, 1.15, 1.25, 1.40, 1.60, 2.00, 2.50]
+    def quote_quality_filter(df: pd.DataFrame, option_type: str) -> pd.DataFrame:
+        usable_rows = []
 
-    selected_puts = []
-    selected_calls = []
+        for _, row in df.iterrows():
+            bid, ask, mid = _bid_ask_mid(row, option_type)
+            volume, oi = _volume_oi(row, option_type)
 
-    for target in put_targets:
-        selected_puts.append(
-            puts.assign(distance=(puts["put_moneyness"] - target).abs())
-            .sort_values("distance")
-            .head(2)
-        )
+            # We need a real ask to buy the put and a real mid for economics.
+            if ask <= 0 or mid <= 0:
+                continue
 
-    for target in call_targets:
-        selected_calls.append(
-            calls.assign(distance=(calls["call_moneyness"] - target).abs())
-            .sort_values("distance")
-            .head(2)
-        )
+            # For short calls, require a real bid because we need to be able
+            # to sell the call.
+            if option_type == "call" and bid <= 0:
+                continue
 
-    puts = pd.concat(selected_puts).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
-    calls = pd.concat(selected_calls).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
+            spread = max(ask - bid, 0.0)
+            spread_pct = spread / mid if mid > 0 else 1.0
+
+            # Skip individually unusable legs. This is intentionally looser
+            # than the final collar-level execution check because the combined
+            # structure is evaluated later.
+            if spread_pct > 0.75:
+                continue
+
+            # Do not require same-day volume, but avoid dead strikes unless
+            # the quoted market is reasonably tight.
+            if oi <= 0 and volume <= 0 and spread_pct > 0.25:
+                continue
+
+            usable_rows.append(row)
+
+        if not usable_rows:
+            return df.iloc[0:0].copy()
+
+        return pd.DataFrame(usable_rows).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
+
+    puts = quote_quality_filter(puts, "put")
+    calls = quote_quality_filter(calls, "call")
+
+    if puts.empty or calls.empty:
+        return []
+
+    # Keep the search focused on economically relevant strikes while still
+    # being much more flexible than fixed target lists.
+    puts = puts[
+        (puts[strike_col] >= stock_price * 0.70)
+        & (puts[strike_col] <= stock_price * 1.00)
+    ].copy()
+
+    calls = calls[
+        (calls[strike_col] >= stock_price * 1.01)
+        & (calls[strike_col] <= stock_price * 1.60)
+    ].copy()
+
+    if puts.empty or calls.empty:
+        return []
 
     candidates = []
 

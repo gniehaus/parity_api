@@ -583,39 +583,29 @@ def build_collar_candidates_for_expiry(
 
     def quote_quality_filter(df: pd.DataFrame, option_type: str) -> pd.DataFrame:
         usable_rows = []
-
+    
         for _, row in df.iterrows():
             bid, ask, mid = _bid_ask_mid(row, option_type)
-            volume, oi = _volume_oi(row, option_type)
-
-            # We need a real ask to buy the put and a real mid for economics.
+    
             if ask <= 0 or mid <= 0:
                 continue
-
-            # For short calls, require a real bid because we need to be able
-            # to sell the call.
+    
             if option_type == "call" and bid <= 0:
                 continue
-
+    
             spread = max(ask - bid, 0.0)
             spread_pct = spread / mid if mid > 0 else 1.0
-
-            # Skip individually unusable legs. This is intentionally looser
-            # than the final collar-level execution check because the combined
-            # structure is evaluated later.
+    
+            # Only reject truly unusable individual quotes.
+            # Do not use ORATS OI/volume as a hard filter.
             if spread_pct > 0.75:
                 continue
-
-            # Do not require same-day volume, but avoid dead strikes unless
-            # the quoted market is reasonably tight.
-            if oi <= 0 and volume <= 0 and spread_pct > 0.25:
-                continue
-
+    
             usable_rows.append(row)
-
+    
         if not usable_rows:
             return df.iloc[0:0].copy()
-
+    
         return pd.DataFrame(usable_rows).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
 
     puts = quote_quality_filter(puts, "put")

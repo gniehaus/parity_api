@@ -689,11 +689,21 @@ def build_collar_candidates_for_expiry(
             # all sleeves. Max gain still includes expected dividends.
             floor_value = put_strike * 100
             cap_value = call_strike * 100 + expected_dividend_dollars
-
-            max_loss_dollars = max(0, capital - floor_value)
+            
+            gross_max_loss_dollars = max(0, capital - floor_value)
+            
+            # Dividend-adjusted / carry-adjusted downside.
+            # Positive net carry lets the engine accept a slightly lower put strike
+            # because dividends offset part of the downside.
+            # Negative net carry, like high expense ratio drag, makes the downside worse.
+            max_loss_dollars = max(
+                0,
+                gross_max_loss_dollars - expected_dividend_dollars
+            )
+            
             option_max_gain_dollars = max(0, call_strike * 100 - capital)
             max_gain_dollars = max(0, cap_value - capital)
-
+            
             sleeve_max_loss_pct = max_loss_dollars / capital
             sleeve_max_gain_pct = max_gain_dollars / capital
 

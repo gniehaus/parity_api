@@ -241,47 +241,55 @@ def max_allowed_sleeve_loss_pct(
 
 
 
+# def min_target_sleeve_loss_pct(
+#     portfolio_max_loss_pct: float,
+#     growth_preference: str = "balanced",
+#     max_sleeve_loss_pct: float | None = None,
+# ) -> float:
+#     """
+#     Lower bound for sleeve-level economic downside.
+
+#     This prevents the optimizer from spending almost the entire portfolio on
+#     collars with very near-the-money puts, for example a -1.5% SCHD sleeve in
+#     a portfolio where the user selected a 10% max-loss target.
+
+#     The value is applied to dividend/carry-adjusted downside, not gross put
+#     downside. Dividend-paying ETFs can therefore use lower put strikes when
+#     their expected net carry offsets part of the floor loss.
+#     """
+#     pref = normalize_growth_preference(growth_preference)
+
+#     try:
+#         target = float(portfolio_max_loss_pct or 0.0)
+#     except (TypeError, ValueError):
+#         target = 0.0
+
+#     if target <= 0:
+#         return 0.0
+
+#     if max_sleeve_loss_pct is None:
+#         max_sleeve_loss_pct = max_allowed_sleeve_loss_pct(target, pref)
+
+#     usage = {
+#         "conservative": 0.35,
+#         "balanced": 0.55,
+#         "growth": 0.65,
+#         "maximum_growth": 0.75,
+#     }.get(pref, 0.55)
+
+#     # Do not force tiny accounts / tight floors into an impossible lower bound,
+#     # but do force meaningful risk usage when the user asks for 5%-20% max loss.
+#     floor = min(0.025, target * 0.50)
+#     return round(min(max_sleeve_loss_pct * 0.90, max(floor, max_sleeve_loss_pct * usage)), 6)
+
 def min_target_sleeve_loss_pct(
     portfolio_max_loss_pct: float,
     growth_preference: str = "balanced",
     max_sleeve_loss_pct: float | None = None,
 ) -> float:
-    """
-    Lower bound for sleeve-level economic downside.
+    return 0.0
 
-    This prevents the optimizer from spending almost the entire portfolio on
-    collars with very near-the-money puts, for example a -1.5% SCHD sleeve in
-    a portfolio where the user selected a 10% max-loss target.
-
-    The value is applied to dividend/carry-adjusted downside, not gross put
-    downside. Dividend-paying ETFs can therefore use lower put strikes when
-    their expected net carry offsets part of the floor loss.
-    """
-    pref = normalize_growth_preference(growth_preference)
-
-    try:
-        target = float(portfolio_max_loss_pct or 0.0)
-    except (TypeError, ValueError):
-        target = 0.0
-
-    if target <= 0:
-        return 0.0
-
-    if max_sleeve_loss_pct is None:
-        max_sleeve_loss_pct = max_allowed_sleeve_loss_pct(target, pref)
-
-    usage = {
-        "conservative": 0.35,
-        "balanced": 0.55,
-        "growth": 0.65,
-        "maximum_growth": 0.75,
-    }.get(pref, 0.55)
-
-    # Do not force tiny accounts / tight floors into an impossible lower bound,
-    # but do force meaningful risk usage when the user asks for 5%-20% max loss.
-    floor = min(0.025, target * 0.50)
-    return round(min(max_sleeve_loss_pct * 0.90, max(floor, max_sleeve_loss_pct * usage)), 6)
-
+    
 def max_ticker_gain_contribution_pct(
     portfolio_max_loss_pct: float,
     growth_preference: str = "balanced",
@@ -902,8 +910,10 @@ def generate_portfolio_collar_candidates(
             expiry_groups = get_viable_expiry_groups(
                 chain=chain,
                 target_dte=time_horizon_days,
-                min_dte=time_horizon_days-200,
-                max_dte=time_horizon_days + 365,
+                # min_dte=time_horizon_days-200,
+                # max_dte=time_horizon_days + 365,
+                min_dte = max(30, int(time_horizon_days * 0.5)),
+                max_dte = int(time_horizon_days * 1.50),
                 max_expiries=4,
             )
 

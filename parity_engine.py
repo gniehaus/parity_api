@@ -1271,6 +1271,33 @@ def solve_milp_for_constraints(
     return status, selected
 
 
+def max_loss_relaxation_steps(max_loss_pct: float) -> list[float]:
+    """
+    Ordered relaxation bands for the portfolio-level max-loss constraint.
+
+    The optimizer first tries the user-requested max loss exactly. If no
+    portfolio can be built, it relaxes the portfolio max loss slightly and
+    returns the first feasible portfolio. This prevents a near-zero requested
+    floor from falling all the way back to Treasury-only when the available
+    SCHD/VWO collar combination misses by a few dollars.
+
+    Values are expressed as decimal returns. For a $10,000 account:
+      0.001  = 0.10% = $10
+      0.0025 = 0.25% = $25
+      0.005  = 0.50% = $50
+      0.01   = 1.00% = $100
+    """
+    try:
+        target = float(max_loss_pct or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+
+    if target <= 0:
+        return [0.0, 0.001, 0.0025, 0.005, 0.01]
+
+    return [0.0, 0.001, 0.0025, 0.005]
+
+
 def optimize_parity_portfolio(
     investment_amount: float,
     max_loss_pct: float,
@@ -1316,19 +1343,33 @@ def optimize_parity_portfolio(
     selected = []
     optimizer_status = "Not Solved"
     constraint_mode_used = None
+    max_loss_relaxation_used = 0.0
+    effective_max_loss_pct_used = max_loss_pct
 
-    for constraint_set in get_constraint_set(tier, max_loss_pct, growth_preference):
-        optimizer_status, selected = solve_milp_for_constraints(
-            eligible=eligible,
-            investment_amount=investment_amount,
-            max_loss_pct=max_loss_pct,
-            time_horizon_days=time_horizon_days,
-            assumed_treasury_yield=assumed_treasury_yield,
-            constraints=constraint_set,
-        )
+    # Try the requested max loss first, then relax slightly if no portfolio
+    # is feasible. This keeps Tier 1 from falling to Treasury-only when SCHD
+    # + VWO is almost feasible at a 0% floor but live option mids move by a
+    # few cents.
+    for relaxation_step in max_loss_relaxation_steps(max_loss_pct):
+        effective_max_loss_pct = max_loss_pct + relaxation_step
+
+        for constraint_set in get_constraint_set(tier, effective_max_loss_pct, growth_preference):
+            optimizer_status, selected = solve_milp_for_constraints(
+                eligible=eligible,
+                investment_amount=investment_amount,
+                max_loss_pct=effective_max_loss_pct,
+                time_horizon_days=time_horizon_days,
+                assumed_treasury_yield=assumed_treasury_yield,
+                constraints=constraint_set,
+            )
+
+            if selected:
+                constraint_mode_used = constraint_set["name"]
+                max_loss_relaxation_used = relaxation_step
+                effective_max_loss_pct_used = effective_max_loss_pct
+                break
 
         if selected:
-            constraint_mode_used = constraint_set["name"]
             break
 
     if not selected:
@@ -1342,7 +1383,7 @@ def optimize_parity_portfolio(
             "The selected max loss target is tighter than the minimum executable collar size allows, so the portfolio is allocated to the Treasury sleeve.",
         )
 
-    risk_budget = investment_amount * max_loss_pct
+    risk_budget = investment_amount * effective_max_loss_pct_used
 
     collar_capital = sum(collar_capital_required(c) * lots for c, lots in selected)
     treasury_amount = investment_amount - collar_capital
@@ -1501,6 +1542,12 @@ def optimize_parity_portfolio(
 
     warnings = []
 
+    if max_loss_relaxation_used > 0:
+        warnings.append(
+            f"Requested max loss was relaxed by {max_loss_relaxation_used:.2%} "
+            f"(${investment_amount * max_loss_relaxation_used:,.2f}) to build an executable portfolio."
+        )
+
     if any(c.ticker in ["TQQQ", "UPRO"] for c, _ in selected):
         warnings.append(
             "Portfolio uses leveraged ETFs, which reset daily and may behave differently over longer periods."
@@ -1529,6 +1576,10 @@ def optimize_parity_portfolio(
         "account_tier": tier,
         "investment_amount": investment_amount,
         "input_max_loss_pct": max_loss_pct,
+        "requested_max_loss_pct": round(max_loss_pct, 4),
+        "effective_max_loss_pct": round(effective_max_loss_pct_used, 4),
+        "max_loss_relaxation_pct": round(max_loss_relaxation_used, 4),
+        "max_loss_relaxation_dollars": round(investment_amount * max_loss_relaxation_used, 2),
         "max_allowed_sleeve_loss_pct": round(max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference), 4),
         "actual_max_loss_dollars": round(loss_dollars, 2),
         "actual_max_loss_pct": round(actual_loss_pct, 4),

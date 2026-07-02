@@ -239,6 +239,48 @@ def max_allowed_sleeve_loss_pct(
     return min(0.30, max(0.075, target * multiplier))
 
 
+
+def min_target_sleeve_loss_pct(
+    portfolio_max_loss_pct: float,
+    growth_preference: str = "balanced",
+    max_sleeve_loss_pct: float | None = None,
+) -> float:
+    """
+    Lower bound for sleeve-level economic downside.
+
+    This prevents the optimizer from spending almost the entire portfolio on
+    collars with very near-the-money puts, for example a -1.5% SCHD sleeve in
+    a portfolio where the user selected a 10% max-loss target.
+
+    The value is applied to dividend/carry-adjusted downside, not gross put
+    downside. Dividend-paying ETFs can therefore use lower put strikes when
+    their expected net carry offsets part of the floor loss.
+    """
+    pref = normalize_growth_preference(growth_preference)
+
+    try:
+        target = float(portfolio_max_loss_pct or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+
+    if target <= 0:
+        return 0.0
+
+    if max_sleeve_loss_pct is None:
+        max_sleeve_loss_pct = max_allowed_sleeve_loss_pct(target, pref)
+
+    usage = {
+        "conservative": 0.35,
+        "balanced": 0.55,
+        "growth": 0.65,
+        "maximum_growth": 0.75,
+    }.get(pref, 0.55)
+
+    # Do not force tiny accounts / tight floors into an impossible lower bound,
+    # but do force meaningful risk usage when the user asks for 5%-20% max loss.
+    floor = min(0.025, target * 0.50)
+    return round(min(max_sleeve_loss_pct * 0.90, max(floor, max_sleeve_loss_pct * usage)), 6)
+
 def max_ticker_gain_contribution_pct(
     portfolio_max_loss_pct: float,
     growth_preference: str = "balanced",
@@ -506,11 +548,20 @@ def collar_capital_required(c: CollarCandidate) -> float:
 def collar_loss_dollars(c: CollarCandidate) -> float:
     """Gross option-floor loss before portfolio-level income offsets.
 
-    Dividends and Treasury income are treated as a portfolio-level cash
-    pool that can offset losses across all sleeves. That means TQQQ can
-    benefit from EEM/EFA dividends at the portfolio level, instead of each
-    sleeve only benefiting from its own income.
+    Candidate selection and sleeve display use dividend/carry-adjusted
+    downside. Portfolio max-loss math must start from gross contractual floor
+    loss and then subtract the shared dividend/Treasury income pool exactly
+    once. Therefore this returns option_max_loss_dollars, which is stored as
+    gross loss per one candidate lot.
     """
+    try:
+        gross = float(c.option_max_loss_dollars or 0.0)
+    except (TypeError, ValueError):
+        gross = 0.0
+
+    if gross > 0:
+        return gross
+
     return collar_capital_required(c) * c.sleeve_max_loss_pct
 
 
@@ -578,6 +629,7 @@ def build_collar_candidates_for_expiry(
     dividend_yields: Optional[dict[str, float]] = None,
     max_net_option_cost_bps: float = 50.0,
     max_sleeve_loss_pct: float = 0.30,
+    min_sleeve_loss_pct: float = 0.0,
 ) -> list[CollarCandidate]:
 
     if expiry_chain is None or expiry_chain.empty:
@@ -684,34 +736,39 @@ def build_collar_candidates_for_expiry(
                 * (float(dte) / 365.25)
             )
 
-            # Gross option floor excludes dividends. Dividends are later
-            # pooled at the portfolio level and can offset losses across
-            # all sleeves. Max gain still includes expected dividends.
+            # Dividend/carry-adjusted strike economics.
+            #
+            # Gross floor loss is the contractual put floor before income.
+            # Economic floor loss is gross floor loss minus expected net carry
+            # from dividends less ETF expense ratio. This is the key strike
+            # selection input: positive-carry ETFs like VWO can use a lower,
+            # cheaper put strike because expected carry offsets part of the
+            # downside. Negative-carry ETFs are penalized.
             floor_value = put_strike * 100
             cap_value = call_strike * 100 + expected_dividend_dollars
-            
+
             gross_max_loss_dollars = max(0, capital - floor_value)
-            
-            # Dividend-adjusted / carry-adjusted downside.
-            # Positive net carry lets the engine accept a slightly lower put strike
-            # because dividends offset part of the downside.
-            # Negative net carry, like high expense ratio drag, makes the downside worse.
-            max_loss_dollars = max(
+            economic_max_loss_dollars = max(
                 0,
-                gross_max_loss_dollars - expected_dividend_dollars
+                gross_max_loss_dollars - expected_dividend_dollars,
             )
-            
+
             option_max_gain_dollars = max(0, call_strike * 100 - capital)
             max_gain_dollars = max(0, cap_value - capital)
-            
-            sleeve_max_loss_pct = max_loss_dollars / capital
+
+            sleeve_max_loss_pct = economic_max_loss_dollars / capital
             sleeve_max_gain_pct = max_gain_dollars / capital
 
-            # Product guardrail: zero-cost collars can otherwise select very deep
-            # OTM puts. That may be mathematically feasible at the portfolio level,
-            # but it creates ugly sleeves (for example, 40% max-loss TQQQ collars).
-            # Keep each sleeve's floor reasonably tied to the user's portfolio floor.
+            # Product guardrail: keep each sleeve's economic floor reasonably tied
+            # to the user's portfolio floor. This uses dividend-adjusted downside,
+            # so VWO/SCHD carry can make lower put strikes acceptable.
             if sleeve_max_loss_pct > max_sleeve_loss_pct:
+                continue
+
+            # Avoid near-ATM puts that consume too much capital and leave the
+            # portfolio almost entirely in one low-upside collar. This is what
+            # caused the SCHD 30 put / -1.5% downside issue on a 10% target.
+            if min_sleeve_loss_pct > 0 and sleeve_max_loss_pct < min_sleeve_loss_pct:
                 continue
 
             if sleeve_max_loss_pct <= 0 or sleeve_max_gain_pct <= 0:
@@ -736,7 +793,10 @@ def build_collar_candidates_for_expiry(
                 assumed_dividend_yield=round(assumed_dividend_yield, 6),
                 expected_dividend_dollars=round(expected_dividend_dollars, 2),
                 option_max_gain_dollars=round(option_max_gain_dollars, 2),
-                option_max_loss_dollars=round(max_loss_dollars, 2),
+                # Gross contractual floor loss before dividend/carry offset.
+                # Used by portfolio-level loss math so dividends are not
+                # double-counted.
+                option_max_loss_dollars=round(gross_max_loss_dollars, 2),
                 net_option_cost_dollars=round(net_option_cost, 2),
                 net_option_cost_bps=round(net_option_cost_bps, 2),
                 max_allowed_sleeve_loss_pct=round(max_sleeve_loss_pct, 4),
@@ -800,6 +860,11 @@ def generate_portfolio_collar_candidates(
     tier = get_account_tier(investment_amount)
     growth_preference = normalize_growth_preference(growth_preference)
     max_sleeve_loss = max_allowed_sleeve_loss_pct(max_loss_pct, growth_preference)
+    min_sleeve_loss = min_target_sleeve_loss_pct(
+        max_loss_pct,
+        growth_preference,
+        max_sleeve_loss,
+    )
 
     if tier == "below_minimum":
         return []
@@ -810,9 +875,11 @@ def generate_portfolio_collar_candidates(
         debug = {
             "ticker": ticker,
             "assumed_dividend_yield": get_dividend_yield(ticker, dividend_yields),
+            "assumed_expense_ratio": get_expense_ratio(ticker),
             "max_net_option_cost_bps": max_net_option_cost_bps,
             "growth_preference": growth_preference,
             "max_allowed_sleeve_loss_pct": max_sleeve_loss,
+            "min_target_sleeve_loss_pct": min_sleeve_loss,
             "stage": "start",
             "raw_rows": None,
             "clean_rows": None,
@@ -850,6 +917,7 @@ def generate_portfolio_collar_candidates(
                     dividend_yields=dividend_yields,
                     max_net_option_cost_bps=max_net_option_cost_bps,
                     max_sleeve_loss_pct=max_sleeve_loss,
+                    min_sleeve_loss_pct=min_sleeve_loss,
                 )
 
                 debug["expiry_groups"].append({

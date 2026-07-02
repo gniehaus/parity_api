@@ -55,6 +55,17 @@ class CollarCandidate:
 LAST_DEBUG = []
 
 
+ETF_EXPENSE_RATIOS = {
+    "TQQQ": 0.0095,
+    "QQQ": 0.0020,
+    "IWM": 0.0019,
+    "EEM": 0.0072,
+    "EFA": 0.0032,
+    "IBIT": 0.0025,
+    "SGOV": 0.0009,
+}
+
+
 def annualize_return(total_return: float, dte: float) -> float:
     if dte <= 0:
         return total_return
@@ -116,6 +127,23 @@ def get_dividend_yield(ticker: str, dividend_yields: Optional[dict[str, float]] 
         return 0.0
 
     # Accept either decimal form, e.g. 0.025, or percent form, e.g. 2.5.
+    if value > 1:
+        value = value / 100
+
+    return max(value, 0.0)
+
+
+
+
+def get_expense_ratio(ticker: str) -> float:
+    value = ETF_EXPENSE_RATIOS.get(ticker.upper(), 0.0)
+
+    try:
+        value = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+    # Accept either decimal form, e.g. 0.0072, or percent form, e.g. 0.72.
     if value > 1:
         value = value / 100
 
@@ -554,6 +582,7 @@ def build_collar_candidates_for_expiry(
     stock_price = _stock_price(chain)
     timestamp = datetime.now(timezone.utc).isoformat()
     assumed_dividend_yield = get_dividend_yield(ticker, dividend_yields)
+    assumed_expense_ratio = get_expense_ratio(ticker)
 
     chain[strike_col] = pd.to_numeric(chain[strike_col], errors="coerce")
     chain = chain.dropna(subset=[strike_col]).sort_values(strike_col)
@@ -640,9 +669,12 @@ def build_collar_candidates_for_expiry(
             if capital <= 0:
                 continue
 
+            # Net carry = expected dividends minus ETF expense ratio.
+            # This keeps headline gain/loss from overstating the economics
+            # by adding dividends while ignoring the fund's known holding cost.
             expected_dividend_dollars = (
                 stock_value
-                * assumed_dividend_yield
+                * (assumed_dividend_yield - assumed_expense_ratio)
                 * (float(dte) / 365.25)
             )
 
@@ -1446,7 +1478,7 @@ def optimize_parity_portfolio(
         "sleeves": sleeves,
         "warnings": warnings,
     }
-#
+
     portfolio["portfolio_summary"] = build_portfolio_summary(
         sleeves=sleeves,
         investment_amount=investment_amount,

@@ -1446,7 +1446,7 @@ def optimize_parity_portfolio(
         "sleeves": sleeves,
         "warnings": warnings,
     }
-
+#
     portfolio["portfolio_summary"] = build_portfolio_summary(
         sleeves=sleeves,
         investment_amount=investment_amount,

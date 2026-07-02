@@ -627,7 +627,7 @@ def build_collar_candidates_for_expiry(
     expiration: str,
     dte: float,
     dividend_yields: Optional[dict[str, float]] = None,
-    max_net_option_cost_bps: float = 50.0,
+    max_net_option_cost_bps: float = 75.0,
     max_sleeve_loss_pct: float = 0.30,
     min_sleeve_loss_pct: float = 0.0,
 ) -> list[CollarCandidate]:
@@ -850,7 +850,7 @@ def generate_portfolio_collar_candidates(
     time_horizon_days: int,
     include_bitcoin: bool = False,
     dividend_yields: Optional[dict[str, float]] = None,
-    max_net_option_cost_bps: float = 50.0,
+    max_net_option_cost_bps: float = 75.0,
     growth_preference: str = "balanced",
 ) -> list[CollarCandidate]:
 
@@ -901,7 +901,7 @@ def generate_portfolio_collar_candidates(
             expiry_groups = get_viable_expiry_groups(
                 chain=chain,
                 target_dte=time_horizon_days,
-                min_dte=time_horizon_days-100,
+                min_dte=time_horizon_days-200,
                 max_dte=time_horizon_days + 365,
                 max_expiries=4,
             )

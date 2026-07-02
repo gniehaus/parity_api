@@ -290,7 +290,7 @@ def get_account_tier(amount: float) -> str:
 def allowed_etfs(tier: str, include_bitcoin: bool = False) -> list[str]:
     universe = {
         # $10k-$25k
-        "tier_1": ["SCHD","EFA"],
+        "tier_1": ["SCHD","VWO"],
 
         # $25k-$100k
         "tier_2": ["SCHD", "VWO", "EFA"],

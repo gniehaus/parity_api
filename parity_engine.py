@@ -575,55 +575,29 @@ def build_collar_candidates_for_expiry(
     calls["call_moneyness"] = calls[strike_col] / stock_price
 
     # Dynamic strike search instead of fixed moneyness targets.
-    # The old engine searched fixed targets like 95%, 90%, 85% puts and
-    # 103%, 105%, 110% calls. That can miss the actual best strikes when
-    # liquidity is concentrated between those target levels. Here we let the
-    # market decide which strikes are usable, then evaluate every remaining
-    # put/call pair in the loop below.
+    # Important: do NOT pre-filter individual option legs by ORATS OI,
+    # volume, or leg-level spread. ORATS OI/volume can be stale or incomplete,
+    # and leg-level spread filters can remove usable collars before the
+    # collar-level economics are evaluated.
+    #
+    # Generate broadly, then filter at the collar level below using:
+    # - valid ask for the long put
+    # - valid bid for the short call
+    # - net option cost bps
+    # - sleeve max loss
+    # - execution_quality_passes(candidate)
 
-    def quote_quality_filter(df: pd.DataFrame, option_type: str) -> pd.DataFrame:
-        usable_rows = []
-    
-        for _, row in df.iterrows():
-            bid, ask, mid = _bid_ask_mid(row, option_type)
-    
-            if ask <= 0 or mid <= 0:
-                continue
-    
-            if option_type == "call" and bid <= 0:
-                continue
-    
-            spread = max(ask - bid, 0.0)
-            spread_pct = spread / mid if mid > 0 else 1.0
-    
-            # Only reject truly unusable individual quotes.
-            # Do not use ORATS OI/volume as a hard filter.
-            if spread_pct > 0.75:
-                continue
-    
-            usable_rows.append(row)
-    
-        if not usable_rows:
-            return df.iloc[0:0].copy()
-    
-        return pd.DataFrame(usable_rows).drop_duplicates(subset=[strike_col]).sort_values(strike_col)
-
-    puts = quote_quality_filter(puts, "put")
-    calls = quote_quality_filter(calls, "call")
-
-    if puts.empty or calls.empty:
-        return []
-
-    # Keep the search focused on economically relevant strikes while still
-    # being much more flexible than fixed target lists.
+    # Keep a broad but economically relevant search window. This is much wider
+    # than the previous 70%-100% put / 101%-160% call window so the engine does
+    # not accidentally remove viable EFA/EEM structures before testing collars.
     puts = puts[
-        (puts[strike_col] >= stock_price * 0.70)
+        (puts[strike_col] >= stock_price * 0.50)
         & (puts[strike_col] <= stock_price * 1.00)
     ].copy()
 
     calls = calls[
         (calls[strike_col] >= stock_price * 1.01)
-        & (calls[strike_col] <= stock_price * 1.60)
+        & (calls[strike_col] <= stock_price * 2.50)
     ].copy()
 
     if puts.empty or calls.empty:

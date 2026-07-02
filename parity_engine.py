@@ -60,9 +60,11 @@ ETF_EXPENSE_RATIOS = {
     "QQQ": 0.0020,
     "IWM": 0.0019,
     "EEM": 0.0072,
+    "VWO": 0.006,
     "EFA": 0.0032,
     "IBIT": 0.0025,
     "SGOV": 0.0009,
+    "SCHD": 0.0006,
 }
 
 
@@ -288,17 +290,17 @@ def get_account_tier(amount: float) -> str:
 def allowed_etfs(tier: str, include_bitcoin: bool = False) -> list[str]:
     universe = {
         # $10k-$25k
-        "tier_1": ["TQQQ"],
+        "tier_1": ["SCHD","EFA"],
 
         # $25k-$100k
-        "tier_2": ["TQQQ", "EEM", "EFA"],
+        "tier_2": ["SCHD", "VWO", "EFA"],
 
         # $100k-$250k
-        "tier_3": ["TQQQ", "IWM", "EEM", "EFA"],
+        "tier_3": ["SCHD", "IWM", "VWO", "EFA"],
 
         # $250k+
         # Tier 4 upgrades from TQQQ to QQQ to avoid leveraged ETF reset/path dependency.
-        "tier_4": ["QQQ", "IWM", "EEM", "EFA"],
+        "tier_4": ["QQQ", "IWM", "VWO", "EFA"],
     }.get(tier, []).copy()
 
     # Bitcoin is always opt-in and starts at Tier 2.
@@ -313,6 +315,8 @@ def exposure_name(ticker: str) -> str:
         "TQQQ": "U.S. Growth",
         "UPRO": "U.S. Large Cap",
         "EEM": "Emerging Markets",
+        "VWO": "Emerging Markets",
+        "SCHD": "US Dividends",
         "EFA": "Developed International",
         "SPY": "U.S. Large Cap",
         "QQQ": "Technology Growth",
@@ -329,6 +333,8 @@ def correlation_bucket(ticker: str) -> str:
         "SPY": "us_equity",
         "QQQ": "us_growth",
         "IWM": "us_small_cap",
+        "VWO": "Emerging Markets",
+        "SCHD": "US Dividends",
         "EEM": "emerging_markets",
         "EFA": "developed_international",
         "IBIT": "bitcoin",

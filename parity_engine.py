@@ -65,6 +65,7 @@ ETF_EXPENSE_RATIOS = {
     "IBIT": 0.0025,
     "SGOV": 0.0009,
     "SCHD": 0.0006,
+    "SPY": 0.00094
 }
 
 
@@ -342,7 +343,7 @@ def allowed_etfs(tier: str, include_bitcoin: bool = False) -> list[str]:
 
         # $250k+
         # Tier 4 upgrades from TQQQ to QQQ to avoid leveraged ETF reset/path dependency.
-        "tier_4": ["QQQ", "IWM", "VWO", "EFA"],
+        "tier_4": ["SPY", "IWM", "VWO", "EFA"],
     }.get(tier, []).copy()
 
     # Bitcoin is always opt-in and starts at Tier 2.

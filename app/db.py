@@ -47,6 +47,33 @@ def init_db():
                     synced_at TIMESTAMP DEFAULT NOW()
                 );
 
+
+                CREATE TABLE IF NOT EXISTS plaid_items (
+                    id SERIAL PRIMARY KEY,
+                    parity_user_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    encrypted_access_token TEXT NOT NULL,
+                    institution_name TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_synced_at TIMESTAMP
+            );
+            
+                CREATE TABLE IF NOT EXISTS bank_accounts (
+                    id TEXT PRIMARY KEY,
+                    parity_user_id TEXT NOT NULL,
+                    plaid_item_id TEXT,
+                    name TEXT,
+                    official_name TEXT,
+                    subtype TEXT,
+                    type TEXT,
+                    mask TEXT,
+                    current_balance NUMERIC,
+                    available_balance NUMERIC,
+                    iso_currency_code TEXT,
+                    raw_json JSONB,
+                    last_synced_at TIMESTAMP DEFAULT NOW()
+            );
+
                 CREATE TABLE IF NOT EXISTS portfolio_recommendations (
                     id SERIAL PRIMARY KEY,
                     parity_user_id TEXT NOT NULL,

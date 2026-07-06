@@ -1,124 +1,192 @@
 import os
-import uuid
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-from .db import get_conn
-from .security import encrypt_secret, decrypt_secret
 
 
-def client() -> SnapTrade:
-    return SnapTrade(
-        client_id=os.environ["SNAPTRADE_CLIENT_ID"],
-        consumer_key=os.environ["SNAPTRADE_CONSUMER_KEY"],
+app = FastAPI(title="Parity SnapTrade API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+snaptrade = SnapTrade(
+    client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
+    consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
+)
+
+USER_ID = os.getenv("SNAPTRADE_TEST_USER_ID", "parity-test-user")
+USER_SECRET = os.getenv("SNAPTRADE_TEST_USER_SECRET")
+
+
+class RecommendRequest(BaseModel):
+    holdings: List[Dict[str, Any]]
+    cash: float = 0
+    investment_amount: Optional[float] = None
+    risk_preference: Optional[str] = "balanced"
+
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "parity-snaptrade-api"}
+
+
+@app.post("/connect-url")
+def connect_url():
+    global USER_SECRET
+
+    if not USER_SECRET:
+        try:
+            response = snaptrade.authentication.register_snap_trade_user(
+                user_id=USER_ID
+            )
+            USER_SECRET = response.body["userSecret"]
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing SNAPTRADE_TEST_USER_SECRET. User may already exist. Error: {str(e)}",
+            )
+
+    login = snaptrade.authentication.login_snap_trade_user(
+        user_id=USER_ID,
+        user_secret=USER_SECRET,
     )
 
-
-def _body(resp):
-    return getattr(resp, "body", resp)
-
-
-def get_or_create_snaptrade_user(app_user_id: str) -> tuple[str, str]:
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM snaptrade_users WHERE app_user_id = ?", (app_user_id,)).fetchone()
-        if row:
-            return row["snaptrade_user_id"], decrypt_secret(row["encrypted_user_secret"])
-
-    snaptrade_user_id = f"parity-{app_user_id}-{uuid.uuid4().hex[:8]}"
-    resp = client().authentication.register_snap_trade_user(user_id=snaptrade_user_id)
-    body = _body(resp)
-    user_secret = body["userSecret"]
-
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO snaptrade_users (app_user_id, snaptrade_user_id, encrypted_user_secret) VALUES (?, ?, ?)",
-            (app_user_id, snaptrade_user_id, encrypt_secret(user_secret)),
-        )
-        conn.commit()
-
-    return snaptrade_user_id, user_secret
-
-
-def connection_url(app_user_id: str, custom_redirect: str | None = None) -> dict:
-    user_id, user_secret = get_or_create_snaptrade_user(app_user_id)
-    kwargs = {
-        "user_id": user_id,
-        "user_secret": user_secret,
-        "connection_type": "read",
-        "connection_portal_version": "v2",
+    return {
+        "user_id": USER_ID,
+        "redirect_url": login.body["redirectURI"],
     }
-    if custom_redirect:
-        kwargs["custom_redirect"] = custom_redirect
-    resp = client().authentication.login_snap_trade_user(**kwargs)
-    body = _body(resp)
-    return {"redirect_url": body.get("redirectURI"), "snaptrade_user_id": user_id}
 
 
-def accounts(app_user_id: str) -> list[dict]:
-    user_id, user_secret = get_or_create_snaptrade_user(app_user_id)
-    resp = client().account_information.list_user_accounts(user_id=user_id, user_secret=user_secret)
-    return _body(resp)
+@app.get("/accounts")
+def accounts():
+    if not USER_SECRET:
+        raise HTTPException(status_code=400, detail="Missing SNAPTRADE_TEST_USER_SECRET")
+
+    response = snaptrade.account_information.list_user_accounts(
+        user_id=USER_ID,
+        user_secret=USER_SECRET,
+    )
+
+    return response.body
 
 
-def positions(app_user_id: str, account_id: str) -> list[dict]:
-    user_id, user_secret = get_or_create_snaptrade_user(app_user_id)
-    resp = client().account_information.get_user_account_positions(
-        user_id=user_id,
-        user_secret=user_secret,
+@app.get("/holdings/{account_id}")
+def holdings(account_id: str):
+    if not USER_SECRET:
+        raise HTTPException(status_code=400, detail="Missing SNAPTRADE_TEST_USER_SECRET")
+
+    positions = snaptrade.account_information.get_user_account_positions(
+        user_id=USER_ID,
+        user_secret=USER_SECRET,
         account_id=account_id,
     )
-    return _body(resp)
 
-
-def balances(app_user_id: str, account_id: str) -> dict:
-    user_id, user_secret = get_or_create_snaptrade_user(app_user_id)
-    # SDK versions vary; try common balance method names.
-    ai = client().account_information
-    if hasattr(ai, "get_user_account_balance"):
-        return _body(ai.get_user_account_balance(user_id=user_id, user_secret=user_secret, account_id=account_id))
-    if hasattr(ai, "get_user_account_balances"):
-        return _body(ai.get_user_account_balances(user_id=user_id, user_secret=user_secret, account_id=account_id))
-    return {}
-
-
-def normalize_positions(raw_positions: list[dict]) -> list[dict]:
     normalized = []
-    for p in raw_positions or []:
+
+    for p in positions.body:
         symbol_obj = p.get("symbol") or {}
-        symbol = symbol_obj.get("symbol") or symbol_obj.get("ticker") or p.get("symbol") or p.get("ticker")
-        if isinstance(symbol, dict):
-            symbol = symbol.get("symbol") or symbol.get("ticker")
-        if not symbol:
-            continue
-        units = p.get("units", p.get("quantity", 0)) or 0
-        price = p.get("price", p.get("last_price", 0)) or 0
-        market_value = p.get("market_value", p.get("value", None))
-        if market_value is None:
-            market_value = float(units or 0) * float(price or 0)
+
+        symbol = (
+            symbol_obj.get("symbol")
+            or symbol_obj.get("ticker")
+            or symbol_obj.get("raw_symbol")
+        )
+
+        market_value = (
+            p.get("market_value")
+            or p.get("value")
+            or 0
+        )
+
         normalized.append({
-            "symbol": str(symbol).upper(),
-            "quantity": float(units or 0),
-            "price": float(price or 0),
-            "market_value": float(market_value or 0),
-            "asset_type": ((symbol_obj.get("type") or {}).get("code") if isinstance(symbol_obj.get("type"), dict) else symbol_obj.get("type")) or "unknown",
-            "name": symbol_obj.get("description") or symbol_obj.get("name") or str(symbol).upper(),
+            "symbol": symbol,
+            "quantity": p.get("units") or p.get("quantity") or 0,
+            "price": p.get("price") or 0,
+            "market_value": market_value,
             "raw": p,
         })
-    return normalized
+
+    return {
+        "account_id": account_id,
+        "holdings": normalized,
+    }
 
 
-def extract_cash(account: dict | None, balance_payload: dict | list | None) -> float:
-    # Prefer account.balance.total.amount because your account list already has it.
-    if account:
-        try:
-            return float(((account.get("balance") or {}).get("total") or {}).get("amount") or 0)
-        except Exception:
-            pass
-    if isinstance(balance_payload, dict):
-        for path in [("cash", "amount"), ("total", "amount"), ("amount",)]:
-            cur = balance_payload
-            try:
-                for key in path:
-                    cur = cur[key]
-                return float(cur or 0)
-            except Exception:
-                continue
-    return 0.0
+@app.post("/recommend")
+def recommend(req: RecommendRequest):
+    holdings = req.holdings
+    cash = req.cash or 0
+
+    total_value = cash + sum(float(h.get("market_value") or 0) for h in holdings)
+
+    if total_value <= 0:
+        return {
+            "recommended_etf": "SPY",
+            "reason": "Default broad market recommendation.",
+            "suggested_outcome_inputs": {
+                "ticker": "SPY",
+                "max_loss": 0.10,
+                "horizon_days": 365,
+            },
+        }
+
+    tech_symbols = {"QQQ", "XLK", "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "GOOG", "TSLA"}
+    international_symbols = {"EFA", "VWO", "VEA", "VXUS", "IEFA", "IEMG"}
+
+    tech_weight = sum(
+        float(h.get("market_value") or 0)
+        for h in holdings
+        if str(h.get("symbol", "")).upper() in tech_symbols
+    ) / total_value
+
+    international_weight = sum(
+        float(h.get("market_value") or 0)
+        for h in holdings
+        if str(h.get("symbol", "")).upper() in international_symbols
+    ) / total_value
+
+    cash_weight = cash / total_value
+
+    top_holding = None
+    top_weight = 0
+
+    for h in holdings:
+        weight = float(h.get("market_value") or 0) / total_value
+        if weight > top_weight:
+            top_weight = weight
+            top_holding = h.get("symbol")
+
+    if cash_weight > 0.30:
+        etf = "SPY"
+        reason = "You have a large cash position. A protected SPY outcome can add broad market exposure with defined downside."
+    elif top_weight > 0.25:
+        etf = "SGOV"
+        reason = f"Your portfolio appears concentrated in {top_holding}. SGOV can add a conservative sleeve while keeping the recommendation simple."
+    elif tech_weight > 0.35:
+        etf = "SCHD"
+        reason = "You already have meaningful tech exposure. SCHD may complement it with dividend/value exposure."
+    elif international_weight < 0.10:
+        etf = "EFA"
+        reason = "Your portfolio appears light on international developed-market exposure."
+    else:
+        etf = "SPY"
+        reason = "SPY gives broad U.S. market exposure and works well for a general defined outcome sleeve."
+
+    return {
+        "recommended_etf": etf,
+        "reason": reason,
+        "suggested_outcome_inputs": {
+            "ticker": etf,
+            "max_loss": 0.10,
+            "horizon_days": 365,
+            "investment_amount": req.investment_amount,
+        },
+    }

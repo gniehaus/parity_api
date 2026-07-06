@@ -5,7 +5,6 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-from .snaptrade_service import create_connection_url, list_accounts, get_account_positions
 from .db import init_db
 
 app = FastAPI(title="Parity SnapTrade API")
@@ -13,6 +12,13 @@ app = FastAPI(title="Parity SnapTrade API")
 def startup():
     init_db()
 
+    
+from .snaptrade_service import (
+    create_connection_url,
+    list_accounts,
+    get_account_positions,
+    save_accounts_and_holdings,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -124,7 +130,10 @@ def brokerage_positions(account_id: str, request: Request):
     return get_account_positions(parity_user_id, account_id)
 
 
-    
+@app.post("/api/brokerage/sync")
+def brokerage_sync(request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return save_accounts_and_holdings(parity_user_id)   
 
 
 @app.post("/connect-url")

@@ -5,9 +5,13 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-
+from .db import init_db
 
 app = FastAPI(title="Parity SnapTrade API")
+@app.on_event("startup")
+def startup():
+    init_db()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,8 +26,11 @@ snaptrade = SnapTrade(
     consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
 )
 
-USER_ID = os.getenv("SNAPTRADE_TEST_USER_ID", "parity-test-user")
-USER_SECRET = os.getenv("SNAPTRADE_TEST_USER_SECRET")
+def get_parity_user_id(request: Request) -> str:
+    user_id = request.headers.get("X-Parity-User-Id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-Parity-User-Id")
+    return user_id
 
 
 class RecommendRequest(BaseModel):

@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
+from .snaptrade_service import create_connection_url, list_accounts, get_account_positions
 from .db import init_db
 
 app = FastAPI(title="Parity SnapTrade API")
@@ -12,13 +13,6 @@ app = FastAPI(title="Parity SnapTrade API")
 def startup():
     init_db()
 
-    
-from .snaptrade_service import (
-    create_connection_url,
-    list_accounts,
-    get_account_positions,
-    save_accounts_and_holdings,
-)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +27,14 @@ snaptrade = SnapTrade(
     consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
 )
 
+from pydantic import BaseModel
 
+from .plaid_service import (
+    create_link_token,
+    exchange_public_token,
+    sync_bank_accounts,
+    get_bank_accounts_from_db,
+)
 
 def normalize_account_with_positions(account: dict, positions: list):
     total_value = float(
@@ -105,12 +106,36 @@ class RecommendRequest(BaseModel):
     risk_preference: Optional[str] = "balanced"
 
 
+class PlaidExchangeRequest(BaseModel):
+    public_token: str
+
 @app.get("/")
 def health():
     return {"status": "ok", "service": "parity-snaptrade-api"}
 
 
+@app.post("/api/plaid/link-token")
+def plaid_link_token(request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return create_link_token(parity_user_id)
 
+
+@app.post("/api/plaid/exchange-public-token")
+def plaid_exchange_public_token(req: PlaidExchangeRequest, request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return exchange_public_token(parity_user_id, req.public_token)
+
+
+@app.post("/api/plaid/sync")
+def plaid_sync(request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return sync_bank_accounts(parity_user_id)
+
+
+@app.get("/api/plaid/bank-accounts")
+def plaid_bank_accounts(request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return get_bank_accounts_from_db(parity_user_id)
 
 @app.post("/api/brokerage/connect-url")
 def brokerage_connect_url(request: Request):
@@ -130,10 +155,7 @@ def brokerage_positions(account_id: str, request: Request):
     return get_account_positions(parity_user_id, account_id)
 
 
-@app.post("/api/brokerage/sync")
-def brokerage_sync(request: Request):
-    parity_user_id = get_parity_user_id(request)
-    return save_accounts_and_holdings(parity_user_id)   
+    
 
 
 @app.post("/connect-url")

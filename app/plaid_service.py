@@ -193,4 +193,22 @@ def get_bank_accounts_from_db(parity_user_id: str):
                 """,
                 (parity_user_id,),
             )
-            return cur.fetchall()
+            rows = cur.fetchall()
+
+    return [
+        {
+            "account_id": row["id"],
+            "name": row["name"],
+            "official_name": row["official_name"],
+            "subtype": row["subtype"],
+            "type": row["type"],
+            "mask": row["mask"],
+            "balances": {
+                "current": float(row["current_balance"] or 0),
+                "available": float(row["available_balance"] or 0),
+                "iso_currency_code": row["iso_currency_code"],
+            },
+            "last_synced_at": row["last_synced_at"],
+        }
+        for row in rows
+    ]

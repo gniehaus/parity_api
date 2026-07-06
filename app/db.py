@@ -16,6 +16,16 @@ def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS parity_users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_login_at TIMESTAMP DEFAULT NOW(),
+                    raw_json JSONB
+                );
+
                 CREATE TABLE IF NOT EXISTS snaptrade_users (
                     parity_user_id TEXT PRIMARY KEY,
                     snaptrade_user_id TEXT NOT NULL,
@@ -47,7 +57,6 @@ def init_db():
                     synced_at TIMESTAMP DEFAULT NOW()
                 );
 
-
                 CREATE TABLE IF NOT EXISTS plaid_items (
                     id SERIAL PRIMARY KEY,
                     parity_user_id TEXT NOT NULL,
@@ -56,8 +65,8 @@ def init_db():
                     institution_name TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
                     last_synced_at TIMESTAMP
-            );
-            
+                );
+
                 CREATE TABLE IF NOT EXISTS bank_accounts (
                     id TEXT PRIMARY KEY,
                     parity_user_id TEXT NOT NULL,
@@ -72,7 +81,7 @@ def init_db():
                     iso_currency_code TEXT,
                     raw_json JSONB,
                     last_synced_at TIMESTAMP DEFAULT NOW()
-            );
+                );
 
                 CREATE TABLE IF NOT EXISTS portfolio_recommendations (
                     id SERIAL PRIMARY KEY,

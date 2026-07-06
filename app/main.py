@@ -5,8 +5,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-from .snaptrade_service import create_connection_url, list_accounts, get_account_positions
-from .db import init_db
+from snaptrade_service import create_connection_url, list_accounts, get_account_positions
+from db import init_db
 
 app = FastAPI(title="Parity SnapTrade API")
 @app.on_event("startup")

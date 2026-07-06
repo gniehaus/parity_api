@@ -61,7 +61,9 @@ def normalize_account_with_positions(account: dict, positions: list):
     cash_value = max(total_value - invested_value, 0)
     cash_weight = cash_value / total_value if total_value > 0 else 0
 
-    if cash_weight >= 0.95:
+    if total_value <= 0:
+        portfolio_status = "empty"
+    elif cash_weight >= 0.95:
         portfolio_status = "all_cash"
     elif cash_weight >= 0.50:
         portfolio_status = "mostly_cash"

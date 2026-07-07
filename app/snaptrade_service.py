@@ -299,7 +299,14 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
 
             conn.commit()
 
-    return get_portfolio_summary(parity_user_id)
+    portfolio = get_portfolio_summary(parity_user_id)
+
+    return {
+        "status": "synced",
+        "accounts_count": len(accounts),
+        "holdings_count": len(portfolio.get("holdings", [])),
+        "portfolio": portfolio,
+    }
 
 
 def get_portfolio_summary(parity_user_id: str):

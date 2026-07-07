@@ -5,9 +5,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-from .snaptrade_service import create_connection_url, list_accounts, get_account_positions
+from .snaptrade_service import create_connection_url, list_accounts, get_account_positions,sync_brokerage_accounts_and_holdings, get_portfolio_summary
 from .db import init_db, upsert_parity_user
-
 app = FastAPI(title="Parity SnapTrade API")
 @app.on_event("startup")
 def startup():
@@ -165,6 +164,16 @@ def users_upsert(req: UserUpsertRequest):
         "parity_user_id": req.user_id,
     }
 
+@app.post("/api/brokerage/sync")
+def sync_brokerage():
+    parity_user_id = get_current_parity_user_id()
+    return sync_brokerage_accounts_and_holdings(parity_user_id)
+
+
+@app.get("/api/dashboard/portfolio")
+def dashboard_portfolio():
+    parity_user_id = get_current_parity_user_id()
+    return get_portfolio_summary(parity_user_id)
 
 @app.get("/api/brokerage/accounts")
 def brokerage_accounts(request: Request):

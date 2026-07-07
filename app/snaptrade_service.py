@@ -124,7 +124,8 @@ def _account_total_value(account):
 def _classify_position(position):
     position = _to_plain(position)
     symbol_obj = _symbol_obj(position)
-    symbol = (_symbol_from_position(position) or "").upper()
+    symbol = _string(_symbol_from_position(position), "")
+    symbol = symbol.upper()
     raw_symbol = _string(_get(symbol_obj, "raw_symbol") or symbol)
     description = (_string(_get(symbol_obj, "description") or _get(position, "description") or "") or "").lower()
 

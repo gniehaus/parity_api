@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 
-from .db import init_db, upsert_parity_user
+from .db import init_db, upsert_parity_user, get_conn
 from .snaptrade_service import (
     create_connection_url,
     list_accounts,
@@ -68,7 +68,96 @@ class UserUpsertRequest(BaseModel):
 class PlaidExchangeRequest(BaseModel):
     public_token: str
 
+class GuestClaimRequest(BaseModel):
+    guest_id: str
+    clerk_user_id: str
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    raw: dict | None = None
 
+
+@app.post("/api/guest/claim")
+def claim_guest_session(req: GuestClaimRequest):
+    if not req.guest_id.startswith("guest_"):
+        raise HTTPException(status_code=400, detail="guest_id must start with guest_")
+
+    if not req.clerk_user_id.startswith("user_"):
+        raise HTTPException(status_code=400, detail="clerk_user_id must be a Clerk user id")
+
+    upsert_parity_user(
+        user_id=req.clerk_user_id,
+        email=req.email,
+        first_name=req.first_name,
+        last_name=req.last_name,
+        raw=req.raw,
+    )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Prevent overwriting if Clerk user already has a SnapTrade user
+            cur.execute(
+                """
+                SELECT parity_user_id
+                FROM snaptrade_users
+                WHERE parity_user_id = %s
+                """,
+                (req.clerk_user_id,),
+            )
+            existing_clerk_snaptrade = cur.fetchone()
+
+            if existing_clerk_snaptrade:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Clerk user already has a SnapTrade connection"
+                )
+
+            cur.execute(
+                """
+                UPDATE snaptrade_users
+                SET parity_user_id = %s
+                WHERE parity_user_id = %s
+                """,
+                (req.clerk_user_id, req.guest_id),
+            )
+
+            cur.execute(
+                """
+                UPDATE brokerage_accounts
+                SET parity_user_id = %s
+                WHERE parity_user_id = %s
+                """,
+                (req.clerk_user_id, req.guest_id),
+            )
+
+            cur.execute(
+                """
+                UPDATE holdings
+                SET parity_user_id = %s
+                WHERE parity_user_id = %s
+                """,
+                (req.clerk_user_id, req.guest_id),
+            )
+
+            cur.execute(
+                """
+                UPDATE normalized_holdings
+                SET parity_user_id = %s
+                WHERE parity_user_id = %s
+                """,
+                (req.clerk_user_id, req.guest_id),
+            )
+
+            conn.commit()
+
+    return {
+        "status": "claimed",
+        "guest_id": req.guest_id,
+        "clerk_user_id": req.clerk_user_id,
+    }
+
+
+    
 @app.get("/")
 def health():
     return {"status": "ok", "service": "parity-snaptrade-api"}

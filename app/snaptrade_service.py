@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from decimal import Decimal
 from snaptrade_client import SnapTrade
 
@@ -84,15 +83,100 @@ def _date(value):
     return value[:10]
 
 
-def _symbol_obj(position):
-    return _get(position, "symbol") or _get(position, "universal_symbol") or _get(position, "security") or {}
+def _instrument(position):
+    position = _to_plain(position)
+    wrapper = _get(position, "symbol") or _get(position, "universal_symbol") or _get(position, "security") or {}
+
+    # SnapTrade often returns:
+    # position["symbol"]["symbol"]["type"]["code"]
+    if isinstance(wrapper, dict):
+        nested = wrapper.get("symbol")
+        if isinstance(nested, dict):
+            return nested
+        return wrapper
+
+    return {}
 
 
-def _symbol_from_position(position):
-    symbol = _symbol_obj(position)
-    if isinstance(symbol, dict):
-        return symbol.get("symbol") or symbol.get("raw_symbol") or symbol.get("ticker")
+def _extract_symbol(position):
+    instrument = _instrument(position)
+
+    symbol = (
+        _get(instrument, "symbol")
+        or _get(instrument, "raw_symbol")
+        or _get(instrument, "ticker")
+        or _get(position, "raw_symbol")
+        or _get(position, "ticker")
+    )
+
     return _string(symbol)
+
+
+def _extract_raw_symbol(position):
+    instrument = _instrument(position)
+    return _string(_get(instrument, "raw_symbol") or _extract_symbol(position))
+
+
+def _extract_security_type(position):
+    instrument = _instrument(position)
+    type_obj = _get(instrument, "type") or _get(position, "type") or _get(position, "security_type") or {}
+
+    code = ""
+    description = ""
+
+    if isinstance(type_obj, dict):
+        code = _string(_get(type_obj, "code"), "")
+        description = _string(_get(type_obj, "description"), "")
+    else:
+        code = _string(type_obj, "")
+
+    return f"{code} {description}".strip().lower()
+
+
+def _classify_position(position):
+    symbol = (_extract_symbol(position) or "").upper()
+    security_text = _extract_security_type(position)
+
+    option_fields_present = any([
+        _get(position, "option_type"),
+        _get(position, "optionType"),
+        _get(position, "strike_price"),
+        _get(position, "strikePrice"),
+        _get(position, "expiration_date"),
+        _get(position, "expirationDate"),
+        _get(position, "underlying_symbol"),
+        _get(position, "underlyingSymbol"),
+    ])
+
+    if option_fields_present or any(x in security_text for x in ["option", "call", "put"]):
+        return "option", "option"
+
+    if "cs" in security_text.split() or "common stock" in security_text:
+        return "us_stock", "common_stock"
+
+    if any(x in security_text for x in ["etf", "exchange traded fund", "exchange-traded fund"]):
+        if symbol in {"EFA", "VEA", "VXUS", "IEFA", "VWO", "IEMG", "EEM"}:
+            return "international_equity", "etf"
+        if symbol in {"SGOV", "BIL", "SHV", "TFLO", "USFR", "GOVT", "IEF", "TLT", "SHY"}:
+            return "treasury", "etf"
+        return "us_etf", "etf"
+
+    if any(x in security_text for x in ["mutual fund", "mutualfund"]):
+        return "mutual_fund", "fund"
+
+    if any(x in security_text for x in ["treasury", "t-bill", "tbill", "t bill"]):
+        return "treasury", "fixed_income"
+
+    if any(x in security_text for x in ["bond", "fixed income", "note", "debenture"]):
+        return "bond", "fixed_income"
+
+    if any(x in security_text for x in ["cash", "money market", "sweep"]):
+        return "cash", "cash"
+
+    if any(x in security_text for x in ["crypto", "bitcoin", "ethereum", "btc", "eth"]):
+        return "crypto", "crypto"
+
+    return "unknown", "unknown"
 
 
 def _market_value(position):
@@ -102,154 +186,53 @@ def _market_value(position):
             return parsed
 
     quantity = _num(_get(position, "units") or _get(position, "quantity") or _get(position, "qty"))
-    price = _num(_get(position, "price") or _get(position, "last_price") or _get(position, "lastPrice") or _get(position, "average_purchase_price"))
+    price = _num(
+        _get(position, "price")
+        or _get(position, "last_price")
+        or _get(position, "lastPrice")
+        or _get(position, "average_purchase_price")
+    )
 
     if quantity is not None and price is not None:
         return quantity * price
+
     return None
 
 
 def _account_total_value(account):
     balance = _get(account, "balance") or {}
+
     if isinstance(balance, dict):
         total = balance.get("total") or {}
         if isinstance(total, dict) and total.get("amount") is not None:
             return _num(total.get("amount"))
+
         if balance.get("amount") is not None:
             return _num(balance.get("amount"))
 
-    return _num(_get(account, "total_value") or _get(account, "totalValue") or _get(account, "cash"))
-
-    
-def _extract_kind(position):
-    position = _to_plain(position)
-    symbol_obj = _symbol_obj(position)
-
-    kind = (
-        _get(position, "kind")
-        or _get(symbol_obj, "kind")
-        or _get(position, "instrument_type")
-        or _get(position, "instrumentType")
+    return _num(
+        _get(account, "total_value")
+        or _get(account, "totalValue")
+        or _get(account, "cash")
     )
-
-    return _string(kind, "").lower().replace("_", "").replace("-", "")
-    
-def _extract_symbol(position):
-    position = _to_plain(position)
-    symbol_obj = _symbol_obj(position)
-
-    candidates = [
-        _get(position, "symbol"),
-        _get(position, "raw_symbol"),
-        _get(position, "ticker"),
-        _get(symbol_obj, "symbol"),
-        _get(symbol_obj, "raw_symbol"),
-        _get(symbol_obj, "ticker"),
-    ]
-
-    for candidate in candidates:
-        candidate = _to_plain(candidate)
-
-        if isinstance(candidate, dict):
-            nested = (
-                candidate.get("symbol")
-                or candidate.get("raw_symbol")
-                or candidate.get("ticker")
-            )
-            if nested:
-                return str(nested).upper()
-
-        if candidate:
-            return str(candidate).upper()
-
-    return None
-
-
-def _extract_security_type(position):
-    position = _to_plain(position)
-    symbol_obj = _symbol_obj(position)
-
-    kind = _extract_kind(position)
-
-    type_obj = (
-        _get(position, "type")
-        or _get(position, "security_type")
-        or _get(position, "asset_type")
-        or _get(position, "instrument_type")
-        or _get(symbol_obj, "type")
-    )
-
-    parts = [kind]
-
-    type_obj = _to_plain(type_obj)
-
-    if isinstance(type_obj, dict):
-        parts.extend([
-            _string(type_obj.get("code"), ""),
-            _string(type_obj.get("name"), ""),
-            _string(type_obj.get("description"), ""),
-            _string(type_obj.get("type"), ""),
-        ])
-    elif type_obj:
-        parts.append(_string(type_obj, ""))
-
-    parts.extend([
-        _string(_get(symbol_obj, "description"), ""),
-        _string(_get(position, "description"), ""),
-        _string(_get(position, "name"), ""),
-        _string(_get(position, "raw_type"), ""),
-        _string(_get(position, "rawType"), ""),
-    ])
-
-    return " ".join([p for p in parts if p]).lower()
-    
-def _classify_position(position):
-    position = _to_plain(position)
-
-    kind = _extract_kind(position)
-    symbol = _extract_symbol(position) or ""
-    security_text = _extract_security_type(position)
-
-    if kind == "stock":
-        return "us_stock", "common_stock"
-
-    if kind == "etf":
-        if symbol in {"EFA", "VEA", "VXUS", "IEFA", "VWO", "IEMG", "EEM"}:
-            return "international_equity", "etf"
-        if symbol in {"SGOV", "BIL", "SHV", "TFLO", "USFR", "GOVT", "IEF", "TLT", "SHY"}:
-            return "treasury", "etf"
-        return "us_etf", "etf"
-
-    if kind == "mutualfund":
-        return "mutual_fund", "fund"
-
-    if kind == "crypto":
-        return "crypto", "crypto"
-
-    if kind == "option":
-        return "option", "option"
-
-    if kind == "future":
-        return "future", "future"
-
-    if kind in {"cash", "currency"}:
-        return "cash", "cash"
-
-    # fallback logic continues here...
-    return "unknown", "unknown"
 
 
 def normalize_position(parity_user_id: str, account_id: str, position: dict):
     position = _to_plain(position)
-    symbol_obj = _symbol_obj(position)
+    instrument = _instrument(position)
 
-    symbol = _string(_symbol_from_position(position))
-    raw_symbol = _string(_get(symbol_obj, "raw_symbol") or symbol)
-    description = _string(_get(symbol_obj, "description") or _get(position, "description"))
+    symbol = _extract_symbol(position)
+    raw_symbol = _extract_raw_symbol(position)
+    description = _string(_get(instrument, "description") or _get(position, "description"))
     display_name = description or symbol
 
     quantity = _num(_get(position, "units") or _get(position, "quantity") or _get(position, "qty"))
-    price = _num(_get(position, "price") or _get(position, "last_price") or _get(position, "lastPrice") or _get(position, "average_purchase_price"))
+    price = _num(
+        _get(position, "price")
+        or _get(position, "last_price")
+        or _get(position, "lastPrice")
+        or _get(position, "average_purchase_price")
+    )
     market_value = _market_value(position)
 
     asset_class, security_type = _classify_position(position)
@@ -257,12 +240,19 @@ def normalize_position(parity_user_id: str, account_id: str, position: dict):
     position_direction = "short" if quantity is not None and quantity < 0 else "long"
     exposure_value = abs(market_value) if market_value is not None else None
 
-    currency_obj = _get(symbol_obj, "currency") or _get(position, "currency") or {}
+    currency_obj = _get(instrument, "currency") or _get(position, "currency") or {}
     currency = _string(_get(currency_obj, "code") or currency_obj, "USD")
 
     option_type = _string(_get(position, "option_type") or _get(position, "optionType"))
     if option_type:
         option_type = option_type.lower()
+
+    type_obj = _get(instrument, "type") or _get(position, "type") or _get(position, "security_type") or {}
+    asset_subtype = None
+    if isinstance(type_obj, dict):
+        asset_subtype = _string(_get(type_obj, "code") or _get(type_obj, "description"))
+    else:
+        asset_subtype = _string(type_obj)
 
     return {
         "parity_user_id": parity_user_id,
@@ -271,18 +261,18 @@ def normalize_position(parity_user_id: str, account_id: str, position: dict):
         "raw_symbol": raw_symbol,
         "display_name": display_name,
         "description": description,
-        "cusip": _string(_get(position, "cusip") or _get(symbol_obj, "cusip")),
-        "isin": _string(_get(position, "isin") or _get(symbol_obj, "isin")),
-        "figi": _string(_get(position, "figi_code") or _get(symbol_obj, "figi_code")),
+        "cusip": _string(_get(position, "cusip") or _get(instrument, "cusip")),
+        "isin": _string(_get(position, "isin") or _get(instrument, "isin")),
+        "figi": _string(_get(position, "figi_code") or _get(instrument, "figi_code")),
         "asset_class": asset_class,
         "security_type": security_type,
-        "asset_subtype": _string(_get(position, "asset_type") or _get(position, "type")),
+        "asset_subtype": asset_subtype,
         "currency": currency,
         "quantity": quantity,
         "price": price,
         "market_value": market_value,
         "cost_basis": _num(_get(position, "cost_basis") or _get(position, "costBasis")),
-        "unrealized_gain_loss": _num(_get(position, "unrealized_gain_loss") or _get(position, "unrealizedGainLoss")),
+        "unrealized_gain_loss": _num(_get(position, "unrealized_gain_loss") or _get(position, "unrealizedGainLoss") or _get(position, "open_pnl")),
         "unrealized_gain_loss_pct": _num(_get(position, "unrealized_gain_loss_pct") or _get(position, "unrealizedGainLossPercent")),
         "position_direction": position_direction,
         "exposure_value": exposure_value,
@@ -471,8 +461,14 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                     print(f"Failed to fetch positions for account {account_id}: {e}")
                     positions = []
 
-                cur.execute("DELETE FROM holdings WHERE parity_user_id = %s AND account_id = %s", (parity_user_id, account_id))
-                cur.execute("DELETE FROM normalized_holdings WHERE parity_user_id = %s AND account_id = %s", (parity_user_id, account_id))
+                cur.execute(
+                    "DELETE FROM holdings WHERE parity_user_id = %s AND account_id = %s",
+                    (parity_user_id, account_id),
+                )
+                cur.execute(
+                    "DELETE FROM normalized_holdings WHERE parity_user_id = %s AND account_id = %s",
+                    (parity_user_id, account_id),
+                )
 
                 for position in positions:
                     position = _to_plain(position)

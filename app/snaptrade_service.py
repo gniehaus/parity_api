@@ -100,24 +100,25 @@ def _symbol_from_position(position):
     position = _to_plain(position)
 
     symbol = _get(position, "symbol")
-
     if isinstance(symbol, dict):
-        return _string(symbol)
-
-    if symbol:
-        return _string(symbol)
+        return (
+            symbol.get("symbol")
+            or symbol.get("raw_symbol")
+            or symbol.get("ticker")
+        )
 
     universal_symbol = _get(position, "universal_symbol")
-
     if isinstance(universal_symbol, dict):
-        return _string(universal_symbol)
+        return (
+            universal_symbol.get("symbol")
+            or universal_symbol.get("raw_symbol")
+            or universal_symbol.get("ticker")
+        )
 
-    security = _get(position, "security")
-    if isinstance(security, dict):
-        return _string(security)
+    if symbol:
+        return str(symbol)
 
     return None
-
 
 def _market_value(position):
     position = _to_plain(position)

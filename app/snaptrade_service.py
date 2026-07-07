@@ -28,7 +28,7 @@ def _num(value):
 
 
 def _symbol_from_position(position):
-    symbol = _get(position, "symbol")
+    symbol = _string(_symbol_from_position(position))
 
     if isinstance(symbol, dict):
         return (
@@ -141,6 +141,19 @@ def create_connection_url(parity_user_id: str):
         "redirect_url": response.body["redirectURI"],
     }
 
+    
+def _string(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return (
+            value.get("code")
+            or value.get("name")
+            or value.get("type")
+            or value.get("description")
+            or json.dumps(value, default=str)
+        )
+    return str(value)
 
 def list_accounts(parity_user_id: str):
     user = get_or_create_snaptrade_user(parity_user_id)
@@ -250,30 +263,30 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                 )
 
                 for position in positions:
-                    symbol = _symbol_from_position(position)
-
+                    symbol = _string(_symbol_from_position(position))
+                    
                     quantity = _num(
                         _get(position, "units")
                         or _get(position, "quantity")
                         or _get(position, "qty")
                     )
-
+                    
                     price = _num(
                         _get(position, "price")
                         or _get(position, "last_price")
                         or _get(position, "lastPrice")
                         or _get(position, "average_purchase_price")
                     )
-
+                    
                     market_value = _market_value(position)
-
-                    asset_type = (
+                    
+                    asset_type = _string(
                         _get(position, "asset_type")
                         or _get(position, "type")
-                        or _get(position, "security_type")
-                        or "equity"
+                        or _get(position, "security_type"),
+                        "equity",
                     )
-
+                    
                     cur.execute(
                         """
                         INSERT INTO holdings (

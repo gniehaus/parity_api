@@ -1,4 +1,5 @@
 import os
+import json
 import psycopg
 from psycopg.rows import dict_row
 
@@ -25,7 +26,6 @@ def init_db():
                     last_login_at TIMESTAMP DEFAULT NOW(),
                     raw_json JSONB
                 );
-
 
                 CREATE TABLE IF NOT EXISTS snaptrade_users (
                     parity_user_id TEXT PRIMARY KEY,
@@ -54,6 +54,59 @@ def init_db():
                     price NUMERIC,
                     market_value NUMERIC,
                     asset_type TEXT,
+                    raw_json JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS normalized_holdings (
+                    id SERIAL PRIMARY KEY,
+
+                    parity_user_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+
+                    symbol TEXT,
+                    raw_symbol TEXT,
+                    display_name TEXT,
+                    description TEXT,
+                    cusip TEXT,
+                    isin TEXT,
+                    figi TEXT,
+
+                    asset_class TEXT NOT NULL DEFAULT 'unknown',
+                    security_type TEXT NOT NULL DEFAULT 'unknown',
+                    asset_subtype TEXT,
+                    currency TEXT DEFAULT 'USD',
+
+                    quantity NUMERIC,
+                    price NUMERIC,
+                    market_value NUMERIC,
+                    cost_basis NUMERIC,
+                    unrealized_gain_loss NUMERIC,
+                    unrealized_gain_loss_pct NUMERIC,
+
+                    position_direction TEXT DEFAULT 'long',
+                    exposure_value NUMERIC,
+                    is_cash BOOLEAN DEFAULT false,
+                    is_margin BOOLEAN DEFAULT false,
+                    is_short BOOLEAN DEFAULT false,
+
+                    is_option BOOLEAN DEFAULT false,
+                    underlying_symbol TEXT,
+                    option_type TEXT,
+                    expiration_date DATE,
+                    strike_price NUMERIC,
+                    multiplier NUMERIC,
+                    contract_count NUMERIC,
+
+                    maturity_date DATE,
+                    coupon_rate NUMERIC,
+                    face_value NUMERIC,
+                    yield_rate NUMERIC,
+
+                    expense_ratio NUMERIC,
+                    fund_family TEXT,
+
+                    source TEXT DEFAULT 'snaptrade',
                     raw_json JSONB,
                     synced_at TIMESTAMP DEFAULT NOW()
                 );
@@ -93,11 +146,42 @@ def init_db():
                     raw_json JSONB,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_brokerage_accounts_user
+                ON brokerage_accounts(parity_user_id);
+
+                CREATE INDEX IF NOT EXISTS idx_holdings_user
+                ON holdings(parity_user_id);
+
+                CREATE INDEX IF NOT EXISTS idx_holdings_user_account
+                ON holdings(parity_user_id, account_id);
+
+                CREATE INDEX IF NOT EXISTS idx_holdings_symbol
+                ON holdings(symbol);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_user
+                ON normalized_holdings(parity_user_id);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_user_account
+                ON normalized_holdings(parity_user_id, account_id);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_symbol
+                ON normalized_holdings(symbol);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_asset_class
+                ON normalized_holdings(asset_class);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_security_type
+                ON normalized_holdings(security_type);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_is_option
+                ON normalized_holdings(is_option);
+
+                CREATE INDEX IF NOT EXISTS idx_normalized_holdings_is_cash
+                ON normalized_holdings(is_cash);
             """)
             conn.commit()
 
-
-import json
 
 def upsert_parity_user(
     user_id: str,

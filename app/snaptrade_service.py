@@ -123,48 +123,66 @@ def _account_total_value(account):
 
 def _classify_position(position):
     position = _to_plain(position)
+
     symbol_obj = _symbol_obj(position)
-    symbol = _string(_symbol_from_position(position), "")
-    symbol = symbol.upper()
-    raw_symbol = _string(_get(symbol_obj, "raw_symbol") or symbol)
-    description = (_string(_get(symbol_obj, "description") or _get(position, "description") or "") or "").lower()
+    symbol = _string(_symbol_from_position(position), "").upper()
+    description = _string(
+        _get(symbol_obj, "description") or _get(position, "description"),
+        ""
+    ).lower()
 
     type_obj = _get(symbol_obj, "type") or _get(position, "type") or _get(position, "security_type") or {}
-    type_code = (_string(_get(type_obj, "code") or type_obj, "") or "").lower()
-    type_desc = (_string(_get(type_obj, "description"), "") or "").lower()
 
-    raw_type = " ".join([type_code, type_desc, description, symbol]).lower()
+    type_code = ""
+    type_desc = ""
 
-    is_option = any(x in raw_type for x in ["option", "call", "put"]) or bool(
-        _get(position, "option_type") or _get(position, "strike_price") or _get(position, "expiration_date")
-    )
+    if isinstance(type_obj, dict):
+        type_code = _string(type_obj.get("code"), "").lower()
+        type_desc = _string(type_obj.get("description"), "").lower()
+    else:
+        type_code = _string(type_obj, "").lower()
 
-    if is_option:
+    raw_type = f"{type_code} {type_desc} {description} {symbol}".lower()
+
+    # Options
+    if any(x in raw_type for x in ["option", "call", "put"]) or bool(
+        _get(position, "option_type")
+        or _get(position, "optionType")
+        or _get(position, "strike_price")
+        or _get(position, "strikePrice")
+        or _get(position, "expiration_date")
+        or _get(position, "expirationDate")
+    ):
         return "option", "option"
 
+    # Cash / money market
     if any(x in raw_type for x in ["cash", "money market", "sweep"]):
         return "cash", "cash"
 
-    if any(x in raw_type for x in ["treasury", "t-bill", "tbill", "t bill", "government bond"]):
+    # Treasuries / bonds
+    if any(x in raw_type for x in ["treasury", "t-bill", "tbill", "t bill"]):
         return "treasury", "fixed_income"
 
     if any(x in raw_type for x in ["bond", "fixed income", "note", "debenture"]):
         return "bond", "fixed_income"
 
-    if any(x in raw_type for x in ["mutual fund", "mf"]):
-        return "mutual_fund", "fund"
-
-    if any(x in raw_type for x in ["etf", "exchange traded fund"]):
+    # Funds
+    if type_code in {"et", "etf"} or "etf" in raw_type or "exchange traded fund" in raw_type:
         if symbol in {"EFA", "VEA", "VXUS", "IEFA", "VWO", "IEMG", "EEM"}:
             return "international_equity", "etf"
         if symbol in {"SGOV", "BIL", "SHV", "TFLO", "USFR"}:
             return "treasury", "etf"
         return "us_etf", "etf"
 
-    if any(x in raw_type for x in ["crypto", "bitcoin", "ethereum"]):
+    if type_code in {"mf", "mutual_fund"} or "mutual fund" in raw_type:
+        return "mutual_fund", "fund"
+
+    # Crypto
+    if any(x in raw_type for x in ["crypto", "bitcoin", "ethereum", "btc", "eth"]):
         return "crypto", "crypto"
 
-    if type_code in {"cs", "common stock", "stock", "equity"} or "common stock" in raw_type:
+    # Common stocks
+    if type_code in {"cs", "common_stock", "stock", "equity"} or "common stock" in raw_type:
         return "us_stock", "common_stock"
 
     return "unknown", "unknown"

@@ -12,15 +12,57 @@ snaptrade = SnapTrade(
 )
 
 
+def _to_plain(obj):
+    if obj is None:
+        return None
+
+    if isinstance(obj, (str, int, float, bool, Decimal)):
+        return obj
+
+    if isinstance(obj, list):
+        return [_to_plain(x) for x in obj]
+
+    if isinstance(obj, dict):
+        return {str(k): _to_plain(v) for k, v in obj.items()}
+
+    if hasattr(obj, "to_dict"):
+        try:
+            return _to_plain(obj.to_dict())
+        except Exception:
+            pass
+
+    if hasattr(obj, "__dict__"):
+        try:
+            return _to_plain(obj.__dict__)
+        except Exception:
+            pass
+
+    return str(obj)
+
+
 def _get(obj, key, default=None):
+    obj = _to_plain(obj)
+
     if isinstance(obj, dict):
         return obj.get(key, default)
-    return getattr(obj, key, default)
+
+    return default
 
 
 def _num(value):
+    value = _to_plain(value)
+
     if value is None:
         return None
+
+    if isinstance(value, dict):
+        value = (
+            value.get("amount")
+            or value.get("value")
+            or value.get("total")
+            or value.get("price")
+        )
+
     try:
         return Decimal(str(value))
     except Exception:
@@ -28,50 +70,63 @@ def _num(value):
 
 
 def _string(value, default=None):
+    value = _to_plain(value)
+
     if value is None:
         return default
+
     if isinstance(value, dict):
-        return (
-            value.get("code")
+        value = (
+            value.get("symbol")
+            or value.get("raw_symbol")
+            or value.get("ticker")
+            or value.get("code")
             or value.get("name")
-            or value.get("type")
             or value.get("description")
-            or json.dumps(value, default=str)
+            or value.get("type")
         )
+
+    if value is None:
+        return default
+
     return str(value)
 
 
+def _json(value):
+    return json.dumps(_to_plain(value), default=str)
+
+
 def _symbol_from_position(position):
+    position = _to_plain(position)
+
     symbol = _get(position, "symbol")
 
     if isinstance(symbol, dict):
-        return (
-            symbol.get("symbol")
-            or symbol.get("raw_symbol")
-            or symbol.get("ticker")
-            or symbol.get("description")
-        )
+        return _string(symbol)
 
     if symbol:
-        return str(symbol)
+        return _string(symbol)
 
     universal_symbol = _get(position, "universal_symbol")
 
     if isinstance(universal_symbol, dict):
-        return (
-            universal_symbol.get("symbol")
-            or universal_symbol.get("ticker")
-            or universal_symbol.get("raw_symbol")
-        )
+        return _string(universal_symbol)
+
+    security = _get(position, "security")
+    if isinstance(security, dict):
+        return _string(security)
 
     return None
 
 
 def _market_value(position):
+    position = _to_plain(position)
+
     for key in ["market_value", "marketValue", "value"]:
         value = _get(position, key)
-        if value is not None:
-            return _num(value)
+        parsed = _num(value)
+        if parsed is not None:
+            return parsed
 
     quantity = _num(
         _get(position, "units")
@@ -90,6 +145,28 @@ def _market_value(position):
         return quantity * price
 
     return None
+
+
+def _account_total_value(account):
+    account = _to_plain(account)
+
+    balance = _get(account, "balance") or {}
+    if isinstance(balance, dict):
+        total = balance.get("total") or {}
+        if isinstance(total, dict):
+            amount = total.get("amount")
+            if amount is not None:
+                return _num(amount)
+
+        amount = balance.get("amount")
+        if amount is not None:
+            return _num(amount)
+
+    return _num(
+        _get(account, "total_value")
+        or _get(account, "totalValue")
+        or _get(account, "cash")
+    )
 
 
 def get_or_create_snaptrade_user(parity_user_id: str):
@@ -117,7 +194,8 @@ def get_or_create_snaptrade_user(parity_user_id: str):
                 user_id=snaptrade_user_id
             )
 
-            user_secret = response.body["userSecret"]
+            body = _to_plain(response.body)
+            user_secret = body["userSecret"]
 
             cur.execute(
                 """
@@ -150,9 +228,11 @@ def create_connection_url(parity_user_id: str):
         user_secret=user["user_secret"],
     )
 
+    body = _to_plain(response.body)
+
     return {
         "snaptrade_user_id": user["snaptrade_user_id"],
-        "redirect_url": response.body["redirectURI"],
+        "redirect_url": body["redirectURI"],
     }
 
 
@@ -164,7 +244,7 @@ def list_accounts(parity_user_id: str):
         user_secret=user["user_secret"],
     )
 
-    return response.body
+    return _to_plain(response.body) or []
 
 
 def get_account_positions(parity_user_id: str, account_id: str):
@@ -176,7 +256,7 @@ def get_account_positions(parity_user_id: str, account_id: str):
         account_id=account_id,
     )
 
-    return response.body
+    return _to_plain(response.body) or []
 
 
 def sync_brokerage_accounts_and_holdings(parity_user_id: str):
@@ -185,38 +265,34 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
             for account in accounts:
-                account_id = str(_get(account, "id"))
+                account = _to_plain(account)
+
+                account_id = _string(_get(account, "id"))
+                if not account_id:
+                    continue
 
                 brokerage = _get(account, "brokerage")
-                institution_name = (
+                institution_name = _string(
                     _get(account, "institution_name")
                     or _get(account, "institution")
-                    or (_get(brokerage, "name") if brokerage else None)
+                    or _get(brokerage, "name")
+                    or _get(_get(account, "meta"), "institution_name")
                 )
 
-                account_name = (
+                account_name = _string(
                     _get(account, "name")
                     or _get(account, "account_name")
                     or _get(account, "number")
                     or "Brokerage Account"
                 )
 
-                account_number_mask = (
+                account_number_mask = _string(
                     _get(account, "number")
                     or _get(account, "account_number")
                     or _get(account, "account_number_mask")
                 )
 
-                balance = _get(account, "balance") or {}
-                total = balance.get("total", {}) if isinstance(balance, dict) else {}
-                total_value = total.get("amount")
-
-                if total_value is None:
-                    total_value = (
-                        _get(account, "total_value")
-                        or _get(account, "totalValue")
-                        or _get(account, "cash")
-                    )
+                total_value = _account_total_value(account)
 
                 cur.execute(
                     """
@@ -244,11 +320,11 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                     (
                         account_id,
                         parity_user_id,
-                        _string(institution_name),
-                        _string(account_name),
-                        _string(account_number_mask),
-                        _num(total_value),
-                        json.dumps(account, default=str),
+                        institution_name,
+                        account_name,
+                        account_number_mask,
+                        total_value,
+                        _json(account),
                     ),
                 )
 
@@ -268,6 +344,8 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                 )
 
                 for position in positions:
+                    position = _to_plain(position)
+
                     symbol = _string(_symbol_from_position(position))
 
                     quantity = _num(
@@ -315,7 +393,7 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                             price,
                             market_value,
                             asset_type,
-                            json.dumps(position, default=str),
+                            _json(position),
                         ),
                     )
 

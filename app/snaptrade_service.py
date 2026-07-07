@@ -193,12 +193,16 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                     or _get(account, "account_number_mask")
                 )
 
-                total_value = (
-                    _get(account, "balance")
-                    or _get(account, "total_value")
-                    or _get(account, "totalValue")
-                    or _get(account, "cash")
-                )
+                balance = _get(account, "balance") or {}
+                total = balance.get("total", {}) if isinstance(balance, dict) else {}
+                total_value = total.get("amount")
+                
+                if total_value is None:
+                    total_value = (
+                        _get(account, "total_value")
+                        or _get(account, "totalValue")
+                        or _get(account, "cash")
+                    )
 
                 cur.execute(
                     """

@@ -27,8 +27,22 @@ def _num(value):
         return None
 
 
+def _string(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return (
+            value.get("code")
+            or value.get("name")
+            or value.get("type")
+            or value.get("description")
+            or json.dumps(value, default=str)
+        )
+    return str(value)
+
+
 def _symbol_from_position(position):
-    symbol = _string(_symbol_from_position(position))
+    symbol = _get(position, "symbol")
 
     if isinstance(symbol, dict):
         return (
@@ -141,19 +155,6 @@ def create_connection_url(parity_user_id: str):
         "redirect_url": response.body["redirectURI"],
     }
 
-    
-def _string(value, default=None):
-    if value is None:
-        return default
-    if isinstance(value, dict):
-        return (
-            value.get("code")
-            or value.get("name")
-            or value.get("type")
-            or value.get("description")
-            or json.dumps(value, default=str)
-        )
-    return str(value)
 
 def list_accounts(parity_user_id: str):
     user = get_or_create_snaptrade_user(parity_user_id)
@@ -209,7 +210,7 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                 balance = _get(account, "balance") or {}
                 total = balance.get("total", {}) if isinstance(balance, dict) else {}
                 total_value = total.get("amount")
-                
+
                 if total_value is None:
                     total_value = (
                         _get(account, "total_value")
@@ -243,15 +244,19 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                     (
                         account_id,
                         parity_user_id,
-                        institution_name,
-                        account_name,
-                        account_number_mask,
+                        _string(institution_name),
+                        _string(account_name),
+                        _string(account_number_mask),
                         _num(total_value),
                         json.dumps(account, default=str),
                     ),
                 )
 
-                positions = get_account_positions(parity_user_id, account_id)
+                try:
+                    positions = get_account_positions(parity_user_id, account_id)
+                except Exception as e:
+                    print(f"Failed to fetch positions for account {account_id}: {e}")
+                    positions = []
 
                 cur.execute(
                     """
@@ -264,29 +269,29 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
 
                 for position in positions:
                     symbol = _string(_symbol_from_position(position))
-                    
+
                     quantity = _num(
                         _get(position, "units")
                         or _get(position, "quantity")
                         or _get(position, "qty")
                     )
-                    
+
                     price = _num(
                         _get(position, "price")
                         or _get(position, "last_price")
                         or _get(position, "lastPrice")
                         or _get(position, "average_purchase_price")
                     )
-                    
+
                     market_value = _market_value(position)
-                    
+
                     asset_type = _string(
                         _get(position, "asset_type")
                         or _get(position, "type")
                         or _get(position, "security_type"),
                         "equity",
                     )
-                    
+
                     cur.execute(
                         """
                         INSERT INTO holdings (

@@ -26,6 +26,7 @@ def init_db():
                     raw_json JSONB
                 );
 
+
                 CREATE TABLE IF NOT EXISTS snaptrade_users (
                     parity_user_id TEXT PRIMARY KEY,
                     snaptrade_user_id TEXT NOT NULL,
@@ -93,4 +94,46 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
+            conn.commit()
+
+
+import json
+
+def upsert_parity_user(
+    user_id: str,
+    email: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    raw: dict | None = None,
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO parity_users (
+                    id,
+                    email,
+                    first_name,
+                    last_name,
+                    raw_json,
+                    created_at,
+                    last_login_at
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    email = COALESCE(EXCLUDED.email, parity_users.email),
+                    first_name = COALESCE(EXCLUDED.first_name, parity_users.first_name),
+                    last_name = COALESCE(EXCLUDED.last_name, parity_users.last_name),
+                    raw_json = COALESCE(EXCLUDED.raw_json, parity_users.raw_json),
+                    last_login_at = NOW()
+                """,
+                (
+                    user_id,
+                    email,
+                    first_name,
+                    last_name,
+                    json.dumps(raw or {}),
+                ),
+            )
             conn.commit()

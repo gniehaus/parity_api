@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .snaptrade_service import create_connection_url, list_accounts, get_account_positions
-from .db import init_db
+from .db import init_db, upsert_parity_user
 
 app = FastAPI(title="Parity SnapTrade API")
 @app.on_event("startup")
@@ -106,6 +106,14 @@ class RecommendRequest(BaseModel):
     risk_preference: Optional[str] = "balanced"
 
 
+class UserUpsertRequest(BaseModel):
+    user_id: str
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    raw: dict | None = None
+
+
 class PlaidExchangeRequest(BaseModel):
     public_token: str
 
@@ -141,6 +149,21 @@ def plaid_bank_accounts(request: Request):
 def brokerage_connect_url(request: Request):
     parity_user_id = get_parity_user_id(request)
     return create_connection_url(parity_user_id)
+
+@app.post("/api/users/upsert")
+def users_upsert(req: UserUpsertRequest):
+    upsert_parity_user(
+        user_id=req.user_id,
+        email=req.email,
+        first_name=req.first_name,
+        last_name=req.last_name,
+        raw=req.raw,
+    )
+
+    return {
+        "status": "ok",
+        "parity_user_id": req.user_id,
+    }
 
 
 @app.get("/api/brokerage/accounts")

@@ -133,7 +133,76 @@ def _extract_kind(position):
     )
 
     return _string(kind, "").lower().replace("_", "").replace("-", "")
+    
+def _extract_symbol(position):
+    position = _to_plain(position)
+    symbol_obj = _symbol_obj(position)
 
+    candidates = [
+        _get(position, "symbol"),
+        _get(position, "raw_symbol"),
+        _get(position, "ticker"),
+        _get(symbol_obj, "symbol"),
+        _get(symbol_obj, "raw_symbol"),
+        _get(symbol_obj, "ticker"),
+    ]
+
+    for candidate in candidates:
+        candidate = _to_plain(candidate)
+
+        if isinstance(candidate, dict):
+            nested = (
+                candidate.get("symbol")
+                or candidate.get("raw_symbol")
+                or candidate.get("ticker")
+            )
+            if nested:
+                return str(nested).upper()
+
+        if candidate:
+            return str(candidate).upper()
+
+    return None
+
+
+def _extract_security_type(position):
+    position = _to_plain(position)
+    symbol_obj = _symbol_obj(position)
+
+    kind = _extract_kind(position)
+
+    type_obj = (
+        _get(position, "type")
+        or _get(position, "security_type")
+        or _get(position, "asset_type")
+        or _get(position, "instrument_type")
+        or _get(symbol_obj, "type")
+    )
+
+    parts = [kind]
+
+    type_obj = _to_plain(type_obj)
+
+    if isinstance(type_obj, dict):
+        parts.extend([
+            _string(type_obj.get("code"), ""),
+            _string(type_obj.get("name"), ""),
+            _string(type_obj.get("description"), ""),
+            _string(type_obj.get("type"), ""),
+        ])
+    elif type_obj:
+        parts.append(_string(type_obj, ""))
+
+    parts.extend([
+        _string(_get(symbol_obj, "description"), ""),
+        _string(_get(position, "description"), ""),
+        _string(_get(position, "name"), ""),
+        _string(_get(position, "raw_type"), ""),
+        _string(_get(position, "rawType"), ""),
+    ])
+
+    return " ".join([p for p in parts if p]).lower()
+    
 def _classify_position(position):
     position = _to_plain(position)
 

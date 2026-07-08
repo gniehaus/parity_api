@@ -142,7 +142,7 @@ def select_single_expiry(
     chain,
     target_dte=365,
     prefer_at_or_after=True,
-    max_dte_overage=60,
+    max_dte_overage=180,
 ):
     """
     Select one expiration for both products.

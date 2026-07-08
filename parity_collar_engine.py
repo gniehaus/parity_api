@@ -1682,7 +1682,7 @@ def build_defined_outcome_recommendations(
         chain,
         target_dte=horizon,
         prefer_at_or_after=True,
-        max_dte_overage=60,
+        max_dte_overage=180,
     )
 
     collar = build_zero_cost_dividend_floor_collar(

@@ -142,20 +142,9 @@ def select_single_expiry(
     chain,
     target_dte=365,
     prefer_at_or_after=True,
-    max_dte_overage=200,
+    max_dte_overage=180,
+    max_dte_underage=45,
 ):
-    """
-    Select one expiration for both products.
-
-    For defined-outcome products, prefer an expiration at or after the user's
-    selected horizon so a 1-year product is not shortened unnecessarily.
-
-    Example:
-        target_dte = 365
-        available = 353 and 380
-        choose 380, not 353
-    """
-
     expiry_summary = get_expiry_summary(chain)
 
     if expiry_summary.empty:
@@ -165,21 +154,35 @@ def select_single_expiry(
     expiry_summary["dte_over_target"] = expiry_summary["dte"] - target_dte
 
     if prefer_at_or_after:
-        eligible = expiry_summary[
+        # First choice: expiries at or after target, but not absurdly far out.
+        eligible_after = expiry_summary[
             (expiry_summary["dte"] >= target_dte)
             & (expiry_summary["dte"] <= target_dte + max_dte_overage)
         ].copy()
 
-        if not eligible.empty:
-            selected = eligible.sort_values(
+        if not eligible_after.empty:
+            selected = eligible_after.sort_values(
                 ["dte_over_target", "dte"],
                 ascending=[True, True],
             ).iloc[0]
         else:
-            selected = expiry_summary.sort_values(
-                ["dte_diff", "dte"],
-                ascending=[True, False],
-            ).iloc[0]
+            # Second choice: expiries slightly before target.
+            eligible_before = expiry_summary[
+                (expiry_summary["dte"] < target_dte)
+                & (expiry_summary["dte"] >= target_dte - max_dte_underage)
+            ].copy()
+
+            if not eligible_before.empty:
+                selected = eligible_before.sort_values(
+                    ["dte_diff", "dte"],
+                    ascending=[True, False],
+                ).iloc[0]
+            else:
+                # Final fallback: closest overall.
+                selected = expiry_summary.sort_values(
+                    ["dte_diff", "dte"],
+                    ascending=[True, False],
+                ).iloc[0]
     else:
         selected = expiry_summary.sort_values(
             ["dte_diff", "dte"],
@@ -195,7 +198,6 @@ def select_single_expiry(
     )
 
     return expiry_chain, selected.to_dict(), expiry_summary
-
 
 # ============================================================
 # 3. BACKWARD-COMPATIBLE EXPIRY FUNCTION

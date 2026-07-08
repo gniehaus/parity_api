@@ -20,6 +20,7 @@ from .plaid_service import (
     sync_bank_accounts,
     get_bank_accounts_from_db,
 )
+from .portfolio_dashboard_engine import calculate_portfolio_dashboard
 
 app = FastAPI(title="Parity SnapTrade API")
 
@@ -157,6 +158,18 @@ def claim_guest_session(req: GuestClaimRequest):
     }
 
 
+@app.get("/api/dashboard/risk")
+def dashboard_risk(request: Request):
+    parity_user_id = get_parity_user_id(request)
+
+    holdings = get_dashboard_holdings_for_metrics(parity_user_id)
+
+    return calculate_portfolio_dashboard(
+        raw_holdings=holdings,
+        years_back=1,
+        risk_free_rate=0.04,
+        include_implied_vol=True,
+    )
     
 @app.get("/")
 def health():

@@ -583,6 +583,35 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
         "portfolio": portfolio,
     }
 
+def get_dashboard_holdings_for_metrics(parity_user_id: str):
+    portfolio = get_portfolio_summary(parity_user_id)
+
+    holdings = []
+
+    for h in portfolio.get("holdings", []):
+        if h.get("is_cash"):
+            continue
+
+        market_value = float(h.get("market_value") or 0)
+        symbol = str(h.get("symbol") or "").upper().strip()
+
+        if symbol and market_value > 0:
+            holdings.append({
+                "symbol": symbol,
+                "market_value": market_value,
+                "asset_type": h.get("asset_class") or "equity",
+            })
+
+    cash = float(portfolio.get("cash") or 0)
+
+    if cash > 0:
+        holdings.append({
+            "symbol": "CASH",
+            "market_value": cash,
+            "asset_type": "cash",
+        })
+
+    return holdings
 
 def get_portfolio_summary(parity_user_id: str):
     with get_conn() as conn:

@@ -182,6 +182,8 @@ def plaid_investments_test(request: Request):
     parity_user_id = get_parity_user_id(request)
     return test_plaid_investments(parity_user_id)
 
+    
+
 @app.post("/api/users/upsert")
 def users_upsert(req: UserUpsertRequest):
     upsert_parity_user(

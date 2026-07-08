@@ -13,6 +13,7 @@ from .snaptrade_service import (
     get_account_positions,
     sync_brokerage_accounts_and_holdings,
     get_portfolio_summary,
+    get_dashboard_holdings_for_metrics,
 )
 from .plaid_service import (
     create_link_token,

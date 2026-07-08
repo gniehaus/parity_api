@@ -154,35 +154,26 @@ def select_single_expiry(
     expiry_summary["dte_over_target"] = expiry_summary["dte"] - target_dte
 
     if prefer_at_or_after:
-        # First choice: expiries at or after target, but not absurdly far out.
-        eligible_after = expiry_summary[
-            (expiry_summary["dte"] >= target_dte)
+        # Use expiries in an acceptable window around target.
+        eligible = expiry_summary[
+            (expiry_summary["dte"] >= target_dte - max_dte_underage)
             & (expiry_summary["dte"] <= target_dte + max_dte_overage)
         ].copy()
 
-        if not eligible_after.empty:
-            selected = eligible_after.sort_values(
-                ["dte_over_target", "dte"],
-                ascending=[True, True],
+        if not eligible.empty:
+            # Pick closest to target.
+            # If tied, prefer longer.
+            selected = eligible.sort_values(
+                ["dte_diff", "dte_over_target"],
+                ascending=[True, False],
             ).iloc[0]
         else:
-            # Second choice: expiries slightly before target.
-            eligible_before = expiry_summary[
-                (expiry_summary["dte"] < target_dte)
-                & (expiry_summary["dte"] >= target_dte - max_dte_underage)
-            ].copy()
-
-            if not eligible_before.empty:
-                selected = eligible_before.sort_values(
-                    ["dte_diff", "dte"],
-                    ascending=[True, False],
-                ).iloc[0]
-            else:
-                # Final fallback: closest overall.
-                selected = expiry_summary.sort_values(
-                    ["dte_diff", "dte"],
-                    ascending=[True, False],
-                ).iloc[0]
+            # If no expiry is reasonably close, choose the closest overall.
+            # If tied, prefer longer.
+            selected = expiry_summary.sort_values(
+                ["dte_diff", "dte_over_target"],
+                ascending=[True, False],
+            ).iloc[0]
     else:
         selected = expiry_summary.sort_values(
             ["dte_diff", "dte"],
@@ -1681,12 +1672,12 @@ def build_defined_outcome_recommendations(
     chain = clean_chain(df, ticker=ticker)
 
     expiry_chain, selected_expiry_summary, _ = select_single_expiry(
-        chain,
-        target_dte=horizon,
-        prefer_at_or_after=True,
-        max_dte_overage=250,
-        max_dte_underage=45,
-    )
+    chain,
+    target_dte=horizon,
+    prefer_at_or_after=True,
+    max_dte_overage=200,
+    max_dte_underage=30,
+        )
 
     collar = build_zero_cost_dividend_floor_collar(
         expiry_chain,

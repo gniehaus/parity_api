@@ -8,3 +8,5 @@ psycopg[binary]==3.2.3
 plaid-python==29.1.0
 numpy
 pandas
+requests
+scipy

@@ -57,6 +57,11 @@ class RecommendationRequest(BaseModel):
     protection_style: Literal["hard_floor", "buffer", "show_both"] | None = None
     risk_profile: Literal["conservative", "balanced", "growth"] | None = None
 
+class PutSpreadLadderRequest(BaseModel):
+    ticker: str
+    horizon: int = 365
+    assumed_dividend_yield: float = 0.01
+    protection_levels: list[float] = [0.05, 0.10, 0.15, 0.20]
 
 class MarriedPutRequest(BaseModel):
     ticker: str
@@ -105,6 +110,34 @@ def get_selected_expiry_chain(ticker: str, horizon: int):
 
     return expiry_chain, selected_expiry_summary
 
+@app.post("/put-spread-ladder")
+def get_put_spread_ladder(request: PutSpreadLadderRequest):
+    try:
+        expiry_chain, selected_expiry_summary = get_selected_expiry_chain(
+            ticker=request.ticker,
+            horizon=request.horizon,
+        )
+
+        result = build_unlimited_upside_put_spread_ladder(
+            expiry_chain=expiry_chain,
+            protection_levels=request.protection_levels,
+            assumed_dividend_yield=request.assumed_dividend_yield,
+        )
+
+        if result is None:
+            raise HTTPException(status_code=404, detail="No put spread ladder found.")
+
+        result["ticker"] = request.ticker
+        result["horizon"] = request.horizon
+        result["selected_expiry"] = selected_expiry_summary
+        result["request"] = request.model_dump()
+
+        return make_json_safe(result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def root():

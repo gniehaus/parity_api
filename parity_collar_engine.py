@@ -2209,6 +2209,160 @@ def main():
 import numpy as np
 import pandas as pd
 
+def build_unlimited_upside_put_spread_ladder(
+    expiry_chain,
+    protection_levels=(0.05, 0.10, 0.15, 0.20),
+    assumed_dividend_yield=0.01,
+):
+    g = expiry_chain.copy()
+    if g.empty:
+        return None
+
+    spot = float(g["spot"].median())
+    dte = float(g["dte"].median())
+    notional = spot * MULT
+
+    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
+    expected_dividend_per_share = expected_dividend_dollars / MULT
+
+    valid_puts = g[
+        (g["strike"] < spot)
+        & (g["putBidPrice"] > 0)
+        & (g["putAskPrice"] > 0)
+        & (g["putMid"] > 0)
+    ].copy()
+
+    if valid_puts.empty:
+        return None
+
+    rows = []
+
+    long_put_target = spot - expected_dividend_per_share
+
+    valid_puts["long_put_distance"] = (
+        valid_puts["strike"] - long_put_target
+    ).abs()
+
+    long_put = valid_puts.sort_values(
+        ["long_put_distance", "strike"],
+        ascending=[True, False],
+    ).iloc[0]
+
+    long_put_strike = float(long_put["strike"])
+    long_put_cost = float(long_put["putMid"]) * MULT
+
+    for protection_pct in protection_levels:
+        short_put_target = long_put_strike - (spot * protection_pct)
+
+        short_put_candidates = valid_puts[
+            valid_puts["strike"] < long_put_strike
+        ].copy()
+
+        if short_put_candidates.empty:
+            continue
+
+        short_put_candidates["short_put_distance"] = (
+            short_put_candidates["strike"] - short_put_target
+        ).abs()
+
+        short_put = short_put_candidates.sort_values(
+            ["short_put_distance", "strike"],
+            ascending=[True, False],
+        ).iloc[0]
+
+        short_put_strike = float(short_put["strike"])
+        short_put_credit = float(short_put["putMid"]) * MULT
+
+        put_spread_cost = long_put_cost - short_put_credit
+        put_spread_cost_pct = put_spread_cost / notional
+
+        actual_protection_width = long_put_strike - short_put_strike
+        actual_protection_pct = actual_protection_width / spot
+
+        net_cost_after_dividends = put_spread_cost - expected_dividend_dollars
+        net_cost_after_dividends_pct = net_cost_after_dividends / notional
+
+        protected_start_return = long_put_strike / spot - 1
+        protected_end_return = short_put_strike / spot - 1
+
+        long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
+        short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
+
+        executable_cost = (long_put_ask - short_put_bid) * MULT
+        bid_ask_drag_bps = (executable_cost - put_spread_cost) / notional * 10000
+
+        liq_score, total_volume, total_oi = liquidity_score(long_put, short_put)
+
+        rows.append({
+            "product_name": "Unlimited Upside Buffer",
+            "strategy": "long_underlying_plus_put_spread",
+            "structure": "put_spread_unlimited_upside",
+            "backend_structure": "long_underlying_plus_long_put_short_put",
+
+            "expirDate": g["expirDate"].iloc[0],
+            "dte": dte,
+            "spot": spot,
+            "notional": notional,
+
+            "assumed_dividend_yield": assumed_dividend_yield,
+            "expected_dividend_dollars": expected_dividend_dollars,
+            "expected_dividend_per_share": expected_dividend_per_share,
+
+            "target_protection_pct": protection_pct,
+            "actual_protection_pct": actual_protection_pct,
+
+            "long_put_target": long_put_target,
+            "short_put_target": short_put_target,
+
+            "long_put_strike": long_put_strike,
+            "short_put_strike": short_put_strike,
+            "call_strike": None,
+
+            "long_put_cost_dollars": long_put_cost,
+            "short_put_credit_dollars": short_put_credit,
+            "put_spread_cost_dollars": put_spread_cost,
+            "put_spread_cost_pct": put_spread_cost_pct,
+
+            "expected_dividends_dollars": expected_dividend_dollars,
+            "net_cost_after_dividends_dollars": net_cost_after_dividends,
+            "net_cost_after_dividends_pct": net_cost_after_dividends_pct,
+
+            "protected_start_return": protected_start_return,
+            "protected_end_return": protected_end_return,
+
+            "cap_value": None,
+            "cap_return": None,
+            "max_gain_dollars": None,
+            "max_gain_label": "Unlimited",
+
+            "bid_ask_drag_bps": bid_ask_drag_bps,
+            "total_volume": total_volume,
+            "total_oi": total_oi,
+            "liquidity_score": liq_score,
+
+            "display": {
+                "title": f"{round(protection_pct * 100)}% Buffer + Unlimited Upside",
+                "subtitle": "First-loss protection without a cap",
+                "estimated_buffer_pct": round_pct(actual_protection_pct),
+                "estimated_max_gain_label": "Unlimited",
+                "put_spread_cost_pct": round_pct(put_spread_cost_pct),
+                "estimated_option_cost_dollars": put_spread_cost,
+                "estimated_dividends_dollars": expected_dividend_dollars,
+                "net_cost_after_dividends_pct": round_pct(net_cost_after_dividends_pct),
+                "protected_start_pct": round_pct(protected_start_return),
+                "protected_end_pct": round_pct(protected_end_return),
+                "explanation": (
+                    "Designed to absorb the first part of market losses using a put spread, "
+                    "while keeping upside uncapped. The put spread requires an upfront debit."
+                ),
+            },
+        })
+
+    return make_json_safe({
+        "product_name": "Unlimited Upside Buffer Ladder",
+        "products": rows,
+    })
+    
 
 def analyze_defined_income_product(
     expiry_chain,

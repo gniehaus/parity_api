@@ -142,7 +142,7 @@ def select_single_expiry(
     chain,
     target_dte=365,
     prefer_at_or_after=True,
-    max_dte_overage=180,
+    max_dte_overage=200,
 ):
     """
     Select one expiration for both products.
@@ -1682,7 +1682,7 @@ def build_defined_outcome_recommendations(
         chain,
         target_dte=horizon,
         prefer_at_or_after=True,
-        max_dte_overage=180,
+        max_dte_overage=200,
     )
 
     collar = build_zero_cost_dividend_floor_collar(

@@ -202,9 +202,9 @@ def users_upsert(req: UserUpsertRequest):
 
 
 @app.post("/api/plaid/link-token")
-def plaid_link_token(request: Request):
+def plaid_link_token(request: Request, connection_type: str = "bank"):
     parity_user_id = get_parity_user_id(request)
-    return create_link_token(parity_user_id)
+    return create_link_token(parity_user_id, connection_type)
 
 
 @app.post("/api/plaid/exchange-public-token")

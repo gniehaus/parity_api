@@ -42,11 +42,18 @@ def get_plaid_client():
     return plaid_api.PlaidApi(api_client)
 
 
-def create_link_token(parity_user_id: str):
+def create_link_token(parity_user_id: str, connection_type: str = "bank"):
     client = get_plaid_client()
 
+    if connection_type == "bank":
+        products = [Products("auth")]
+    elif connection_type == "brokerage":
+        products = [Products("investments")]
+    else:
+        raise ValueError("connection_type must be 'bank' or 'brokerage'")
+
     request = LinkTokenCreateRequest(
-        products=[Products("auth"),  Products("investments")],
+        products=products,
         client_name="Parity",
         country_codes=[CountryCode("US")],
         language="en",
@@ -55,7 +62,6 @@ def create_link_token(parity_user_id: str):
 
     response = client.link_token_create(request)
     return response.to_dict()
-
 
 def exchange_public_token(parity_user_id: str, public_token: str):
     client = get_plaid_client()

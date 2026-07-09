@@ -14,7 +14,7 @@ ORATS_TOKEN = os.getenv("ORATS_TOKEN")
 
 BENCHMARK = "SPY"
 TRADING_DAYS = 252
-CASH_SYMBOLS = {"CASH", "USD", "SWEEP", "MONEY_MARKET", "CORE", "BUYING_POWER"}
+CASH_SYMBOLS = {"CASH", "FCASH","USD", "SWEEP", "MONEY_MARKET", "CORE", "BUYING_POWER"}
 
 
 # =========================
@@ -237,6 +237,7 @@ def estimate_portfolio_implied_vol(
             symbol_ivs[symbol] = 0.0
             continue
         iv = estimate_symbol_iv(symbol)  # must exist in your module
+        print(iv)
         if iv is not None:
             symbol_ivs[symbol] = iv
 

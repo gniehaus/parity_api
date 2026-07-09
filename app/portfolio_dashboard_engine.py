@@ -14,12 +14,8 @@ ORATS_TOKEN = os.getenv("ORATS_TOKEN")
 
 BENCHMARK = "SPY"
 TRADING_DAYS = 252
-CASH_SYMBOLS = {"CASH", "FCASH","USD", "SWEEP", "MONEY_MARKET", "CORE", "BUYING_POWER"}
+CASH_SYMBOLS = {"CASH", "FCASH", "USD", "SWEEP", "MONEY_MARKET", "CORE", "BUYING_POWER"}
 
-
-# =========================
-# NORMALIZATION
-# =========================
 
 def normalize_holdings(raw_holdings: List[Dict]) -> List[Dict]:
     holdings = []
@@ -57,10 +53,6 @@ def normalize_holdings(raw_holdings: List[Dict]) -> List[Dict]:
 
     return holdings
 
-
-# =========================
-# POLYGON PRICE DATA
-# =========================
 
 def fetch_polygon_daily_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
     if not POLYGON_API_KEY:
@@ -128,12 +120,12 @@ def build_returns_matrix(symbols: List[str], start: str, end: str) -> pd.DataFra
 # ORATS IMPLIED VOL
 # =========================
 
-def fetch_orats_chain(ticker: str) -> pd.DataFrame:
+def fetch_orats_summary(ticker: str) -> pd.DataFrame:
     if not ORATS_TOKEN:
         raise RuntimeError("Missing ORATS_TOKEN environment variable")
 
     url = (
-        "https://api.orats.io/datav2/live/one-minute/strikes/chain"
+        "https://api.orats.io/datav2/live/one-minute/summaries"
         f"?token={ORATS_TOKEN}&ticker={ticker}"
     )
 
@@ -141,103 +133,101 @@ def fetch_orats_chain(ticker: str) -> pd.DataFrame:
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"ORATS error for {ticker}: {response.status_code} {response.text[:500]}"
+            f"ORATS summary error for {ticker}: "
+            f"{response.status_code} {response.text[:500]}"
         )
 
     return pd.read_csv(StringIO(response.text))
 
 
-def estimate_symbol_iv(symbol: str, target_dte: int = 365) -> Optional[float]:
-    if symbol == "CASH":
+def _normalize_iv_value(value) -> Optional[float]:
+    if value is None or pd.isna(value):
+        return None
+
+    try:
+        iv = float(value)
+    except Exception:
+        return None
+
+    if iv <= 0:
+        return None
+
+    if iv > 2:
+        iv = iv / 100.0
+
+    if iv <= 0 or iv >= 5:
+        return None
+
+    return iv
+
+
+def estimate_symbol_iv(symbol: str) -> Optional[float]:
+    symbol = str(symbol).upper().strip()
+
+    if symbol in CASH_SYMBOLS or symbol == "CASH":
         return 0.0
 
     try:
-        chain = fetch_orats_chain(symbol)
+        summary = fetch_orats_summary(symbol)
     except Exception as e:
         print(f"Skipping IV for {symbol}: {e}")
         return None
 
-    if chain.empty:
+    if summary.empty:
+        print(f"Empty ORATS summary for {symbol}")
         return None
 
-    for col in ["dte", "strike", "stockPrice", "spotPrice", "callIv", "putIv", "iv"]:
-        if col in chain.columns:
-            chain[col] = pd.to_numeric(chain[col], errors="coerce")
+    row = summary.iloc[0]
 
-    if "spotPrice" in chain.columns and "stockPrice" in chain.columns:
-        chain["spot"] = chain["spotPrice"].fillna(chain["stockPrice"])
-    elif "spotPrice" in chain.columns:
-        chain["spot"] = chain["spotPrice"]
-    elif "stockPrice" in chain.columns:
-        chain["spot"] = chain["stockPrice"]
-    else:
-        return None
+    candidate_cols = [
+        "iv30",
+        "iv30d",
+        "atmIv30",
+        "atmiv30",
+        "avg30Iv",
+        "mean30Iv",
+        "impliedVolatility",
+        "implied_volatility",
+        "atmIv",
+        "atmIV",
+        "orIv",
+        "orIV",
+        "iv",
+        "smvVol",
+        "volatility",
+    ]
 
-    chain = chain.dropna(subset=["dte", "strike", "spot"]).copy()
+    for col in candidate_cols:
+        if col in summary.columns:
+            iv = _normalize_iv_value(row[col])
+            if iv is not None:
+                return iv
 
-    if chain.empty:
-        return None
+    for col in summary.columns:
+        col_lower = col.lower()
+        if "iv" in col_lower or "vol" in col_lower:
+            iv = _normalize_iv_value(row[col])
+            if iv is not None:
+                print(f"Using fallback IV column for {symbol}: {col}={iv}")
+                return iv
 
-    chain["dte_diff"] = (chain["dte"] - target_dte).abs()
-    selected_dte = chain.sort_values("dte_diff")["dte"].iloc[0]
-
-    expiry_chain = chain[chain["dte"] == selected_dte].copy()
-    spot = float(expiry_chain["spot"].median())
-
-    expiry_chain["strike_distance"] = (expiry_chain["strike"] - spot).abs()
-    atm = expiry_chain.sort_values("strike_distance").iloc[0]
-
-    iv_values = []
-
-    for col in ["callIv", "putIv", "iv"]:
-        if col in atm and pd.notnull(atm[col]) and float(atm[col]) > 0:
-            iv_values.append(float(atm[col]))
-
-    if not iv_values:
-        return None
-
-    return float(np.mean(iv_values))
-
-
-import math
-import numpy as np
-import pandas as pd
-from typing import Dict, Optional
+    print(f"No usable IV column found for {symbol}. Columns: {list(summary.columns)}")
+    return None
 
 
 def estimate_portfolio_implied_vol(
     weights: Dict[str, float],
     returns_matrix: Optional[pd.DataFrame] = None,
 ) -> Dict:
-    """
-    Portfolio implied volatility, CORRELATION-ADJUSTED.
-
-    Drop-in replacement for the naive weighted-average version.
-
-    Method:
-      1. Per-symbol implied vol from ORATS (forward-looking).
-      2. Correlation matrix from realized Polygon returns (proxy for forward
-         correlation; implied per-name correlation is hard to source).
-      3. Combine: portfolio_iv = sqrt(w^T (D C D) w)
-         where D = diag(implied vols), C = correlation matrix.
-
-    Why: naive weighted-average IV implicitly assumes correlation = 1 between
-    every holding, so it CANNOT distinguish 5 correlated tech stocks (high
-    portfolio vol) from 5 diversified stocks (low portfolio vol). This version
-    respects diversification and powers the "your holdings move as one" insight.
-
-    Requires the module to already define estimate_symbol_iv(symbol).
-    Cash is treated as 0 vol.
-    """
-    # 1. Per-symbol implied vols from ORATS
     symbol_ivs = {}
+
     for symbol in weights:
-        print('symbol',symbol)
         if symbol == "CASH":
             symbol_ivs[symbol] = 0.0
             continue
-        iv = estimate_symbol_iv(symbol)  # must exist in your module
-        print(iv)
+
+        iv = estimate_symbol_iv(symbol)
+
         if iv is not None:
             symbol_ivs[symbol] = iv
 
@@ -246,24 +236,28 @@ def estimate_portfolio_implied_vol(
     if not risky:
         return {
             "portfolio_implied_volatility": None,
-            "symbol_implied_volatility": {},
+            "naive_weighted_average_iv": None,
+            "diversification_benefit": None,
+            "symbol_implied_volatility": symbol_ivs,
             "correlation_adjusted": False,
             "note": "No usable ORATS IV data found.",
         }
 
-    def _weighted_avg():
-        return float(sum(weights.get(s, 0) * symbol_ivs[s] for s in symbol_ivs))
+    def weighted_average_iv():
+        return float(
+            sum(weights.get(symbol, 0.0) * iv for symbol, iv in symbol_ivs.items())
+        )
 
-    # Fallback: no returns matrix -> cannot compute correlations. Be explicit.
+    naive_weighted = weighted_average_iv()
+
     if returns_matrix is None:
         return {
-            "portfolio_implied_volatility": _weighted_avg(),
+            "portfolio_implied_volatility": naive_weighted,
+            "naive_weighted_average_iv": naive_weighted,
+            "diversification_benefit": 0.0,
             "symbol_implied_volatility": symbol_ivs,
             "correlation_adjusted": False,
-            "note": (
-                "WEIGHTED-AVERAGE fallback (no returns matrix supplied). "
-                "Overstates vol; not correlation-adjusted."
-            ),
+            "note": "Weighted-average IV fallback. No returns matrix supplied.",
         }
 
     corr_symbols = [s for s in risky if s in returns_matrix.columns]
@@ -271,27 +265,41 @@ def estimate_portfolio_implied_vol(
 
     if not corr_symbols:
         return {
-            "portfolio_implied_volatility": _weighted_avg(),
+            "portfolio_implied_volatility": naive_weighted,
+            "naive_weighted_average_iv": naive_weighted,
+            "diversification_benefit": 0.0,
             "symbol_implied_volatility": symbol_ivs,
             "correlation_adjusted": False,
-            "note": "WEIGHTED-AVERAGE fallback (no price overlap for correlation).",
+            "correlation_symbols_used": [],
+            "correlation_symbols_dropped": dropped,
+            "note": "Weighted-average IV fallback. No price overlap for correlation.",
         }
 
-    # 2. Correlation matrix from realized returns (proxy for forward correlation)
-    corr = returns_matrix[corr_symbols].corr().values
+    corr_df = returns_matrix[corr_symbols].dropna(how="all")
+
+    if corr_df.shape[0] < 30 or len(corr_symbols) == 1:
+        return {
+            "portfolio_implied_volatility": naive_weighted,
+            "naive_weighted_average_iv": naive_weighted,
+            "diversification_benefit": 0.0,
+            "symbol_implied_volatility": symbol_ivs,
+            "correlation_adjusted": False,
+            "correlation_symbols_used": corr_symbols,
+            "correlation_symbols_dropped": dropped,
+            "note": "Weighted-average IV fallback. Not enough data for correlation adjustment.",
+        }
+
+    corr = corr_df.corr().values
     corr = np.nan_to_num(corr, nan=0.0)
     np.fill_diagonal(corr, 1.0)
 
-    # 3. Combine implied vols through correlation: sqrt(w^T (D C D) w)
     iv_vec = np.array([symbol_ivs[s] for s in corr_symbols])
     w_vec = np.array([weights.get(s, 0.0) for s in corr_symbols])
 
-    D = np.diag(iv_vec)
-    cov = D @ corr @ D
+    d = np.diag(iv_vec)
+    cov = d @ corr @ d
     port_var = float(w_vec.T @ cov @ w_vec)
     port_iv = math.sqrt(max(port_var, 0.0))
-
-    naive_weighted = _weighted_avg()
 
     return {
         "portfolio_implied_volatility": port_iv,
@@ -302,19 +310,12 @@ def estimate_portfolio_implied_vol(
         "correlation_symbols_used": corr_symbols,
         "correlation_symbols_dropped": dropped,
         "note": (
-            "Correlation-adjusted portfolio implied vol: sqrt(w^T (D C D) w). "
-            "Implied vols from ORATS; correlations from realized Polygon returns "
-            "(realized correlation is a proxy for forward correlation and may "
-            "understate risk in market stress, when correlations rise). Cash = 0 vol. "
-            "'diversification_benefit' = naive weighted avg minus correlation-adjusted "
-            "vol, i.e. the volatility reduction from imperfect correlation."
+            "Correlation-adjusted portfolio implied volatility. "
+            "Implied vols from ORATS summaries. Correlations from Polygon realized returns. "
+            "Cash IV is treated as 0."
         ),
     }
 
-
-# =========================
-# RISK / RETURN METRICS
-# =========================
 
 def annualized_return(returns: pd.Series) -> float:
     returns = returns.dropna()
@@ -458,10 +459,6 @@ def risk_score(metrics: Dict) -> Dict:
     }
 
 
-# =========================
-# PORTFOLIO DASHBOARD
-# =========================
-
 def calculate_portfolio_dashboard(
     raw_holdings: List[Dict],
     years_back: int = 1,
@@ -504,10 +501,10 @@ def calculate_portfolio_dashboard(
     if not available_symbols and cash_weight <= 0:
         raise RuntimeError("No usable price data for portfolio holdings")
 
-    if len(returns_matrix.index) > 0:
-        portfolio_returns = pd.Series(0.0, index=returns_matrix.index)
-    else:
+    if len(returns_matrix.index) == 0:
         raise RuntimeError("No usable return index")
+
+    portfolio_returns = pd.Series(0.0, index=returns_matrix.index)
 
     for symbol in available_symbols:
         portfolio_returns += returns_matrix[symbol].fillna(0) * weights.get(symbol, 0)
@@ -559,9 +556,16 @@ def calculate_portfolio_dashboard(
     metrics["risk_score"] = risk_score(metrics)
 
     if include_implied_vol:
-        metrics["implied_volatility"] = estimate_portfolio_implied_vol(weights)
+        iv_data = estimate_portfolio_implied_vol(
+            weights,
+            returns_matrix=returns_matrix,
+        )
+        metrics["implied_volatility"] = iv_data
+        metrics["portfolio_implied_volatility"] = iv_data.get(
+            "portfolio_implied_volatility"
+        )
 
-    dashboard = {
+    return {
         "portfolio": {
             "total_market_value": total_market_value,
             "holdings": holdings,
@@ -580,5 +584,3 @@ def calculate_portfolio_dashboard(
             ],
         },
     }
-
-    return dashboard

@@ -46,7 +46,7 @@ def create_link_token(parity_user_id: str):
     client = get_plaid_client()
 
     request = LinkTokenCreateRequest(
-        products=[Products("auth"), Products("transactions"), Products("investments")],
+        products=[Products("auth"),  Products("investments")],
         client_name="Parity",
         country_codes=[CountryCode("US")],
         language="en",

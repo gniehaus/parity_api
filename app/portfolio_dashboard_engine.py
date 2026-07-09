@@ -199,35 +199,114 @@ def estimate_symbol_iv(symbol: str, target_dte: int = 365) -> Optional[float]:
     return float(np.mean(iv_values))
 
 
-def estimate_portfolio_implied_vol(weights: Dict[str, float]) -> Dict:
-    symbol_ivs = {}
+import math
+import numpy as np
+import pandas as pd
+from typing import Dict, Optional
 
-    for symbol, weight in weights.items():
+
+def estimate_portfolio_implied_vol(
+    weights: Dict[str, float],
+    returns_matrix: Optional[pd.DataFrame] = None,
+) -> Dict:
+    """
+    Portfolio implied volatility, CORRELATION-ADJUSTED.
+
+    Drop-in replacement for the naive weighted-average version.
+
+    Method:
+      1. Per-symbol implied vol from ORATS (forward-looking).
+      2. Correlation matrix from realized Polygon returns (proxy for forward
+         correlation; implied per-name correlation is hard to source).
+      3. Combine: portfolio_iv = sqrt(w^T (D C D) w)
+         where D = diag(implied vols), C = correlation matrix.
+
+    Why: naive weighted-average IV implicitly assumes correlation = 1 between
+    every holding, so it CANNOT distinguish 5 correlated tech stocks (high
+    portfolio vol) from 5 diversified stocks (low portfolio vol). This version
+    respects diversification and powers the "your holdings move as one" insight.
+
+    Requires the module to already define estimate_symbol_iv(symbol).
+    Cash is treated as 0 vol.
+    """
+    # 1. Per-symbol implied vols from ORATS
+    symbol_ivs = {}
+    for symbol in weights:
         if symbol == "CASH":
             symbol_ivs[symbol] = 0.0
             continue
-
-        iv = estimate_symbol_iv(symbol)
-
+        iv = estimate_symbol_iv(symbol)  # must exist in your module
         if iv is not None:
             symbol_ivs[symbol] = iv
 
-    if not symbol_ivs:
+    risky = [s for s in symbol_ivs if s != "CASH"]
+
+    if not risky:
         return {
             "portfolio_implied_volatility": None,
             "symbol_implied_volatility": {},
+            "correlation_adjusted": False,
             "note": "No usable ORATS IV data found.",
         }
 
-    weighted_iv = sum(
-        weights.get(symbol, 0) * iv
-        for symbol, iv in symbol_ivs.items()
-    )
+    def _weighted_avg():
+        return float(sum(weights.get(s, 0) * symbol_ivs[s] for s in symbol_ivs))
+
+    # Fallback: no returns matrix -> cannot compute correlations. Be explicit.
+    if returns_matrix is None:
+        return {
+            "portfolio_implied_volatility": _weighted_avg(),
+            "symbol_implied_volatility": symbol_ivs,
+            "correlation_adjusted": False,
+            "note": (
+                "WEIGHTED-AVERAGE fallback (no returns matrix supplied). "
+                "Overstates vol; not correlation-adjusted."
+            ),
+        }
+
+    corr_symbols = [s for s in risky if s in returns_matrix.columns]
+    dropped = [s for s in risky if s not in returns_matrix.columns]
+
+    if not corr_symbols:
+        return {
+            "portfolio_implied_volatility": _weighted_avg(),
+            "symbol_implied_volatility": symbol_ivs,
+            "correlation_adjusted": False,
+            "note": "WEIGHTED-AVERAGE fallback (no price overlap for correlation).",
+        }
+
+    # 2. Correlation matrix from realized returns (proxy for forward correlation)
+    corr = returns_matrix[corr_symbols].corr().values
+    corr = np.nan_to_num(corr, nan=0.0)
+    np.fill_diagonal(corr, 1.0)
+
+    # 3. Combine implied vols through correlation: sqrt(w^T (D C D) w)
+    iv_vec = np.array([symbol_ivs[s] for s in corr_symbols])
+    w_vec = np.array([weights.get(s, 0.0) for s in corr_symbols])
+
+    D = np.diag(iv_vec)
+    cov = D @ corr @ D
+    port_var = float(w_vec.T @ cov @ w_vec)
+    port_iv = math.sqrt(max(port_var, 0.0))
+
+    naive_weighted = _weighted_avg()
 
     return {
-        "portfolio_implied_volatility": weighted_iv,
+        "portfolio_implied_volatility": port_iv,
+        "naive_weighted_average_iv": naive_weighted,
+        "diversification_benefit": float(naive_weighted - port_iv),
         "symbol_implied_volatility": symbol_ivs,
-        "note": "Weighted-average implied volatility. Cash IV is treated as 0. Not correlation-adjusted.",
+        "correlation_adjusted": True,
+        "correlation_symbols_used": corr_symbols,
+        "correlation_symbols_dropped": dropped,
+        "note": (
+            "Correlation-adjusted portfolio implied vol: sqrt(w^T (D C D) w). "
+            "Implied vols from ORATS; correlations from realized Polygon returns "
+            "(realized correlation is a proxy for forward correlation and may "
+            "understate risk in market stress, when correlations rise). Cash = 0 vol. "
+            "'diversification_benefit' = naive weighted avg minus correlation-adjusted "
+            "vol, i.e. the volatility reduction from imperfect correlation."
+        ),
     }
 
 

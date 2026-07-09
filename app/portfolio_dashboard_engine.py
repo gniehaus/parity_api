@@ -232,6 +232,7 @@ def estimate_portfolio_implied_vol(
     # 1. Per-symbol implied vols from ORATS
     symbol_ivs = {}
     for symbol in weights:
+        print('symbol',symbol)
         if symbol == "CASH":
             symbol_ivs[symbol] = 0.0
             continue

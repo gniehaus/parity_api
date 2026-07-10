@@ -14,6 +14,7 @@ from .snaptrade_service import (
     sync_brokerage_accounts_and_holdings,
     get_portfolio_summary,
     get_dashboard_holdings_for_metrics,
+    get_account_level_portfolio_summary,
 )
 from .plaid_service import (
     create_link_token,
@@ -200,7 +201,14 @@ def users_upsert(req: UserUpsertRequest):
         "parity_user_id": req.user_id,
     }
 
+@app.get("/api/dashboard/accounts")
+def dashboard_accounts(request: Request):
+    parity_user_id = get_parity_user_id(request)
 
+    return get_account_level_portfolio_summary(parity_user_id)
+
+
+    
 @app.post("/api/plaid/link-token")
 def plaid_link_token(request: Request, connection_type: str = "bank"):
     parity_user_id = get_parity_user_id(request)

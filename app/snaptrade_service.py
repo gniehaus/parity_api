@@ -583,6 +583,317 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
         "portfolio": portfolio,
     }
 
+
+
+def _extract_account_type(raw_account):
+    """
+    Extract a readable account type from the saved SnapTrade account payload.
+
+    SnapTrade payload shapes can vary, so check several likely fields.
+    """
+    raw_account = _to_plain(raw_account) or {}
+
+    account_type = (
+        _get(raw_account, "type")
+        or _get(raw_account, "account_type")
+        or _get(raw_account, "accountType")
+    )
+
+    if isinstance(account_type, dict):
+        account_type = (
+            _get(account_type, "name")
+            or _get(account_type, "code")
+            or _get(account_type, "description")
+            or _get(account_type, "type")
+        )
+
+    return _string(account_type, "UNKNOWN")
+
+
+def get_account_level_portfolio_summary(parity_user_id: str):
+    """
+    Return household totals plus a separate portfolio summary for every
+    brokerage account.
+
+    Important:
+    - Cash is never combined when determining account eligibility.
+    - Holdings remain associated with their brokerage account.
+    - The same ticker held in two accounts remains two separate positions.
+    - account_weight includes cash.
+    - invested_weight excludes cash.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    institution_name,
+                    account_name,
+                    account_number_mask,
+                    total_value,
+                    raw_json,
+                    last_synced_at
+                FROM brokerage_accounts
+                WHERE parity_user_id = %s
+                ORDER BY institution_name, account_name, id
+                """,
+                (parity_user_id,),
+            )
+            account_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                    account_id,
+                    symbol,
+                    MAX(raw_symbol) AS raw_symbol,
+                    MAX(display_name) AS display_name,
+                    MAX(description) AS description,
+                    MAX(asset_class) AS asset_class,
+                    MAX(security_type) AS security_type,
+                    MAX(asset_subtype) AS asset_subtype,
+                    MAX(currency) AS currency,
+
+                    SUM(quantity) AS quantity,
+
+                    CASE
+                        WHEN SUM(ABS(COALESCE(quantity, 0))) > 0
+                        THEN
+                            SUM(
+                                COALESCE(price, 0)
+                                * ABS(COALESCE(quantity, 0))
+                            )
+                            / SUM(ABS(COALESCE(quantity, 0)))
+                        ELSE AVG(price)
+                    END AS price,
+
+                    SUM(market_value) AS market_value,
+                    SUM(exposure_value) AS exposure_value,
+                    SUM(cost_basis) AS cost_basis,
+                    SUM(unrealized_gain_loss) AS unrealized_gain_loss,
+
+                    BOOL_OR(is_option) AS is_option,
+                    BOOL_OR(is_cash) AS is_cash,
+                    BOOL_OR(is_short) AS is_short,
+                    BOOL_OR(is_margin) AS is_margin,
+
+                    MAX(underlying_symbol) AS underlying_symbol,
+                    MAX(option_type) AS option_type,
+                    MAX(expiration_date) AS expiration_date,
+                    MAX(strike_price) AS strike_price,
+                    MAX(multiplier) AS multiplier,
+                    SUM(contract_count) AS contract_count,
+
+                    MAX(expense_ratio) AS expense_ratio,
+                    MAX(fund_family) AS fund_family,
+                    MAX(synced_at) AS synced_at
+                FROM normalized_holdings
+                WHERE parity_user_id = %s
+                GROUP BY account_id, symbol
+                ORDER BY account_id, SUM(market_value) DESC NULLS LAST
+                """,
+                (parity_user_id,),
+            )
+            holding_rows = cur.fetchall()
+
+    holdings_by_account = {}
+
+    for row in holding_rows:
+        account_id = str(row["account_id"])
+        holdings_by_account.setdefault(account_id, []).append(row)
+
+    account_summaries = []
+
+    household_total_assets = 0.0
+    household_invested_value = 0.0
+    household_explicit_cash = 0.0
+
+    for account in account_rows:
+        account_id = str(account["id"])
+        raw_account = _to_plain(account.get("raw_json")) or {}
+
+        account_total_value = float(account["total_value"] or 0)
+        account_holdings = holdings_by_account.get(account_id, [])
+
+        explicit_cash = sum(
+            float(h["market_value"] or 0)
+            for h in account_holdings
+            if h["is_cash"]
+        )
+
+        non_cash_holdings = [
+            h for h in account_holdings
+            if not h["is_cash"]
+        ]
+
+        invested_value = sum(
+            float(h["market_value"] or 0)
+            for h in non_cash_holdings
+        )
+
+        # Prefer explicit cash positions when SnapTrade returns them.
+        # Otherwise derive cash as account total minus invested holdings.
+        if explicit_cash > 0:
+            cash = explicit_cash
+        else:
+            cash = max(account_total_value - invested_value, 0)
+
+        # Some account payloads may not provide a reliable account total.
+        # Fall back to the sum of invested holdings and cash.
+        calculated_total = invested_value + cash
+
+        if account_total_value <= 0:
+            account_total_value = calculated_total
+        elif calculated_total > account_total_value:
+            # Prevent impossible negative cash caused by stale account totals.
+            account_total_value = calculated_total
+
+        account_cash_percentage = (
+            cash / account_total_value
+            if account_total_value > 0
+            else 0
+        )
+
+        holdings_payload = []
+
+        for holding in non_cash_holdings:
+            market_value = float(holding["market_value"] or 0)
+            quantity = float(holding["quantity"] or 0)
+            price = float(holding["price"] or 0)
+
+            account_weight = (
+                market_value / account_total_value
+                if account_total_value > 0
+                else 0
+            )
+
+            invested_weight = (
+                market_value / invested_value
+                if invested_value > 0
+                else 0
+            )
+
+            holdings_payload.append(
+                {
+                    "account_id": account_id,
+                    "symbol": holding["symbol"],
+                    "raw_symbol": holding["raw_symbol"],
+                    "display_name": holding["display_name"],
+                    "description": holding["description"],
+                    "asset_class": holding["asset_class"],
+                    "security_type": holding["security_type"],
+                    "asset_subtype": holding["asset_subtype"],
+                    "currency": holding["currency"] or "USD",
+                    "quantity": quantity,
+                    "price": price,
+                    "market_value": market_value,
+                    "exposure_value": float(
+                        holding["exposure_value"] or 0
+                    ),
+                    "cost_basis": (
+                        float(holding["cost_basis"])
+                        if holding["cost_basis"] is not None
+                        else None
+                    ),
+                    "unrealized_gain_loss": (
+                        float(holding["unrealized_gain_loss"])
+                        if holding["unrealized_gain_loss"] is not None
+                        else None
+                    ),
+                    "account_weight": account_weight,
+                    "invested_weight": invested_weight,
+                    "is_option": bool(holding["is_option"]),
+                    "is_cash": False,
+                    "is_short": bool(holding["is_short"]),
+                    "is_margin": bool(holding["is_margin"]),
+                    "underlying_symbol": holding["underlying_symbol"],
+                    "option_type": holding["option_type"],
+                    "expiration_date": (
+                        holding["expiration_date"].isoformat()
+                        if holding["expiration_date"] is not None
+                        and hasattr(
+                            holding["expiration_date"],
+                            "isoformat",
+                        )
+                        else holding["expiration_date"]
+                    ),
+                    "strike_price": (
+                        float(holding["strike_price"])
+                        if holding["strike_price"] is not None
+                        else None
+                    ),
+                    "multiplier": (
+                        float(holding["multiplier"])
+                        if holding["multiplier"] is not None
+                        else None
+                    ),
+                    "contract_count": (
+                        float(holding["contract_count"])
+                        if holding["contract_count"] is not None
+                        else None
+                    ),
+                    "expense_ratio": (
+                        float(holding["expense_ratio"])
+                        if holding["expense_ratio"] is not None
+                        else None
+                    ),
+                    "fund_family": holding["fund_family"],
+                    "synced_at": (
+                        holding["synced_at"].isoformat()
+                        if holding["synced_at"] is not None
+                        and hasattr(holding["synced_at"], "isoformat")
+                        else holding["synced_at"]
+                    ),
+                }
+            )
+
+        account_summary = {
+            "account_id": account_id,
+            "account_name": account["account_name"],
+            "institution_name": account["institution_name"],
+            "account_number_mask": account["account_number_mask"],
+            "account_type": _extract_account_type(raw_account),
+            "total_value": account_total_value,
+            "cash": cash,
+            "invested_value": invested_value,
+            "cash_percentage": account_cash_percentage,
+            "holding_count": len(holdings_payload),
+            "holdings": holdings_payload,
+            "last_synced_at": (
+                account["last_synced_at"].isoformat()
+                if account["last_synced_at"] is not None
+                and hasattr(account["last_synced_at"], "isoformat")
+                else account["last_synced_at"]
+            ),
+        }
+
+        account_summaries.append(account_summary)
+
+        household_total_assets += account_total_value
+        household_invested_value += invested_value
+        household_explicit_cash += cash
+
+    household_cash = household_explicit_cash
+
+    return {
+        "household": {
+            "total_assets": household_total_assets,
+            "cash": household_cash,
+            "invested_value": household_invested_value,
+            "cash_percentage": (
+                household_cash / household_total_assets
+                if household_total_assets > 0
+                else 0
+            ),
+            "account_count": len(account_summaries),
+        },
+        "accounts": account_summaries,
+    }
+
+
+
 def get_dashboard_holdings_for_metrics(parity_user_id: str):
     portfolio = get_portfolio_summary(parity_user_id)
 

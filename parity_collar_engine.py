@@ -304,22 +304,21 @@ def build_zero_cost_dividend_floor_collar(
     """
     Product: Defined Floor
 
-    Selection hierarchy:
-    1. Search all valid put/call combinations.
-    2. Calculate terminal floor and cap after estimated dividends
-       and net option cost.
-    3. Prefer collars that:
-       - meet the requested floor;
-       - have no net credit; and
-       - have a net debit no greater than max_near_zero_bps.
-    4. If no collar meets the cost target, return the lowest-debit
-       collar that still meets the requested floor.
-    5. If no collar meets the requested floor, return the closest
-       available floor using the lowest-debit structure.
-    6. Within the selected pool, maximize upside and use execution
-       quality and liquidity as tie-breakers.
+    Return calculations are based on the investor's actual cash invested:
 
-    Prices are based on option mids. Bid/ask drag is returned separately.
+        invested_amount = underlying notional + net option debit
+
+        floor_return =
+            terminal floor value / invested_amount - 1
+
+        cap_return =
+            terminal cap value / invested_amount - 1
+
+    Selection hierarchy:
+    1. Prefer collars meeting the requested floor within the debit target.
+    2. If none exist, return the lowest-debit collar meeting the floor.
+    3. If no collar meets the floor, return the closest available floor.
+    4. Within the selected pool, maximize upside.
     """
 
     g = expiry_chain.copy()
@@ -329,16 +328,14 @@ def build_zero_cost_dividend_floor_collar(
 
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())
-    notional = spot * MULT
+    underlying_notional = spot * MULT
 
     expected_dividend_dollars = (
-        notional
+        underlying_notional
         * assumed_dividend_yield
         * (dte / 365.25)
     )
-    expected_dividend_per_share = (
-        expected_dividend_dollars / MULT
-    )
+    expected_dividend_per_share = expected_dividend_dollars / MULT
 
     target_floor_return = -max_loss_pct
 
@@ -365,15 +362,11 @@ def build_zero_cost_dividend_floor_collar(
     if valid_puts.empty or valid_calls.empty:
         return None
 
-    # Dividend-adjusted estimate of the put strike required
-    # before accounting for actual option package cost.
     approximate_required_put = (
-        notional * (1 - max_loss_pct)
+        underlying_notional * (1 - max_loss_pct)
         - expected_dividend_dollars
     ) / MULT
 
-    # Keep a wide enough band below the approximate required strike
-    # so the optimizer can find cheaper, dividend-adjusted puts.
     valid_puts = valid_puts[
         valid_puts["strike"] >= approximate_required_put - 10
     ].copy()
@@ -385,7 +378,7 @@ def build_zero_cost_dividend_floor_collar(
     valid_calls = valid_calls.sort_values("strike").reset_index(drop=True)
 
     # --------------------------------------------------------
-    # Convert option data to arrays
+    # Convert to arrays
     # --------------------------------------------------------
 
     put_strikes = valid_puts["strike"].to_numpy(dtype=float)
@@ -425,56 +418,81 @@ def build_zero_cost_dividend_floor_collar(
     ).fillna(0).to_numpy(dtype=float)
 
     # --------------------------------------------------------
-    # Build put/call combination grids
+    # Build put/call grids
     # --------------------------------------------------------
 
-    # Shape: number of puts x number of calls.
     net_cost = (
         put_costs[:, None]
         - call_credits[None, :]
     )
 
     net_cost_bps = (
-        net_cost / notional * 10_000
+        net_cost / underlying_notional * 10_000
     )
 
+    # Actual amount the investor must contribute today.
+    #
+    # Since this product does not accept credits, qualifying candidates
+    # will have invested_amount >= underlying_notional.
+    invested_amount = (
+        underlying_notional
+        + net_cost
+    )
+
+    # Terminal values do not subtract option cost again.
+    # The option cost is already included in invested_amount.
     floor_value = (
         put_strikes[:, None] * MULT
         + expected_dividend_dollars
-        - net_cost
     )
 
     cap_value = (
         call_strikes[None, :] * MULT
         + expected_dividend_dollars
-        - net_cost
     )
 
     floor_return = (
-        floor_value / notional - 1
+        floor_value / invested_amount - 1
     )
 
     cap_return = (
-        cap_value / notional - 1
+        cap_value / invested_amount - 1
     )
 
     # Conservative execution estimate:
-    # buy the put at ask and sell the call at bid.
-    worst_net_cost = (
+    # buy put at ask and sell call at bid.
+    estimated_execution_cost = (
         put_asks[:, None]
         - call_bids[None, :]
     ) * MULT
 
-    worst_net_cost_bps = (
-        worst_net_cost / notional * 10_000
+    estimated_execution_cost_bps = (
+        estimated_execution_cost
+        / underlying_notional
+        * 10_000
+    )
+
+    estimated_execution_investment = (
+        underlying_notional
+        + estimated_execution_cost
+    )
+
+    execution_floor_return = (
+        floor_value / estimated_execution_investment - 1
+    )
+
+    execution_cap_return = (
+        cap_value / estimated_execution_investment - 1
     )
 
     bid_ask_drag_dollars = (
-        worst_net_cost - net_cost
+        estimated_execution_cost - net_cost
     )
 
     bid_ask_drag_bps = (
-        bid_ask_drag_dollars / notional * 10_000
+        bid_ask_drag_dollars
+        / underlying_notional
+        * 10_000
     )
 
     total_volume = (
@@ -493,29 +511,28 @@ def build_zero_cost_dividend_floor_collar(
     )
 
     # --------------------------------------------------------
-    # Candidate selection hierarchy
+    # Candidate-selection hierarchy
     # --------------------------------------------------------
 
     finite_mask = (
         np.isfinite(floor_return)
         & np.isfinite(cap_return)
         & np.isfinite(net_cost_bps)
-        & np.isfinite(bid_ask_drag_bps)
+        & np.isfinite(invested_amount)
+        & (invested_amount > 0)
     )
 
-    # Product rule: do not return net-credit collars.
+    # Do not accept net-credit structures.
     non_credit_mask = (
         finite_mask
         & (net_cost_bps >= 0)
     )
 
-    # Requested floor must be met after dividends and option cost.
     floor_ok_mask = (
         non_credit_mask
         & (floor_return >= target_floor_return)
     )
 
-    # Preferred pool: requested floor plus debit of 0–50 bps.
     near_zero_mask = (
         floor_ok_mask
         & (net_cost_bps <= max_near_zero_bps)
@@ -525,8 +542,6 @@ def build_zero_cost_dividend_floor_collar(
     best_available_floor = None
 
     if np.any(near_zero_mask):
-        # Best case:
-        # meet the floor and stay within the cost target.
         selection_mask = near_zero_mask
         selection_mode = "near_zero"
         outside_tolerance = False
@@ -534,8 +549,6 @@ def build_zero_cost_dividend_floor_collar(
         fallback_reason = None
 
     elif np.any(floor_ok_mask):
-        # First fallback:
-        # meet the floor, then select the absolute lowest debit.
         minimum_debit_bps = float(
             np.min(net_cost_bps[floor_ok_mask])
         )
@@ -557,13 +570,11 @@ def build_zero_cost_dividend_floor_collar(
         fallback_reason = (
             f"No collar met the requested floor within the "
             f"{max_near_zero_bps}-bps debit target. "
-            f"Returned the lowest-debit collar that met the floor "
+            f"Returned the lowest-debit collar meeting the floor "
             f"at {minimum_debit_bps:.1f} bps."
         )
 
     else:
-        # Final fallback:
-        # no non-credit collar meets the requested floor.
         if not np.any(non_credit_mask):
             return None
 
@@ -609,11 +620,9 @@ def build_zero_cost_dividend_floor_collar(
         return None
 
     # --------------------------------------------------------
-    # Rank within the already constrained candidate pool
+    # Rank inside constrained pool
     # --------------------------------------------------------
 
-    # The pool has already been restricted by floor and cost hierarchy.
-    # Now maximize cap, then prefer better execution and liquidity.
     score = (
         cap_return * 1_000_000
         - bid_ask_drag_bps * 10
@@ -627,7 +636,6 @@ def build_zero_cost_dividend_floor_collar(
     )
 
     best_flat_idx = int(np.argmax(score))
-
     best_put_idx, best_call_idx = np.unravel_index(
         best_flat_idx,
         score.shape,
@@ -637,7 +645,7 @@ def build_zero_cost_dividend_floor_collar(
     best_call = valid_calls.iloc[best_call_idx]
 
     # --------------------------------------------------------
-    # Extract selected result
+    # Extract result
     # --------------------------------------------------------
 
     best_net_cost = float(
@@ -647,11 +655,8 @@ def build_zero_cost_dividend_floor_collar(
         net_cost_bps[best_put_idx, best_call_idx]
     )
 
-    best_worst_net_cost = float(
-        worst_net_cost[best_put_idx, best_call_idx]
-    )
-    best_worst_net_cost_bps = float(
-        worst_net_cost_bps[best_put_idx, best_call_idx]
+    best_invested_amount = float(
+        invested_amount[best_put_idx, best_call_idx]
     )
 
     best_floor_value = float(
@@ -668,10 +673,26 @@ def build_zero_cost_dividend_floor_collar(
         cap_return[best_put_idx, best_call_idx]
     )
 
+    best_execution_cost = float(
+        estimated_execution_cost[best_put_idx, best_call_idx]
+    )
+    best_execution_cost_bps = float(
+        estimated_execution_cost_bps[best_put_idx, best_call_idx]
+    )
+    best_execution_investment = float(
+        estimated_execution_investment[best_put_idx, best_call_idx]
+    )
+
+    best_execution_floor_return = float(
+        execution_floor_return[best_put_idx, best_call_idx]
+    )
+    best_execution_cap_return = float(
+        execution_cap_return[best_put_idx, best_call_idx]
+    )
+
     best_bid_ask_drag_bps = float(
         bid_ask_drag_bps[best_put_idx, best_call_idx]
     )
-
     best_total_volume = float(
         total_volume[best_put_idx, best_call_idx]
     )
@@ -693,10 +714,6 @@ def build_zero_cost_dividend_floor_collar(
     else:
         cost_display_label = "credit"
 
-    # --------------------------------------------------------
-    # Return payload
-    # --------------------------------------------------------
-
     return make_json_safe({
         "product_name": "Defined Floor",
         "strategy": "classic_collar",
@@ -708,7 +725,14 @@ def build_zero_cost_dividend_floor_collar(
         "expirDate": g["expirDate"].iloc[0],
         "dte": dte,
         "spot": spot,
-        "notional": notional,
+
+        # Keep notional for backward compatibility.
+        "notional": underlying_notional,
+        "underlying_notional": underlying_notional,
+
+        # Actual initial investment used as the return denominator.
+        "invested_amount": best_invested_amount,
+        "investment_required_today": best_invested_amount,
 
         "assumed_dividend_yield": assumed_dividend_yield,
         "expected_dividend_dollars": expected_dividend_dollars,
@@ -725,13 +749,12 @@ def build_zero_cost_dividend_floor_collar(
         "put_cost_dollars": float(best_put["putMid"]) * MULT,
         "call_credit_dollars": float(best_call["callMid"]) * MULT,
 
-        # Mid-market economics used for candidate construction.
         "net_cost_dollars": best_net_cost,
         "net_cost_bps": best_net_cost_bps,
 
-        # Conservative ask/bid execution estimate.
-        "estimated_execution_cost_dollars": best_worst_net_cost,
-        "estimated_execution_cost_bps": best_worst_net_cost_bps,
+        "estimated_execution_cost_dollars": best_execution_cost,
+        "estimated_execution_cost_bps": best_execution_cost_bps,
+        "estimated_execution_investment": best_execution_investment,
 
         "near_zero_cost_ok": best_near_zero,
         "cost_limit_met": bool(
@@ -749,13 +772,24 @@ def build_zero_cost_dividend_floor_collar(
         "best_available_floor": best_available_floor,
         "max_near_zero_bps": max_near_zero_bps,
 
+        # Terminal dollar outcomes.
         "floor_value": best_floor_value,
         "cap_value": best_cap_value,
+
+        # Returns based on actual initial invested amount.
         "floor_return": best_floor_return,
         "cap_return": best_cap_return,
 
-        "max_loss_dollars": notional - best_floor_value,
-        "max_gain_dollars": best_cap_value - notional,
+        # Conservative returns using ask/bid execution cost.
+        "execution_floor_return": best_execution_floor_return,
+        "execution_cap_return": best_execution_cap_return,
+
+        "max_loss_dollars": (
+            best_invested_amount - best_floor_value
+        ),
+        "max_gain_dollars": (
+            best_cap_value - best_invested_amount
+        ),
 
         "buffer_width_points": None,
         "buffer_pct": None,
@@ -771,6 +805,8 @@ def build_zero_cost_dividend_floor_collar(
             "title": "Defined Floor",
             "subtitle": "Hard-loss target with capped upside",
 
+            "investment_required_today": best_invested_amount,
+
             "estimated_max_loss_pct": round_pct(
                 best_floor_return
             ),
@@ -782,16 +818,17 @@ def build_zero_cost_dividend_floor_collar(
             "estimated_option_cost_bps": best_net_cost_bps,
             "estimated_option_cost_label": cost_display_label,
 
-            "estimated_execution_cost_dollars": (
-                best_worst_net_cost
+            "estimated_execution_cost_dollars": best_execution_cost,
+            "estimated_execution_cost_bps": best_execution_cost_bps,
+
+            "estimated_execution_floor_pct": round_pct(
+                best_execution_floor_return
             ),
-            "estimated_execution_cost_bps": (
-                best_worst_net_cost_bps
+            "estimated_execution_cap_pct": round_pct(
+                best_execution_cap_return
             ),
 
-            "estimated_dividends_dollars": (
-                expected_dividend_dollars
-            ),
+            "estimated_dividends_dollars": expected_dividend_dollars,
 
             "cost_limit_met": bool(
                 best_net_cost_bps <= max_near_zero_bps
@@ -800,12 +837,10 @@ def build_zero_cost_dividend_floor_collar(
             "fallback_reason": fallback_reason,
 
             "explanation": (
-                "Designed to target a defined terminal floor over "
-                "the selected outcome period. The engine first looks "
-                "for a collar within the option-cost target. If none "
-                "exists, it returns the lowest-debit collar that meets "
-                "the requested floor. Upside is capped in exchange for "
-                "downside protection."
+                "Return estimates are calculated using the total amount "
+                "required to establish the position, including the net "
+                "option debit. Estimated dividends are included in terminal "
+                "outcomes."
             ),
         },
     })

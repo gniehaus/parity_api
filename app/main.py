@@ -6,7 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 
-from .db import init_db, upsert_parity_user, get_conn
+from .db import (
+    init_db,
+    upsert_parity_user,
+    get_conn,
+    get_investor_profile,
+    upsert_investor_profile,
+)
+
 from .snaptrade_service import (
     create_connection_url,
     list_accounts,
@@ -69,6 +76,21 @@ class UserUpsertRequest(BaseModel):
     raw: dict | None = None
 
 
+class InvestorProfileRequest(BaseModel):
+    recommendation_use: str | None = None
+    primary_goal: str | None = None
+    max_acceptable_loss: float | None = None
+    time_horizon: str | None = None
+    liquidity_need: str | None = None
+    tradeoff_preference: str | None = None
+    investment_experience: str | None = None
+    scope: str | None = None
+    new_investment_amount: float | None = None
+    contradiction_acknowledged: bool = False
+    completed: bool = False
+    raw: dict | None = None
+
+    
 class PlaidExchangeRequest(BaseModel):
     public_token: str
 
@@ -158,6 +180,55 @@ def claim_guest_session(req: GuestClaimRequest):
         "status": "claimed",
         "guest_id": req.guest_id,
         "clerk_user_id": req.clerk_user_id,
+    }
+
+
+@app.get("/api/investor-profile")
+def investor_profile_get(request: Request):
+    parity_user_id = get_parity_user_id(request)
+
+    profile = get_investor_profile(parity_user_id)
+
+    if not profile:
+        return {
+            "exists": False,
+            "completed": False,
+            "profile": None,
+        }
+
+    return {
+        "exists": True,
+        "completed": bool(profile["completed"]),
+        "profile": profile,
+    }
+
+
+@app.put("/api/investor-profile")
+def investor_profile_put(
+    req: InvestorProfileRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    profile = upsert_investor_profile(
+        parity_user_id=parity_user_id,
+        recommendation_use=req.recommendation_use,
+        primary_goal=req.primary_goal,
+        max_acceptable_loss=req.max_acceptable_loss,
+        time_horizon=req.time_horizon,
+        liquidity_need=req.liquidity_need,
+        tradeoff_preference=req.tradeoff_preference,
+        investment_experience=req.investment_experience,
+        scope=req.scope,
+        new_investment_amount=req.new_investment_amount,
+        contradiction_acknowledged=req.contradiction_acknowledged,
+        completed=req.completed,
+        raw=req.raw,
+    )
+
+    return {
+        "status": "saved",
+        "profile": profile,
     }
 
 

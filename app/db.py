@@ -27,6 +27,35 @@ def init_db():
                     raw_json JSONB
                 );
 
+
+                CREATE TABLE IF NOT EXISTS investor_profiles (
+                    parity_user_id TEXT PRIMARY KEY
+                        REFERENCES parity_users(id)
+                        ON DELETE CASCADE,
+            
+                    recommendation_use TEXT,
+                    primary_goal TEXT,
+                    max_acceptable_loss NUMERIC,
+                    time_horizon TEXT,
+                    liquidity_need TEXT,
+                    tradeoff_preference TEXT,
+                    investment_experience TEXT,
+                    scope TEXT,
+                    new_investment_amount NUMERIC,
+            
+                    contradiction_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+                    completed BOOLEAN NOT NULL DEFAULT FALSE,
+                    completed_at TIMESTAMPTZ,
+            
+                    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+    CREATE INDEX IF NOT EXISTS idx_investor_profiles_completed
+    ON investor_profiles(completed);
+
                 CREATE TABLE IF NOT EXISTS snaptrade_users (
                     parity_user_id TEXT PRIMARY KEY,
                     snaptrade_user_id TEXT NOT NULL,
@@ -181,7 +210,148 @@ def init_db():
                 ON normalized_holdings(is_cash);
             """)
             conn.commit()
+from typing import Any
 
+
+def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    parity_user_id,
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed,
+                    completed_at,
+                    raw_json,
+                    created_at,
+                    updated_at
+                FROM investor_profiles
+                WHERE parity_user_id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            row = cur.fetchone()
+            return row if row else None
+
+
+def upsert_investor_profile(
+    parity_user_id: str,
+    recommendation_use: str | None = None,
+    primary_goal: str | None = None,
+    max_acceptable_loss: float | None = None,
+    time_horizon: str | None = None,
+    liquidity_need: str | None = None,
+    tradeoff_preference: str | None = None,
+    investment_experience: str | None = None,
+    scope: str | None = None,
+    new_investment_amount: float | None = None,
+    contradiction_acknowledged: bool = False,
+    completed: bool = False,
+    raw: dict | None = None,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Ensure a parent user exists before inserting the profile.
+            cur.execute(
+                """
+                INSERT INTO parity_users (id, created_at, last_login_at)
+                VALUES (%s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET last_login_at = NOW()
+                """,
+                (parity_user_id,),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO investor_profiles (
+                    parity_user_id,
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed,
+                    completed_at,
+                    raw_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    CASE WHEN %s = TRUE THEN NOW() ELSE NULL END,
+                    %s::jsonb,
+                    NOW(),
+                    NOW()
+                )
+                ON CONFLICT (parity_user_id)
+                DO UPDATE SET
+                    recommendation_use = EXCLUDED.recommendation_use,
+                    primary_goal = EXCLUDED.primary_goal,
+                    max_acceptable_loss = EXCLUDED.max_acceptable_loss,
+                    time_horizon = EXCLUDED.time_horizon,
+                    liquidity_need = EXCLUDED.liquidity_need,
+                    tradeoff_preference = EXCLUDED.tradeoff_preference,
+                    investment_experience = EXCLUDED.investment_experience,
+                    scope = EXCLUDED.scope,
+                    new_investment_amount = EXCLUDED.new_investment_amount,
+                    contradiction_acknowledged =
+                        EXCLUDED.contradiction_acknowledged,
+                    completed = EXCLUDED.completed,
+                    completed_at = CASE
+                        WHEN EXCLUDED.completed = TRUE
+                        THEN COALESCE(
+                            investor_profiles.completed_at,
+                            NOW()
+                        )
+                        ELSE NULL
+                    END,
+                    raw_json = EXCLUDED.raw_json,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed,
+                    completed,
+                    json.dumps(raw or {}),
+                ),
+            )
+
+            profile = cur.fetchone()
+            conn.commit()
+
+            if not profile:
+                raise RuntimeError("Investor profile was not saved")
+
+            return profile
 
 def upsert_parity_user(
     user_id: str,

@@ -5,14 +5,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-
+from pydantic import BaseModel, Field
 from .db import (
     init_db,
     upsert_parity_user,
     get_conn,
     get_investor_profile,
-    upsert_investor_profile,
     save_investor_profile_and_invalidate_recommendations,
+    persist_recommendation_run,
+    get_current_recommendation_run,
 )
 
 from .snaptrade_service import (
@@ -61,6 +62,64 @@ def get_parity_user_id(request: Request) -> str:
         raise HTTPException(status_code=401, detail="Missing X-Parity-User-Id")
     return user_id
 
+class RecommendationRunRequest(BaseModel):
+    engine_version: str = "v1"
+
+    profile_version: str | None = "v1"
+    profile_payload: Dict[str, Any]
+
+    portfolio_signature: str
+    portfolio_payload: Dict[str, Any] | None = None
+
+    accounts_count: int = 0
+    total_assets: float | None = None
+    cash_pct: float | None = None
+    portfolio_iv: float | None = None
+
+    analysis_only: bool = False
+    aggregate_benefit: float | None = None
+
+    hero_title: str | None = None
+    hero_ticker: str | None = None
+
+    market_data_timestamp: str | None = None
+
+    recommendations: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = []
+
+
+class RecommendationRunRequest(BaseModel):
+    engine_version: str = "v1"
+
+    profile_version: str | None = "v1"
+    profile_payload: Dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+    portfolio_signature: str
+    portfolio_payload: Dict[str, Any] | None = None
+
+    accounts_count: int = 0
+    total_assets: float | None = None
+    cash_pct: float | None = None
+    portfolio_iv: float | None = None
+
+    analysis_only: bool = False
+    aggregate_benefit: float | None = None
+
+    hero_title: str | None = None
+    hero_ticker: str | None = None
+
+    market_data_timestamp: str | None = None
+
+    recommendations: List[Dict[str, Any]] = Field(
+        default_factory=list
+    )
+
+    findings: List[Dict[str, Any]] = Field(
+        default_factory=list
+    )
+    
 
 class RecommendRequest(BaseModel):
     holdings: List[Dict[str, Any]]
@@ -183,6 +242,79 @@ def claim_guest_session(req: GuestClaimRequest):
     }
 
 
+@app.post("/api/recommendation-runs")
+def recommendation_run_create(
+    req: RecommendationRunRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    if (
+        not req.analysis_only
+        and len(req.recommendations) == 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A full recommendation run must contain "
+                "at least one recommendation"
+            ),
+        )
+
+    result = persist_recommendation_run(
+        parity_user_id=parity_user_id,
+        engine_version=req.engine_version,
+        profile_version=req.profile_version,
+        profile_payload=req.profile_payload,
+        portfolio_signature=req.portfolio_signature,
+        portfolio_payload=req.portfolio_payload,
+        accounts_count=req.accounts_count,
+        total_assets=req.total_assets,
+        cash_pct=req.cash_pct,
+        portfolio_iv=req.portfolio_iv,
+        analysis_only=req.analysis_only,
+        aggregate_benefit=req.aggregate_benefit,
+        hero_title=req.hero_title,
+        hero_ticker=req.hero_ticker,
+        market_data_timestamp=(
+            req.market_data_timestamp
+        ),
+        recommendations=req.recommendations,
+        findings=req.findings,
+    )
+
+    return {
+        "status": "saved",
+        "run_id": result["run"]["id"],
+        "recommendation_count": len(
+            result["recommendations"]
+        ),
+        "finding_count": len(result["findings"]),
+        **result,
+    }
+
+@app.get("/api/recommendation-runs/current")
+def recommendation_run_current(request: Request):
+    parity_user_id = get_parity_user_id(request)
+
+    result = get_current_recommendation_run(
+        parity_user_id
+    )
+
+    if not result:
+        return {
+            "exists": False,
+            "run": None,
+            "recommendations": [],
+            "findings": [],
+        }
+
+    return {
+        "exists": True,
+        **result,
+    }
+
+
 @app.put("/api/investor-profile")
 def investor_profile_put(
     req: InvestorProfileRequest,
@@ -230,34 +362,6 @@ def investor_profile_get(request: Request):
         "profile": profile,
     }
 
-
-@app.put("/api/investor-profile")
-def investor_profile_put(
-    req: InvestorProfileRequest,
-    request: Request,
-):
-    parity_user_id = get_parity_user_id(request)
-
-    profile = upsert_investor_profile(
-        parity_user_id=parity_user_id,
-        recommendation_use=req.recommendation_use,
-        primary_goal=req.primary_goal,
-        max_acceptable_loss=req.max_acceptable_loss,
-        time_horizon=req.time_horizon,
-        liquidity_need=req.liquidity_need,
-        tradeoff_preference=req.tradeoff_preference,
-        investment_experience=req.investment_experience,
-        scope=req.scope,
-        new_investment_amount=req.new_investment_amount,
-        contradiction_acknowledged=req.contradiction_acknowledged,
-        completed=req.completed,
-        raw=req.raw,
-    )
-
-    return {
-        "status": "saved",
-        "profile": profile,
-    }
 
 
 @app.get("/api/dashboard/risk")
@@ -361,75 +465,3 @@ def dashboard_portfolio(request: Request):
     parity_user_id = get_parity_user_id(request)
     return get_portfolio_summary(parity_user_id)
 
-
-@app.post("/recommend")
-def recommend(req: RecommendRequest):
-    holdings = req.holdings
-    cash = req.cash or 0
-
-    total_value = cash + sum(float(h.get("market_value") or 0) for h in holdings)
-
-    if total_value <= 0:
-        return {
-            "recommended_etf": "SPY",
-            "reason": "Default broad market recommendation.",
-            "suggested_outcome_inputs": {
-                "ticker": "SPY",
-                "max_loss": 0.10,
-                "horizon_days": 365,
-                "investment_amount": req.investment_amount,
-            },
-        }
-
-    tech_symbols = {"QQQ", "XLK", "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "GOOG", "TSLA"}
-    international_symbols = {"EFA", "VWO", "VEA", "VXUS", "IEFA", "IEMG"}
-
-    tech_weight = sum(
-        float(h.get("market_value") or 0)
-        for h in holdings
-        if str(h.get("symbol", "")).upper() in tech_symbols
-    ) / total_value
-
-    international_weight = sum(
-        float(h.get("market_value") or 0)
-        for h in holdings
-        if str(h.get("symbol", "")).upper() in international_symbols
-    ) / total_value
-
-    cash_weight = cash / total_value
-
-    top_holding = None
-    top_weight = 0
-
-    for h in holdings:
-        weight = float(h.get("market_value") or 0) / total_value
-        if weight > top_weight:
-            top_weight = weight
-            top_holding = h.get("symbol")
-
-    if cash_weight > 0.30:
-        etf = "SPY"
-        reason = "You have a large cash position. A protected SPY outcome can add broad market exposure with defined downside."
-    elif top_weight > 0.25:
-        etf = "SGOV"
-        reason = f"Your portfolio appears concentrated in {top_holding}. SGOV can add a conservative sleeve while keeping the recommendation simple."
-    elif tech_weight > 0.35:
-        etf = "SCHD"
-        reason = "You already have meaningful tech exposure. SCHD may complement it with dividend/value exposure."
-    elif international_weight < 0.10:
-        etf = "EFA"
-        reason = "Your portfolio appears light on international developed-market exposure."
-    else:
-        etf = "SPY"
-        reason = "SPY gives broad U.S. market exposure and works well for a general defined outcome sleeve."
-
-    return {
-        "recommended_etf": etf,
-        "reason": reason,
-        "suggested_outcome_inputs": {
-            "ticker": etf,
-            "max_loss": 0.10,
-            "horizon_days": 365,
-            "investment_amount": req.investment_amount,
-        },
-    }

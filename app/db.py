@@ -27,6 +27,175 @@ def init_db():
                     raw_json JSONB
                 );
 
+                CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+                CREATE TABLE IF NOT EXISTS recommendation_runs (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                
+                    parity_user_id TEXT NOT NULL
+                        REFERENCES parity_users(id)
+                        ON DELETE CASCADE,
+                
+                    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    engine_version TEXT NOT NULL,
+                
+                    profile_version TEXT,
+                    profile_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                
+                    portfolio_signature TEXT NOT NULL,
+                    portfolio_payload JSONB,
+                
+                    accounts_count INTEGER NOT NULL DEFAULT 0,
+                    total_assets NUMERIC(16, 2),
+                    cash_pct NUMERIC(8, 6),
+                    portfolio_iv NUMERIC(8, 6),
+                
+                    analysis_only BOOLEAN NOT NULL DEFAULT FALSE,
+                    recommendation_count INTEGER NOT NULL DEFAULT 0,
+                    aggregate_benefit NUMERIC(16, 2),
+                
+                    hero_title TEXT,
+                    hero_ticker TEXT,
+                
+                    market_data_timestamp TIMESTAMPTZ,
+                
+                    superseded_by UUID
+                        REFERENCES recommendation_runs(id)
+                        ON DELETE SET NULL,
+                
+                    is_current BOOLEAN NOT NULL DEFAULT TRUE
+                );
+                
+                CREATE TABLE IF NOT EXISTS recommendations (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                
+                    run_id UUID NOT NULL
+                        REFERENCES recommendation_runs(id)
+                        ON DELETE CASCADE,
+                
+                    parity_user_id TEXT NOT NULL
+                        REFERENCES parity_users(id)
+                        ON DELETE CASCADE,
+                
+                    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                
+                    type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                
+                    evidence TEXT,
+                    diagnosis TEXT,
+                    recommended_action TEXT,
+                
+                    account_id TEXT,
+                    account_name TEXT,
+                    account_type TEXT,
+                
+                    suggested_exposure TEXT,
+                    product_type TEXT,
+                    ticker TEXT,
+                
+                    severity_score NUMERIC(6, 2),
+                    impact_score NUMERIC(6, 2),
+                    confidence_score NUMERIC(6, 2),
+                    recommendation_score NUMERIC(6, 2) NOT NULL,
+                    rank INTEGER,
+                
+                    dollar_benefit NUMERIC(16, 2),
+                    benefit_label TEXT,
+                
+                    deploy_amount NUMERIC(16, 2),
+                    sgov_amount NUMERIC(16, 2),
+                    remaining_cash NUMERIC(16, 2),
+                
+                    actionable BOOLEAN NOT NULL DEFAULT FALSE,
+                    eligible BOOLEAN NOT NULL DEFAULT FALSE,
+                
+                    eligibility_reasons TEXT[],
+                    product_match JSONB,
+                    implementation JSONB,
+                    assumptions JSONB,
+                
+                    household_fit TEXT,
+                    supporting_diagnostics TEXT[],
+                
+                    based_on JSONB NOT NULL DEFAULT '{}'::jsonb,
+                
+                    status TEXT NOT NULL DEFAULT 'generated',
+                    viewed_at TIMESTAMPTZ,
+                    dismissed_at TIMESTAMPTZ,
+                    actioned_at TIMESTAMPTZ,
+                    action_reference TEXT,
+                
+                    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                );
+                
+                CREATE TABLE IF NOT EXISTS recommendation_findings (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                
+                    run_id UUID NOT NULL
+                        REFERENCES recommendation_runs(id)
+                        ON DELETE CASCADE,
+                
+                    parity_user_id TEXT NOT NULL
+                        REFERENCES parity_users(id)
+                        ON DELETE CASCADE,
+                
+                    detector_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                
+                    confidence NUMERIC(6, 4),
+                    dollar_benefit NUMERIC(16, 2),
+                    benefit_type TEXT,
+                
+                    suggested_exposure TEXT,
+                    suggested_products TEXT[],
+                    priority NUMERIC(8, 6),
+                
+                    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                
+                    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendation_runs_user_current
+                ON recommendation_runs (
+                    parity_user_id,
+                    is_current,
+                    generated_at DESC
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendation_runs_signature
+                ON recommendation_runs (
+                    parity_user_id,
+                    portfolio_signature
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendations_run
+                ON recommendations(run_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendations_user_status
+                ON recommendations (
+                    parity_user_id,
+                    status,
+                    generated_at DESC
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendations_type
+                ON recommendations (
+                    type,
+                    generated_at DESC
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendation_findings_run
+                ON recommendation_findings(run_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_recommendation_findings_user
+                ON recommendation_findings (
+                    parity_user_id,
+                    generated_at DESC
+                );
+
 
                 CREATE TABLE IF NOT EXISTS investor_profiles (
                     parity_user_id TEXT PRIMARY KEY
@@ -216,6 +385,8 @@ def init_db():
 from typing import Any
 
 
+
+
 def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -374,7 +545,478 @@ PROFILE_FIELDS = (
     "completed",
 )
 
+from typing import Any
+import json
 
+
+def persist_recommendation_run(
+    parity_user_id: str,
+    engine_version: str,
+    profile_version: str | None,
+    profile_payload: dict[str, Any],
+    portfolio_signature: str,
+    portfolio_payload: dict[str, Any] | None,
+    accounts_count: int,
+    total_assets: float | None,
+    cash_pct: float | None,
+    portfolio_iv: float | None,
+    analysis_only: bool,
+    aggregate_benefit: float | None,
+    hero_title: str | None,
+    hero_ticker: str | None,
+    market_data_timestamp: str | None,
+    recommendations: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Persist one complete frontend recommendation-engine execution.
+
+    The previous current run is superseded, and all new recommendation
+    and finding rows are written in the same database transaction.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Ensure the parent user exists.
+            cur.execute(
+                """
+                INSERT INTO parity_users (
+                    id,
+                    created_at,
+                    last_login_at
+                )
+                VALUES (%s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    last_login_at = NOW()
+                """,
+                (parity_user_id,),
+            )
+
+            # Insert the new run first so that it has a UUID.
+            cur.execute(
+                """
+                INSERT INTO recommendation_runs (
+                    parity_user_id,
+                    engine_version,
+                    profile_version,
+                    profile_payload,
+                    portfolio_signature,
+                    portfolio_payload,
+                    accounts_count,
+                    total_assets,
+                    cash_pct,
+                    portfolio_iv,
+                    analysis_only,
+                    recommendation_count,
+                    aggregate_benefit,
+                    hero_title,
+                    hero_ticker,
+                    market_data_timestamp,
+                    is_current
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb,
+                    %s,
+                    %s::jsonb,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    TRUE
+                )
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    engine_version,
+                    profile_version,
+                    json.dumps(profile_payload or {}),
+                    portfolio_signature,
+                    json.dumps(portfolio_payload)
+                    if portfolio_payload is not None
+                    else None,
+                    accounts_count,
+                    total_assets,
+                    cash_pct,
+                    portfolio_iv,
+                    analysis_only,
+                    len(recommendations),
+                    aggregate_benefit,
+                    hero_title,
+                    hero_ticker,
+                    market_data_timestamp,
+                ),
+            )
+
+            new_run = cur.fetchone()
+
+            if not new_run:
+                raise RuntimeError(
+                    "Recommendation run could not be created"
+                )
+
+            new_run_id = new_run["id"]
+
+            # Supersede every older current run for this user.
+            cur.execute(
+                """
+                UPDATE recommendation_runs
+                SET
+                    is_current = FALSE,
+                    superseded_by = %s
+                WHERE parity_user_id = %s
+                  AND is_current = TRUE
+                  AND id <> %s
+                """,
+                (
+                    new_run_id,
+                    parity_user_id,
+                    new_run_id,
+                ),
+            )
+
+            # Mark recommendations from older runs as superseded.
+            cur.execute(
+                """
+                UPDATE recommendations
+                SET status = 'superseded'
+                WHERE parity_user_id = %s
+                  AND run_id <> %s
+                  AND status = 'generated'
+                """,
+                (
+                    parity_user_id,
+                    new_run_id,
+                ),
+            )
+
+            saved_recommendations: list[dict[str, Any]] = []
+
+            for index, recommendation in enumerate(
+                recommendations,
+                start=1,
+            ):
+                implementation = (
+                    recommendation.get("implementation") or {}
+                )
+
+                product_match = (
+                    recommendation.get("productMatch") or {}
+                )
+
+                ticker = (
+                    implementation.get("ticker")
+                    or product_match.get("ticker")
+                    or recommendation.get("ticker")
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO recommendations (
+                        run_id,
+                        parity_user_id,
+                        type,
+                        category,
+                        title,
+                        evidence,
+                        diagnosis,
+                        recommended_action,
+                        account_id,
+                        account_name,
+                        account_type,
+                        suggested_exposure,
+                        product_type,
+                        ticker,
+                        severity_score,
+                        impact_score,
+                        confidence_score,
+                        recommendation_score,
+                        rank,
+                        dollar_benefit,
+                        benefit_label,
+                        deploy_amount,
+                        sgov_amount,
+                        remaining_cash,
+                        actionable,
+                        eligible,
+                        eligibility_reasons,
+                        product_match,
+                        implementation,
+                        assumptions,
+                        household_fit,
+                        supporting_diagnostics,
+                        based_on,
+                        status,
+                        raw_json
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s::jsonb,
+                        %s::jsonb,
+                        %s::jsonb,
+                        %s,
+                        %s,
+                        %s::jsonb,
+                        %s,
+                        %s::jsonb
+                    )
+                    RETURNING *
+                    """,
+                    (
+                        new_run_id,
+                        parity_user_id,
+                        recommendation.get("type"),
+                        recommendation.get("category"),
+                        recommendation.get("title"),
+                        recommendation.get("evidence"),
+                        recommendation.get("diagnosis"),
+                        recommendation.get(
+                            "recommendedAction"
+                        ),
+                        recommendation.get("accountId")
+                        or implementation.get("accountId"),
+                        recommendation.get("accountName")
+                        or implementation.get("account"),
+                        recommendation.get("accountType")
+                        or implementation.get("accountType"),
+                        recommendation.get(
+                            "suggestedExposure"
+                        ),
+                        implementation.get("productType")
+                        or recommendation.get("productType"),
+                        ticker,
+                        recommendation.get("severityScore"),
+                        recommendation.get("impactScore"),
+                        recommendation.get(
+                            "confidenceScore"
+                        ),
+                        recommendation.get(
+                            "recommendationScore",
+                            0,
+                        ),
+                        recommendation.get("rank", index),
+                        recommendation.get("dollarBenefit"),
+                        recommendation.get("benefitLabel"),
+                        implementation.get("deployAmount"),
+                        implementation.get("sgovAmount"),
+                        implementation.get("remainingCash"),
+                        bool(
+                            recommendation.get(
+                                "actionable",
+                                False,
+                            )
+                        ),
+                        bool(
+                            product_match.get(
+                                "eligible",
+                                recommendation.get(
+                                    "eligible",
+                                    False,
+                                ),
+                            )
+                        ),
+                        recommendation.get(
+                            "eligibilityReasons"
+                        )
+                        or product_match.get("reasons")
+                        or [],
+                        json.dumps(product_match),
+                        json.dumps(implementation),
+                        json.dumps(
+                            recommendation.get(
+                                "assumptions"
+                            )
+                            or {}
+                        ),
+                        recommendation.get("householdFit"),
+                        recommendation.get(
+                            "supportingDiagnostics"
+                        )
+                        or [],
+                        json.dumps(
+                            recommendation.get("basedOn")
+                            or {}
+                        ),
+                        recommendation.get(
+                            "status",
+                            "generated",
+                        ),
+                        json.dumps(recommendation),
+                    ),
+                )
+
+                saved = cur.fetchone()
+
+                if saved:
+                    saved_recommendations.append(saved)
+
+            saved_findings: list[dict[str, Any]] = []
+
+            for finding in findings:
+                cur.execute(
+                    """
+                    INSERT INTO recommendation_findings (
+                        run_id,
+                        parity_user_id,
+                        detector_id,
+                        category,
+                        evidence,
+                        confidence,
+                        dollar_benefit,
+                        benefit_type,
+                        suggested_exposure,
+                        suggested_products,
+                        priority,
+                        raw_json
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s::jsonb
+                    )
+                    RETURNING *
+                    """,
+                    (
+                        new_run_id,
+                        parity_user_id,
+                        finding.get("detectorId")
+                        or finding.get("detector_id"),
+                        finding.get("category"),
+                        finding.get("evidence"),
+                        finding.get("confidence"),
+                        finding.get("dollarBenefit")
+                        or finding.get("dollar_benefit"),
+                        finding.get("benefitType")
+                        or finding.get("benefit_type"),
+                        finding.get("suggestedExposure")
+                        or finding.get(
+                            "suggested_exposure"
+                        ),
+                        finding.get("suggestedProducts")
+                        or finding.get(
+                            "suggested_products"
+                        )
+                        or [],
+                        finding.get("priority"),
+                        json.dumps(finding),
+                    ),
+                )
+
+                saved = cur.fetchone()
+
+                if saved:
+                    saved_findings.append(saved)
+
+            conn.commit()
+
+            return {
+                "run": new_run,
+                "recommendations": saved_recommendations,
+                "findings": saved_findings,
+            }
+
+
+def get_current_recommendation_run(
+    parity_user_id: str,
+) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM recommendation_runs
+                WHERE parity_user_id = %s
+                  AND is_current = TRUE
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (parity_user_id,),
+            )
+
+            run = cur.fetchone()
+
+            if not run:
+                return None
+
+            cur.execute(
+                """
+                SELECT *
+                FROM recommendations
+                WHERE run_id = %s
+                ORDER BY
+                    rank ASC NULLS LAST,
+                    recommendation_score DESC,
+                    dollar_benefit DESC NULLS LAST
+                """,
+                (run["id"],),
+            )
+
+            recommendations = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT *
+                FROM recommendation_findings
+                WHERE run_id = %s
+                ORDER BY
+                    priority DESC NULLS LAST,
+                    generated_at ASC
+                """,
+                (run["id"],),
+            )
+
+            findings = cur.fetchall()
+
+            return {
+                "run": run,
+                "recommendations": recommendations,
+                "findings": findings,
+            }
 def save_investor_profile_and_invalidate_recommendations(
     parity_user_id: str,
     recommendation_use: str | None = None,

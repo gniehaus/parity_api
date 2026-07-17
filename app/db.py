@@ -208,6 +208,9 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_normalized_holdings_is_cash
                 ON normalized_holdings(is_cash);
+
+                CREATE INDEX IF NOT EXISTS idx_portfolio_recommendations_user
+                ON portfolio_recommendations(parity_user_id);
             """)
             conn.commit()
 from typing import Any
@@ -352,6 +355,228 @@ def upsert_investor_profile(
                 raise RuntimeError("Investor profile was not saved")
 
             return profile
+
+from typing import Any
+import json
+
+
+PROFILE_FIELDS = (
+    "recommendation_use",
+    "primary_goal",
+    "max_acceptable_loss",
+    "time_horizon",
+    "liquidity_need",
+    "tradeoff_preference",
+    "investment_experience",
+    "scope",
+    "new_investment_amount",
+    "contradiction_acknowledged",
+    "completed",
+)
+
+
+def save_investor_profile_and_invalidate_recommendations(
+    parity_user_id: str,
+    recommendation_use: str | None = None,
+    primary_goal: str | None = None,
+    max_acceptable_loss: float | None = None,
+    time_horizon: str | None = None,
+    liquidity_need: str | None = None,
+    tradeoff_preference: str | None = None,
+    investment_experience: str | None = None,
+    scope: str | None = None,
+    new_investment_amount: float | None = None,
+    contradiction_acknowledged: bool = False,
+    completed: bool = False,
+    raw: dict | None = None,
+) -> dict[str, Any]:
+    """
+    Saves the user's current investor profile.
+
+    If any recommendation-relevant profile field changed, all existing
+    portfolio recommendations for that user are deleted in the same
+    transaction.
+
+    The frontend can then regenerate recommendations.
+    """
+
+    new_profile_values = {
+        "recommendation_use": recommendation_use,
+        "primary_goal": primary_goal,
+        "max_acceptable_loss": max_acceptable_loss,
+        "time_horizon": time_horizon,
+        "liquidity_need": liquidity_need,
+        "tradeoff_preference": tradeoff_preference,
+        "investment_experience": investment_experience,
+        "scope": scope,
+        "new_investment_amount": new_investment_amount,
+        "contradiction_acknowledged": contradiction_acknowledged,
+        "completed": completed,
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Ensure the parent parity_users row exists.
+            cur.execute(
+                """
+                INSERT INTO parity_users (
+                    id,
+                    created_at,
+                    last_login_at
+                )
+                VALUES (%s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    last_login_at = NOW()
+                """,
+                (parity_user_id,),
+            )
+
+            # Lock the existing profile row while this transaction runs.
+            cur.execute(
+                """
+                SELECT
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed
+                FROM investor_profiles
+                WHERE parity_user_id = %s
+                FOR UPDATE
+                """,
+                (parity_user_id,),
+            )
+
+            existing_profile = cur.fetchone()
+
+            if existing_profile is None:
+                profile_changed = True
+            else:
+                profile_changed = any(
+                    existing_profile.get(field) != new_profile_values[field]
+                    for field in PROFILE_FIELDS
+                )
+
+            cur.execute(
+                """
+                INSERT INTO investor_profiles (
+                    parity_user_id,
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed,
+                    completed_at,
+                    raw_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    CASE
+                        WHEN %s = TRUE THEN NOW()
+                        ELSE NULL
+                    END,
+                    %s::jsonb,
+                    NOW(),
+                    NOW()
+                )
+                ON CONFLICT (parity_user_id)
+                DO UPDATE SET
+                    recommendation_use = EXCLUDED.recommendation_use,
+                    primary_goal = EXCLUDED.primary_goal,
+                    max_acceptable_loss = EXCLUDED.max_acceptable_loss,
+                    time_horizon = EXCLUDED.time_horizon,
+                    liquidity_need = EXCLUDED.liquidity_need,
+                    tradeoff_preference = EXCLUDED.tradeoff_preference,
+                    investment_experience = EXCLUDED.investment_experience,
+                    scope = EXCLUDED.scope,
+                    new_investment_amount = EXCLUDED.new_investment_amount,
+                    contradiction_acknowledged =
+                        EXCLUDED.contradiction_acknowledged,
+                    completed = EXCLUDED.completed,
+
+                    completed_at = CASE
+                        WHEN EXCLUDED.completed = TRUE
+                        THEN COALESCE(
+                            investor_profiles.completed_at,
+                            NOW()
+                        )
+                        ELSE NULL
+                    END,
+
+                    raw_json = EXCLUDED.raw_json,
+                    updated_at = NOW()
+
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    recommendation_use,
+                    primary_goal,
+                    max_acceptable_loss,
+                    time_horizon,
+                    liquidity_need,
+                    tradeoff_preference,
+                    investment_experience,
+                    scope,
+                    new_investment_amount,
+                    contradiction_acknowledged,
+                    completed,
+                    completed,
+                    json.dumps(raw or {}),
+                ),
+            )
+
+            saved_profile = cur.fetchone()
+
+            invalidated_count = 0
+
+            if profile_changed:
+                cur.execute(
+                    """
+                    DELETE FROM portfolio_recommendations
+                    WHERE parity_user_id = %s
+                    """,
+                    (parity_user_id,),
+                )
+
+                invalidated_count = cur.rowcount
+
+            conn.commit()
+
+            return {
+                "profile": saved_profile,
+                "profile_changed": profile_changed,
+                "recommendations_invalidated": profile_changed,
+                "invalidated_recommendation_count": invalidated_count,
+            }
+
+
 
 def upsert_parity_user(
     user_id: str,

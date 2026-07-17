@@ -12,6 +12,7 @@ from .db import (
     get_conn,
     get_investor_profile,
     upsert_investor_profile,
+    save_investor_profile_and_invalidate_recommendations,
 )
 
 from .snaptrade_service import (
@@ -89,7 +90,6 @@ class InvestorProfileRequest(BaseModel):
     contradiction_acknowledged: bool = False
     completed: bool = False
     raw: dict | None = None
-
     
 class PlaidExchangeRequest(BaseModel):
     public_token: str
@@ -182,6 +182,34 @@ def claim_guest_session(req: GuestClaimRequest):
         "clerk_user_id": req.clerk_user_id,
     }
 
+
+@app.put("/api/investor-profile")
+def investor_profile_put(
+    req: InvestorProfileRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    result = save_investor_profile_and_invalidate_recommendations(
+        parity_user_id=parity_user_id,
+        recommendation_use=req.recommendation_use,
+        primary_goal=req.primary_goal,
+        max_acceptable_loss=req.max_acceptable_loss,
+        time_horizon=req.time_horizon,
+        liquidity_need=req.liquidity_need,
+        tradeoff_preference=req.tradeoff_preference,
+        investment_experience=req.investment_experience,
+        scope=req.scope,
+        new_investment_amount=req.new_investment_amount,
+        contradiction_acknowledged=req.contradiction_acknowledged,
+        completed=req.completed,
+        raw=req.raw,
+    )
+
+    return {
+        "status": "saved",
+        **result,
+    }
 
 @app.get("/api/investor-profile")
 def investor_profile_get(request: Request):

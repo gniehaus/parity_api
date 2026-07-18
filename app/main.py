@@ -30,7 +30,6 @@ from .plaid_service import (
     exchange_public_token,
     sync_bank_accounts,
     get_bank_accounts_from_db,
-    test_plaid_investments,
 )
 from .portfolio_dashboard_engine import calculate_portfolio_dashboard
 

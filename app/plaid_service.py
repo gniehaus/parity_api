@@ -12,9 +12,6 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
 
-from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
-from plaid.model.investments_transactions_get_request import InvestmentsTransactionsGetRequest
-
 
 from .db import get_conn
 from .security import encrypt_secret, decrypt_secret
@@ -42,22 +39,17 @@ def get_plaid_client():
     return plaid_api.PlaidApi(api_client)
 
 
-def create_link_token(parity_user_id: str, connection_type: str = "bank"):
+def create_link_token(parity_user_id: str):
     client = get_plaid_client()
 
-    if connection_type == "bank":
-        products = [Products("auth")]
-    elif connection_type == "brokerage":
-        products = [Products("investments")]
-    else:
-        raise ValueError("connection_type must be 'bank' or 'brokerage'")
-
     request = LinkTokenCreateRequest(
-        products=products,
+        products=[Products("auth")],
         client_name="Parity",
         country_codes=[CountryCode("US")],
         language="en",
-        user=LinkTokenCreateRequestUser(client_user_id=parity_user_id),
+        user=LinkTokenCreateRequestUser(
+            client_user_id=parity_user_id
+        ),
     )
 
     response = client.link_token_create(request)
@@ -97,82 +89,6 @@ def exchange_public_token(parity_user_id: str, public_token: str):
         "item_id": item_id,
     }
 
-
-def test_plaid_investments(parity_user_id: str):
-    client = get_plaid_client()
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT item_id, encrypted_access_token
-                FROM plaid_items
-                WHERE parity_user_id = %s
-                ORDER BY created_at DESC
-                """,
-                (parity_user_id,),
-            )
-            items = cur.fetchall()
-
-    results = []
-
-    for item in items:
-        access_token = decrypt_secret(item["encrypted_access_token"])
-
-        request = InvestmentsHoldingsGetRequest(
-            access_token=access_token,
-        )
-
-        response = client.investments_holdings_get(request).to_dict()
-
-        accounts = response.get("accounts", [])
-        holdings = response.get("holdings", [])
-        securities = response.get("securities", [])
-
-        security_by_id = {
-            s.get("security_id"): s
-            for s in securities
-        }
-
-        normalized_holdings = []
-
-        for holding in holdings:
-            security = security_by_id.get(holding.get("security_id"), {}) or {}
-
-            quantity = holding.get("quantity") or 0
-            price = holding.get("institution_price") or 0
-            market_value = holding.get("institution_value")
-
-            if market_value is None:
-                market_value = float(quantity or 0) * float(price or 0)
-
-            normalized_holdings.append({
-                "account_id": holding.get("account_id"),
-                "security_id": holding.get("security_id"),
-                "symbol": security.get("ticker_symbol"),
-                "name": security.get("name"),
-                "security_type": security.get("type"),
-                "quantity": float(quantity or 0),
-                "price": float(price or 0),
-                "market_value": float(market_value or 0),
-                "iso_currency_code": holding.get("iso_currency_code"),
-                "raw_holding": holding,
-                "raw_security": security,
-            })
-
-        results.append({
-            "item_id": item["item_id"],
-            "accounts": accounts,
-            "holdings": normalized_holdings,
-            "securities": securities,
-        })
-
-    return {
-        "status": "ok",
-        "items_checked": len(items),
-        "items": results,
-    }
-    
 
 def sync_bank_accounts(parity_user_id: str):
     client = get_plaid_client()

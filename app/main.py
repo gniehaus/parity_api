@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
-from expense_ratio_service import get_expense_ratio
+from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 
 

@@ -5,7 +5,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from snaptrade_client import SnapTrade
+from expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
+
+
+
 from .db import (
     init_db,
     upsert_parity_user,
@@ -119,6 +123,9 @@ class RecommendationRunRequest(BaseModel):
         default_factory=list
     )
     
+class ExpenseRatioRequest(BaseModel):
+    symbols: List[str]
+
 
 class RecommendRequest(BaseModel):
     holdings: List[Dict[str, Any]]
@@ -313,6 +320,26 @@ def recommendation_run_current(request: Request):
         **result,
     }
 
+@app.post("/api/expense-ratios")
+def expense_ratios(req: ExpenseRatioRequest):
+    symbols = sorted(
+        {
+            symbol.strip().upper()
+            for symbol in req.symbols
+            if symbol and symbol.strip()
+        }
+    )
+
+    results = [
+        get_expense_ratio(symbol)
+        for symbol in symbols
+    ]
+
+    return {
+        "count": len(results),
+        "results": results,
+    }
+
 
 @app.put("/api/investor-profile")
 def investor_profile_put(
@@ -381,10 +408,10 @@ def health():
     return {"status": "ok", "service": "parity-snaptrade-api"}
 
 
-@app.get("/api/plaid/investments/test")
-def plaid_investments_test(request: Request):
-    parity_user_id = get_parity_user_id(request)
-    return test_plaid_investments(parity_user_id)
+# @app.get("/api/plaid/investments/test")
+# def plaid_investments_test(request: Request):
+#     parity_user_id = get_parity_user_id(request)
+#     return test_plaid_investments(parity_user_id)
 
     
 

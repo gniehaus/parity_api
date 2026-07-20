@@ -1632,7 +1632,6 @@ def get_active_advisory_documents():
                     document_type,
                     title,
                     version,
-                    summary,
                     storage_location,
                     required_for_activation,
                     effective_date

@@ -305,6 +305,36 @@ def is_approved_buffer_product(
     )
 
 
+import math
+from datetime import datetime, timezone
+from typing import Any
+
+
+def get_protection_gap(product: dict[str, Any]) -> float:
+    """
+    Convert downside_before_buffer into a positive percentage-point gap.
+
+    Example:
+        -6.23 becomes 6.23
+
+    A smaller value is better because the buffer begins sooner.
+    """
+    value = product.get("downside_before_buffer")
+
+    if value is None:
+        return math.inf
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return math.inf
+
+    if not math.isfinite(numeric_value):
+        return math.inf
+
+    return abs(numeric_value)
+
+
 def choose_defined_outcome_match(
     *,
     reference_asset: str,
@@ -312,6 +342,7 @@ def choose_defined_outcome_match(
     target_days_remaining: int = 365,
     maximum_buffer_difference: float = 5.0,
     maximum_days_difference: int = 120,
+    maximum_protection_gap: float | None = None,
     minimum_days_remaining: int = 30,
 ) -> dict[str, Any] | None:
     normalized_asset = reference_asset.strip().upper()
@@ -322,7 +353,9 @@ def choose_defined_outcome_match(
         )
 
     if not math.isfinite(target_buffer):
-        raise ValueError("target_buffer must be a finite number")
+        raise ValueError(
+            "target_buffer must be a finite number"
+        )
 
     if not 0 <= target_buffer <= 100:
         raise ValueError(
@@ -334,52 +367,115 @@ def choose_defined_outcome_match(
             "target_days_remaining must be positive"
         )
 
+    if maximum_buffer_difference < 0:
+        raise ValueError(
+            "maximum_buffer_difference cannot be negative"
+        )
+
+    if maximum_days_difference < 0:
+        raise ValueError(
+            "maximum_days_difference cannot be negative"
+        )
+
+    if (
+        maximum_protection_gap is not None
+        and maximum_protection_gap < 0
+    ):
+        raise ValueError(
+            "maximum_protection_gap cannot be negative"
+        )
+
     products = get_all_defined_outcomes()
 
-    candidates = [
-        product
-        for product in products
+    approved_candidates: list[dict[str, Any]] = []
+
+    for product in products:
+        if product.get("reference_asset") != normalized_asset:
+            continue
+
+        if not is_approved_buffer_product(
+            product,
+            minimum_days_remaining=minimum_days_remaining,
+        ):
+            continue
+
+        remaining_buffer = product.get("remaining_buffer")
+        days_remaining = product.get("days_remaining")
+        remaining_cap = product.get("remaining_cap")
+
         if (
-            product["reference_asset"] == normalized_asset
-            and is_approved_buffer_product(
-                product,
-                minimum_days_remaining=minimum_days_remaining,
-            )
-        )
-    ]
+            remaining_buffer is None
+            or days_remaining is None
+            or remaining_cap is None
+        ):
+            continue
 
-    if not candidates:
+        protection_gap = get_protection_gap(product)
+
+        if not math.isfinite(protection_gap):
+            continue
+
+        buffer_difference = (
+            float(remaining_buffer) - target_buffer
+        )
+
+        days_difference = (
+            int(days_remaining) - target_days_remaining
+        )
+
+        # Hard filters:
+        # Do not improve the protection gap by returning a product
+        # that materially misses the requested buffer or duration.
+        if (
+            abs(buffer_difference)
+            > maximum_buffer_difference
+        ):
+            continue
+
+        if (
+            abs(days_difference)
+            > maximum_days_difference
+        ):
+            continue
+
+        if (
+            maximum_protection_gap is not None
+            and protection_gap > maximum_protection_gap
+        ):
+            continue
+
+        candidate = {
+            **product,
+            "_protection_gap": protection_gap,
+            "_buffer_difference": buffer_difference,
+            "_days_difference": days_difference,
+        }
+
+        approved_candidates.append(candidate)
+
+    if not approved_candidates:
         return None
 
-    candidates.sort(
+    # Ranking order:
+    #
+    # 1. Smallest decline before protection begins
+    # 2. Closest remaining buffer to the user's request
+    # 3. Closest duration to the user's request
+    # 4. Highest remaining upside cap
+    approved_candidates.sort(
         key=lambda product: (
-            abs(
-                product["remaining_buffer"]
-                - target_buffer
-            ),
-            abs(
-                product["days_remaining"]
-                - target_days_remaining
-            ),
-            -product["remaining_cap"],
+            product["_protection_gap"],
+            abs(product["_buffer_difference"]),
+            abs(product["_days_difference"]),
+            -float(product["remaining_cap"]),
         )
     )
 
-    match = candidates[0]
+    selected = approved_candidates[0]
 
-    buffer_difference = (
-        match["remaining_buffer"] - target_buffer
-    )
-
-    days_difference = (
-        match["days_remaining"] - target_days_remaining
-    )
-
-    if abs(buffer_difference) > maximum_buffer_difference:
-        return None
-
-    if abs(days_difference) > maximum_days_difference:
-        return None
+    protection_gap = selected.pop("_protection_gap")
+    buffer_difference = selected.pop("_buffer_difference")
+    days_difference = selected.pop("_days_difference")
 
     return {
         "requested": {
@@ -387,7 +483,11 @@ def choose_defined_outcome_match(
             "target_buffer": target_buffer,
             "target_days_remaining": target_days_remaining,
         },
-        "match": match,
+        "match": selected,
+        "protection_gap": round(
+            protection_gap,
+            2,
+        ),
         "buffer_difference": round(
             buffer_difference,
             2,
@@ -403,5 +503,10 @@ def choose_defined_outcome_match(
         "retrieved_at": datetime.now(
             timezone.utc
         ).isoformat(),
-        "source": "Innovator public defined outcome table",
+        "source": (
+            "Innovator public defined outcome table"
+        ),
     }
+
+
+

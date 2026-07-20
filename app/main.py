@@ -374,45 +374,74 @@ from fastapi import HTTPException, Query
 @app.get("/api/defined-outcomes/match")
 def match_defined_outcome(
     reference_asset: str = Query(
-        description="Reference asset: SPY, QQQ, EFA, or EEM",
+        description="SPY, QQQ, EFA, or EEM",
     ),
     target_buffer: float = Query(
         ge=0,
         le=100,
-        description="Requested remaining buffer percentage",
+        description=(
+            "Requested remaining buffer percentage"
+        ),
     ),
     target_days_remaining: int = Query(
         default=365,
         ge=30,
         le=730,
-        description="Requested remaining outcome period in days",
+        description=(
+            "Requested remaining outcome period in days"
+        ),
     ),
     maximum_buffer_difference: float = Query(
         default=5,
         ge=0,
         le=100,
+        description=(
+            "Maximum acceptable buffer difference"
+        ),
     ),
     maximum_days_difference: int = Query(
         default=120,
         ge=0,
         le=365,
+        description=(
+            "Maximum acceptable duration difference"
+        ),
+    ),
+    maximum_protection_gap: float | None = Query(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Optional maximum decline allowed before "
+            "the buffer begins"
+        ),
     ),
 ):
     try:
         result = choose_defined_outcome_match(
             reference_asset=reference_asset,
             target_buffer=target_buffer,
-            target_days_remaining=target_days_remaining,
-            maximum_buffer_difference=maximum_buffer_difference,
-            maximum_days_difference=maximum_days_difference,
+            target_days_remaining=(
+                target_days_remaining
+            ),
+            maximum_buffer_difference=(
+                maximum_buffer_difference
+            ),
+            maximum_days_difference=(
+                maximum_days_difference
+            ),
+            maximum_protection_gap=(
+                maximum_protection_gap
+            ),
         )
 
         if result is None:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "No approved buffer ETF is sufficiently close "
-                    "to the requested buffer and duration."
+                    "No approved buffer ETF meets the "
+                    "requested buffer, duration, and "
+                    "protection-gap requirements."
                 ),
             )
 
@@ -430,10 +459,11 @@ def match_defined_outcome(
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Unable to retrieve defined outcome data: {exc}",
+            detail=(
+                "Unable to retrieve defined outcome "
+                f"data: {exc}"
+            ),
         ) from exc
-
-
 
 @app.get("/test-defined-outcome-table")
 def test_defined_outcome_table():

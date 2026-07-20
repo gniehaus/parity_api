@@ -309,8 +309,10 @@ def choose_defined_outcome_match(
     *,
     reference_asset: str,
     target_buffer: float,
+    target_days_remaining: int = 365,
     maximum_buffer_difference: float = 5.0,
-    minimum_days_remaining: int = 90,
+    maximum_days_difference: int = 120,
+    minimum_days_remaining: int = 30,
 ) -> dict[str, Any] | None:
     normalized_asset = reference_asset.strip().upper()
 
@@ -322,14 +324,14 @@ def choose_defined_outcome_match(
     if not math.isfinite(target_buffer):
         raise ValueError("target_buffer must be a finite number")
 
-    if target_buffer < 0 or target_buffer > 100:
+    if not 0 <= target_buffer <= 100:
         raise ValueError(
             "target_buffer must be between 0 and 100"
         )
 
-    if maximum_buffer_difference < 0:
+    if target_days_remaining < 1:
         raise ValueError(
-            "maximum_buffer_difference cannot be negative"
+            "target_days_remaining must be positive"
         )
 
     products = get_all_defined_outcomes()
@@ -349,44 +351,54 @@ def choose_defined_outcome_match(
     if not candidates:
         return None
 
-    # Ranking order:
-    # 1. Remaining buffer closest to the user's input
-    # 2. Higher remaining cap
-    # 3. More time remaining
     candidates.sort(
         key=lambda product: (
             abs(
                 product["remaining_buffer"]
                 - target_buffer
             ),
+            abs(
+                product["days_remaining"]
+                - target_days_remaining
+            ),
             -product["remaining_cap"],
-            -product["days_remaining"],
         )
     )
 
     match = candidates[0]
 
-    absolute_difference = abs(
+    buffer_difference = (
         match["remaining_buffer"] - target_buffer
     )
 
-    # Do not pretend a poor match is suitable.
-    if absolute_difference > maximum_buffer_difference:
+    days_difference = (
+        match["days_remaining"] - target_days_remaining
+    )
+
+    if abs(buffer_difference) > maximum_buffer_difference:
+        return None
+
+    if abs(days_difference) > maximum_days_difference:
         return None
 
     return {
         "requested": {
             "reference_asset": normalized_asset,
             "target_buffer": target_buffer,
+            "target_days_remaining": target_days_remaining,
         },
         "match": match,
         "buffer_difference": round(
-            match["remaining_buffer"] - target_buffer,
+            buffer_difference,
             2,
         ),
         "absolute_buffer_difference": round(
-            absolute_difference,
+            abs(buffer_difference),
             2,
+        ),
+        "days_difference": days_difference,
+        "absolute_days_difference": abs(
+            days_difference
         ),
         "retrieved_at": datetime.now(
             timezone.utc

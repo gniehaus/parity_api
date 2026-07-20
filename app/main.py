@@ -374,25 +374,37 @@ from fastapi import HTTPException, Query
 @app.get("/api/defined-outcomes/match")
 def match_defined_outcome(
     reference_asset: str = Query(
-        description="SPY, QQQ, EFA, or EEM"
+        description="Reference asset: SPY, QQQ, EFA, or EEM",
     ),
     target_buffer: float = Query(
         ge=0,
         le=100,
-        description="User's requested remaining buffer percentage",
+        description="Requested remaining buffer percentage",
+    ),
+    target_days_remaining: int = Query(
+        default=365,
+        ge=30,
+        le=730,
+        description="Requested remaining outcome period in days",
     ),
     maximum_buffer_difference: float = Query(
         default=5,
         ge=0,
         le=100,
-        description="Largest acceptable difference from the requested buffer",
+    ),
+    maximum_days_difference: int = Query(
+        default=120,
+        ge=0,
+        le=365,
     ),
 ):
     try:
         result = choose_defined_outcome_match(
             reference_asset=reference_asset,
             target_buffer=target_buffer,
+            target_days_remaining=target_days_remaining,
             maximum_buffer_difference=maximum_buffer_difference,
+            maximum_days_difference=maximum_days_difference,
         )
 
         if result is None:
@@ -400,7 +412,7 @@ def match_defined_outcome(
                 status_code=404,
                 detail=(
                     "No approved buffer ETF is sufficiently close "
-                    "to the requested remaining buffer."
+                    "to the requested buffer and duration."
                 ),
             )
 
@@ -408,18 +420,17 @@ def match_defined_outcome(
 
     except HTTPException:
         raise
+
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail=str(exc),
         ) from exc
+
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Unable to retrieve defined outcome data: "
-                f"{exc}"
-            ),
+            detail=f"Unable to retrieve defined outcome data: {exc}",
         ) from exc
 
 

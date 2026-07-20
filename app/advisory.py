@@ -35,12 +35,22 @@ class RecordConsentRequest(BaseModel):
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+class CreateAdvisoryClientRequest(BaseModel):
+    email: str
+
+
 @router.post("/client")
-def create_client(request: Request):
+def create_client(
+    payload: CreateAdvisoryClientRequest,
+    request: Request,
+):
     parity_user_id = get_parity_user_id(request)
 
     try:
-        return create_advisory_client(parity_user_id)
+        return create_advisory_client(
+            parity_user_id=parity_user_id,
+            email=payload.email,
+        )
 
     except ValueError as exc:
         raise HTTPException(

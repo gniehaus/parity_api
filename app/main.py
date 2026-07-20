@@ -392,7 +392,7 @@ def match_defined_outcome(
         ),
     ),
     maximum_buffer_difference: float = Query(
-        default=5,
+        default=10,
         ge=0,
         le=100,
         description=(

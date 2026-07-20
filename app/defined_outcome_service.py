@@ -340,7 +340,7 @@ def choose_defined_outcome_match(
     reference_asset: str,
     target_buffer: float,
     target_days_remaining: int = 365,
-    maximum_buffer_difference: float = 5.0,
+    maximum_buffer_difference: float = 10.0,
     maximum_days_difference: int = 120,
     maximum_protection_gap: float | None = None,
     minimum_days_remaining: int = 30,

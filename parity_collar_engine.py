@@ -1595,7 +1595,7 @@ def build_zero_cost_target_cap_buffer(
     assumed_dividend_yield=0.01,
     target_buffer_pct=0.10,
     max_near_zero_bps=25,
-    max_debit_bps=100,
+    max_debit_bps=10,
     buffer_tolerance_pct=0.015,
 ):
     """
@@ -1923,7 +1923,6 @@ def build_zero_cost_target_cap_buffer(
             "estimated_option_cost_dollars": net_cost,
             "estimated_option_cost_label": cost_display_label,
             "estimated_option_cost_bps": net_cost_bps,
-            "investment_required_today": invested_amount,
             "max_debit_bps": max_debit_bps,
             "debit_budget_dollars": (
                 notional * max_debit_bps / 10_000

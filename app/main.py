@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
-from .defined_outcome_service import inspect_table
+from .defined_outcome_service import inspect_table,get_defined_outcome
 
 
 from .db import (
@@ -393,7 +393,23 @@ def investor_profile_get(request: Request):
 def test_defined_outcome_table():
     return inspect_table()
 
+from fastapi import HTTPException
 
+
+@app.get("/api/defined-outcomes/{ticker}")
+def defined_outcome(ticker: str):
+    try:
+        return get_defined_outcome(ticker)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to retrieve defined outcome data: {exc}",
+        ) from exc
 
 
 @app.get("/api/dashboard/risk")

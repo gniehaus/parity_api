@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
+choose_defined_floor_match,
  inspect_table,
 )
 
@@ -373,14 +374,22 @@ from fastapi import HTTPException, Query
 
 @app.get("/api/defined-outcomes/match")
 def match_defined_outcome(
+    strategy: str = Query(
+        default="power_buffer",
+        description=(
+            "Matching strategy: power_buffer or defined_floor"
+        ),
+    ),
     reference_asset: str = Query(
         description="SPY, QQQ, EFA, or EEM",
     ),
-    target_buffer: float = Query(
+    target_buffer: float | None = Query(
+        default=None,
         ge=0,
         le=100,
         description=(
-            "Requested remaining buffer percentage"
+            "Requested remaining buffer percentage. "
+            "Required when strategy=power_buffer."
         ),
     ),
     target_days_remaining: int = Query(
@@ -396,7 +405,8 @@ def match_defined_outcome(
         ge=0,
         le=100,
         description=(
-            "Maximum acceptable buffer difference"
+            "Maximum acceptable buffer difference for "
+            "power buffer products"
         ),
     ),
     maximum_days_difference: int = Query(
@@ -412,36 +422,81 @@ def match_defined_outcome(
         ge=0,
         le=100,
         description=(
-            "Optional maximum decline allowed before "
-            "the buffer begins"
+            "Maximum decline allowed before protection begins"
+        ),
+    ),
+    minimum_remaining_protection: float = Query(
+        default=95,
+        ge=0,
+        le=100,
+        description=(
+            "Minimum remaining protection percentage for "
+            "defined floor products"
         ),
     ),
 ):
     try:
-        result = choose_defined_outcome_match(
-            reference_asset=reference_asset,
-            target_buffer=target_buffer,
-            target_days_remaining=(
-                target_days_remaining
-            ),
-            maximum_buffer_difference=(
-                maximum_buffer_difference
-            ),
-            maximum_days_difference=(
-                maximum_days_difference
-            ),
-            maximum_protection_gap=(
-                maximum_protection_gap
-            ),
-        )
+        normalized_strategy = strategy.strip().lower()
+
+        if normalized_strategy not in {
+            "power_buffer",
+            "defined_floor",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "strategy must be power_buffer "
+                    "or defined_floor"
+                ),
+            )
+
+        if normalized_strategy == "defined_floor":
+            result = choose_defined_floor_match(
+                reference_asset=reference_asset,
+                target_days_remaining=target_days_remaining,
+                maximum_days_difference=maximum_days_difference,
+                maximum_downside_before_floor=(
+                    maximum_protection_gap
+                    if maximum_protection_gap is not None
+                    else 2.0
+                ),
+                minimum_remaining_protection=(
+                    minimum_remaining_protection
+                ),
+            )
+
+        else:
+            if target_buffer is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "target_buffer is required when "
+                        "strategy=power_buffer"
+                    ),
+                )
+
+            result = choose_defined_outcome_match(
+                reference_asset=reference_asset,
+                target_buffer=target_buffer,
+                target_days_remaining=target_days_remaining,
+                maximum_buffer_difference=(
+                    maximum_buffer_difference
+                ),
+                maximum_days_difference=(
+                    maximum_days_difference
+                ),
+                maximum_protection_gap=(
+                    maximum_protection_gap
+                ),
+            )
 
         if result is None:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "No approved buffer ETF meets the "
-                    "requested buffer, duration, and "
-                    "protection-gap requirements."
+                    "No eligible defined outcome ETF meets "
+                    "the requested strategy, protection, "
+                    "and duration requirements."
                 ),
             )
 

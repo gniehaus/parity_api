@@ -269,6 +269,42 @@ def get_all_defined_outcomes() -> list[dict[str, Any]]:
     return products
 
 
+def get_defined_outcome_strategy(
+    product: dict[str, Any],
+) -> str | None:
+    """
+    Classify an Innovator product using its product name.
+
+    Returns:
+        defined_floor
+        power_buffer
+        ultra_buffer
+        buffer
+        accelerated_buffer
+        or None
+    """
+    name = str(product.get("name") or "").lower()
+
+    if "equity defined protection etf" in name:
+        return "defined_floor"
+
+    if "power buffer etf" in name:
+        return "power_buffer"
+
+    if "ultra buffer etf" in name:
+        return "ultra_buffer"
+
+    if "accelerated" in name and "buffer etf" in name:
+        return "accelerated_buffer"
+
+    if "buffer etf" in name:
+        return "buffer"
+
+    return None
+
+
+
+
 def is_approved_buffer_product(
     product: dict[str, Any],
     *,
@@ -302,6 +338,37 @@ def is_approved_buffer_product(
         and remaining_cap > 0
         and days_remaining is not None
         and days_remaining >= minimum_days_remaining
+    )
+
+
+def is_approved_defined_floor_product(
+    product: dict[str, Any],
+    *,
+    minimum_days_remaining: int = 90,
+) -> bool:
+    strategy = get_defined_outcome_strategy(product)
+
+    reference_asset = str(
+        product.get("reference_asset") or ""
+    ).upper()
+
+    remaining_protection = product.get("remaining_buffer")
+    remaining_cap = product.get("remaining_cap")
+    downside_before_floor = product.get(
+        "downside_before_buffer"
+    )
+    days_remaining = product.get("days_remaining")
+
+    return (
+        strategy == "defined_floor"
+        and reference_asset in SUPPORTED_REFERENCE_ASSETS
+        and remaining_protection is not None
+        and float(remaining_protection) > 0
+        and remaining_cap is not None
+        and float(remaining_cap) > 0
+        and downside_before_floor is not None
+        and days_remaining is not None
+        and int(days_remaining) >= minimum_days_remaining
     )
 
 
@@ -340,7 +407,7 @@ def choose_defined_outcome_match(
     reference_asset: str,
     target_buffer: float,
     target_days_remaining: int = 365,
-    maximum_buffer_difference: float = 10.0,
+    maximum_buffer_difference: float = 5.0,
     maximum_days_difference: int = 120,
     maximum_protection_gap: float | None = None,
     minimum_days_remaining: int = 30,
@@ -508,5 +575,114 @@ def choose_defined_outcome_match(
         ),
     }
 
+def choose_defined_floor_match(
+    *,
+    reference_asset: str,
+    target_days_remaining: int = 365,
+    maximum_days_difference: int = 120,
+    maximum_downside_before_floor: float = 2.0,
+    minimum_remaining_protection: float = 95.0,
+    minimum_days_remaining: int = 90,
+) -> dict[str, Any] | None:
+    normalized_asset = reference_asset.strip().upper()
 
+    if normalized_asset not in SUPPORTED_REFERENCE_ASSETS:
+        raise ValueError(
+            "reference_asset must be SPY, QQQ, EFA, or EEM"
+        )
+
+    products = get_all_defined_outcomes()
+
+    candidates: list[dict[str, Any]] = []
+
+    for product in products:
+
+        if product.get("reference_asset") != normalized_asset:
+            continue
+
+        if not is_approved_defined_floor_product(
+            product,
+            minimum_days_remaining=minimum_days_remaining,
+        ):
+            continue
+
+        remaining_protection = float(
+            product["remaining_buffer"]
+        )
+
+        remaining_cap = float(
+            product["remaining_cap"]
+        )
+
+        downside_before_floor = abs(
+            float(product["downside_before_buffer"])
+        )
+
+        days_remaining = int(
+            product["days_remaining"]
+        )
+
+        days_difference = (
+            days_remaining - target_days_remaining
+        )
+
+        if abs(days_difference) > maximum_days_difference:
+            continue
+
+        if (
+            downside_before_floor
+            > maximum_downside_before_floor
+        ):
+            continue
+
+        if (
+            remaining_protection
+            < minimum_remaining_protection
+        ):
+            continue
+
+        candidates.append(
+            {
+                **product,
+                "_downside_before_floor": downside_before_floor,
+                "_days_difference": days_difference,
+            }
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda product: (
+            product["_downside_before_floor"],
+            -float(product["remaining_buffer"]),
+            -float(product["remaining_cap"]),
+            abs(product["_days_difference"]),
+        )
+    )
+
+    selected = candidates[0]
+
+    downside_before_floor = selected.pop(
+        "_downside_before_floor"
+    )
+
+    days_difference = selected.pop(
+        "_days_difference"
+    )
+
+    return {
+        "requested": {
+            "reference_asset": normalized_asset,
+            "target_days_remaining": target_days_remaining,
+        },
+        "match": selected,
+        "downside_before_floor": downside_before_floor,
+        "days_difference": days_difference,
+        "absolute_days_difference": abs(days_difference),
+        "retrieved_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "source": "Innovator public defined outcome table",
+    }
 

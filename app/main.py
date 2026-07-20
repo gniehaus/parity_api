@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
-from defined_outcome_service import get_page
+from .defined_outcome_service import get_page
 
 
 from .db import (

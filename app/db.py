@@ -1634,7 +1634,7 @@ def get_active_advisory_documents():
                     version,
                     storage_location,
                     required_for_activation,
-                    effective_date
+                    effective_at
                 FROM advisory_documents
                 WHERE is_active = TRUE
                 ORDER BY required_for_activation DESC, title;

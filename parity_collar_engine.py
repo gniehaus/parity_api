@@ -1716,12 +1716,14 @@ def build_zero_cost_target_cap_buffer(
             net_cost_bps = net_cost / notional * 10000
             abs_net_cost_bps = abs(net_cost_bps)
 
+            invested_amount = notional + net_cost
+            
             cap_value = (
                 call_strike * MULT
                 + expected_dividend_dollars
-                - net_cost
             )
-            cap_return = cap_value / notional - 1
+            
+            cap_return = cap_value / invested_amount - 1
 
             protected_start_return = long_put_strike / spot - 1
             protected_end_return = short_put_strike / spot - 1
@@ -1750,6 +1752,7 @@ def build_zero_cost_target_cap_buffer(
                 "put_spread_cost": put_spread_cost,
                 "net_cost": net_cost,
                 "net_cost_bps": net_cost_bps,
+                "invested_amount": invested_amount,
                 "abs_net_cost_bps": abs_net_cost_bps,
                 "buffer_width_points": buffer_width_points,
                 "buffer_pct": buffer_pct,
@@ -1781,7 +1784,7 @@ def build_zero_cost_target_cap_buffer(
                 candidates["buffer_error"],
                 minimum_buffer_error,
                 atol=1e-10,
-                rtol=0,
+                rtol=0
             )
         ].copy()
     
@@ -1837,6 +1840,7 @@ def build_zero_cost_target_cap_buffer(
             ).iloc[0]
     net_cost = float(best["net_cost"])
     net_cost_bps = float(best["net_cost_bps"])
+    invested_amount = float(best["invested_amount"])
 
     if abs(net_cost_bps) <= max_near_zero_bps:
         cost_display_label = "approximately $0"
@@ -1854,6 +1858,9 @@ def build_zero_cost_target_cap_buffer(
         "dte": dte,
         "spot": spot,
         "notional": notional,
+        "underlying_notional": notional,
+        "invested_amount": invested_amount,
+        "investment_required_today": invested_amount,
 
         "assumed_dividend_yield": assumed_dividend_yield,
         "expected_dividend_dollars": expected_dividend_dollars,
@@ -1893,8 +1900,8 @@ def build_zero_cost_target_cap_buffer(
         "floor_value": None,
         "floor_return": None,
         "max_loss_dollars": None,
-        "max_gain_dollars": float(best["cap_value"]) - notional,
-
+        # "max_gain_dollars": float(best["cap_value"]) - notional,
+        "max_gain_dollars": float(best["cap_value"]) - invested_amount,
         "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
         "total_volume": float(best["total_volume"]),
         "total_oi": float(best["total_oi"]),
@@ -2264,6 +2271,9 @@ def build_married_put(
         "dte": dte,
         "spot": spot,
         "notional": notional,
+        "underlying_notional": notional,
+        "invested_amount": invested_amount,
+        "investment_required_today": invested_amount,
 
         "assumed_dividend_yield": assumed_dividend_yield,
         "expected_dividend_dollars": expected_dividend_dollars,

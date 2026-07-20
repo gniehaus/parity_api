@@ -129,7 +129,171 @@ def init_db():
                 
                     raw_json JSONB NOT NULL DEFAULT '{}'::jsonb
                 );
-                
+            CREATE TABLE IF NOT EXISTS advisory_clients (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                parity_user_id TEXT NOT NULL UNIQUE
+                    REFERENCES parity_users(id)
+                    ON DELETE RESTRICT,
+            
+                status TEXT NOT NULL DEFAULT 'onboarding'
+                    CHECK (
+                        status IN (
+                            'onboarding',
+                            'documents_complete',
+                            'schwab_authorization_pending',
+                            'active',
+                            'restricted',
+                            'terminated'
+                        )
+                    ),
+            
+                legal_first_name TEXT,
+                legal_middle_name TEXT,
+                legal_last_name TEXT,
+                preferred_name TEXT,
+            
+                email TEXT NOT NULL,
+                phone TEXT,
+            
+                onboarding_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                agreement_completed_at TIMESTAMPTZ,
+                activated_at TIMESTAMPTZ,
+                restricted_at TIMESTAMPTZ,
+                terminated_at TIMESTAMPTZ,
+            
+                onboarding_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            
+                CHECK (
+                    status <> 'active'
+                    OR activated_at IS NOT NULL
+                ),
+            
+                CHECK (
+                    status <> 'terminated'
+                    OR terminated_at IS NOT NULL
+                )
+            );
+
+
+            CREATE TABLE IF NOT EXISTS advisory_documents (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                document_type TEXT NOT NULL
+                    CHECK (
+                        document_type IN (
+                            'investment_advisory_agreement',
+                            'form_adv_part_2a',
+                            'form_adv_part_2b',
+                            'privacy_notice',
+                            'business_continuity_plan',
+                            'electronic_delivery_consent',
+                            'other'
+                        )
+                    ),
+            
+                version TEXT NOT NULL,
+                title TEXT NOT NULL,
+            
+                storage_location TEXT NOT NULL,
+                document_hash TEXT NOT NULL UNIQUE,
+            
+                effective_at TIMESTAMPTZ NOT NULL,
+                retired_at TIMESTAMPTZ,
+            
+                required_for_activation BOOLEAN NOT NULL DEFAULT TRUE,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            
+                UNIQUE (document_type, version),
+            
+                CHECK (
+                    retired_at IS NULL
+                    OR retired_at >= effective_at
+                )
+            );
+
+            
+            CREATE TABLE IF NOT EXISTS client_consents (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                client_id UUID NOT NULL
+                    REFERENCES advisory_clients(id)
+                    ON DELETE RESTRICT,
+            
+                document_id UUID NOT NULL
+                    REFERENCES advisory_documents(id)
+                    ON DELETE RESTRICT,
+            
+                consent_type TEXT NOT NULL
+                    CHECK (
+                        consent_type IN (
+                            'accepted',
+                            'declined',
+                            'withdrawn'
+                        )
+                    ),
+            
+                signed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            
+                ip_address INET,
+                user_agent TEXT,
+            
+                signature_method TEXT NOT NULL DEFAULT 'electronic'
+                    CHECK (
+                        signature_method IN (
+                            'electronic',
+                            'wet_signature',
+                            'advisor_recorded'
+                        )
+                    ),
+            
+                signature_reference TEXT,
+            
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+            );
+
+                        
+            CREATE INDEX IF NOT EXISTS idx_client_consents_client_document
+            ON client_consents(client_id, document_id);
+
+            CREATE TABLE IF NOT EXISTS client_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                client_id UUID NOT NULL
+                    REFERENCES advisory_clients(id)
+                    ON DELETE RESTRICT,
+            
+                event_type TEXT NOT NULL,
+            
+                actor_type TEXT NOT NULL DEFAULT 'system'
+                    CHECK (
+                        actor_type IN (
+                            'client',
+                            'advisor',
+                            'system',
+                            'schwab',
+                            'email_provider'
+                        )
+                    ),
+            
+                actor_id TEXT,
+                event_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            
+                correlation_id UUID,
+                request_id TEXT
+            );
                 CREATE TABLE IF NOT EXISTS recommendation_findings (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 
@@ -186,6 +350,16 @@ def init_db():
                     type,
                     generated_at DESC
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_client_consents_client
+                ON client_consents(client_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_client_consents_document
+                ON client_consents(document_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_client_consents_signed
+                ON client_consents(signed_at DESC);
+
                 
                 CREATE INDEX IF NOT EXISTS idx_recommendation_findings_run
                 ON recommendation_findings(run_id);
@@ -196,6 +370,55 @@ def init_db():
                     generated_at DESC
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_advisory_documents_type_active
+                ON advisory_documents(document_type, is_active);
+                
+                CREATE INDEX IF NOT EXISTS idx_advisory_documents_required
+                ON advisory_documents(required_for_activation, is_active);
+                
+                CREATE INDEX IF NOT EXISTS idx_advisory_documents_effective
+                ON advisory_documents(effective_at DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_advisory_clients_status
+                ON advisory_clients(status, created_at DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_advisory_clients_user
+                ON advisory_clients(parity_user_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_client_events_client_time
+                ON client_events(client_id, occurred_at DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_client_events_type
+                ON client_events(event_type, occurred_at DESC);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_advisory_documents_one_active_type
+                ON advisory_documents(document_type)
+                WHERE is_active = TRUE;
+
+                CREATE OR REPLACE FUNCTION set_updated_at()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    NEW.updated_at = NOW();
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                
+                DROP TRIGGER IF EXISTS trg_advisory_clients_updated_at
+                ON advisory_clients;
+                
+                CREATE TRIGGER trg_advisory_clients_updated_at
+                BEFORE UPDATE ON advisory_clients
+                FOR EACH ROW
+                EXECUTE FUNCTION set_updated_at();
+
+                
+                DROP TRIGGER IF EXISTS trg_advisory_documents_updated_at
+                ON advisory_documents;
+                
+                CREATE TRIGGER trg_advisory_documents_updated_at
+                BEFORE UPDATE ON advisory_documents
+                FOR EACH ROW
+                EXECUTE FUNCTION set_updated_at();
 
                 CREATE TABLE IF NOT EXISTS investor_profiles (
                     parity_user_id TEXT PRIMARY KEY
@@ -382,10 +605,147 @@ def init_db():
                 ON portfolio_recommendations(parity_user_id);
             """)
             conn.commit()
+
 from typing import Any
 
 
+def create_advisory_client(
+    parity_user_id: str,
+    email: str,
+    legal_first_name: str | None = None,
+    legal_middle_name: str | None = None,
+    legal_last_name: str | None = None,
+    preferred_name: str | None = None,
+    phone: str | None = None,
+    onboarding_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Creates an advisory client and records CLIENT_CREATED.
 
+    This function is idempotent: if the client already exists,
+    it returns the existing record without creating a duplicate.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Confirm the authenticated Parity user exists.
+            cur.execute(
+                """
+                SELECT id
+                FROM parity_users
+                WHERE id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            if not cur.fetchone():
+                raise ValueError(
+                    "Parity user must exist before advisory onboarding"
+                )
+
+            # Return the existing client if onboarding already started.
+            cur.execute(
+                """
+                SELECT *
+                FROM advisory_clients
+                WHERE parity_user_id = %s
+                FOR UPDATE
+                """,
+                (parity_user_id,),
+            )
+
+            existing_client = cur.fetchone()
+
+            if existing_client:
+                return existing_client
+
+            cur.execute(
+                """
+                INSERT INTO advisory_clients (
+                    parity_user_id,
+                    status,
+                    legal_first_name,
+                    legal_middle_name,
+                    legal_last_name,
+                    preferred_name,
+                    email,
+                    phone,
+                    onboarding_payload,
+                    onboarding_started_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    'onboarding',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb,
+                    NOW(),
+                    NOW(),
+                    NOW()
+                )
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    legal_first_name,
+                    legal_middle_name,
+                    legal_last_name,
+                    preferred_name,
+                    email,
+                    phone,
+                    json.dumps(onboarding_payload or {}),
+                ),
+            )
+
+            client = cur.fetchone()
+
+            if not client:
+                raise RuntimeError(
+                    "Advisory client could not be created"
+                )
+
+            cur.execute(
+                """
+                INSERT INTO client_events (
+                    client_id,
+                    event_type,
+                    actor_type,
+                    actor_id,
+                    event_data,
+                    occurred_at
+                )
+                VALUES (
+                    %s,
+                    'CLIENT_CREATED',
+                    'client',
+                    %s,
+                    %s::jsonb,
+                    NOW()
+                )
+                """,
+                (
+                    client["id"],
+                    parity_user_id,
+                    json.dumps(
+                        {
+                            "initial_status": "onboarding",
+                            "source": "parity_app",
+                        }
+                    ),
+                ),
+            )
+
+            conn.commit()
+
+            return client
+            
+from typing import Any
 
 def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
@@ -1217,7 +1577,273 @@ def save_investor_profile_and_invalidate_recommendations(
                 "recommendations_invalidated": profile_changed,
                 "invalidated_recommendation_count": invalidated_count,
             }
+from typing import Any
+import json
 
+def get_advisory_status(parity_user_id: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    status,
+                    agreement_completed_at
+                FROM advisory_clients
+                WHERE parity_user_id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            client = cur.fetchone()
+
+            if not client:
+                return {
+                    "exists": False,
+                    "status": "not_started",
+                    "documents_complete": False,
+                    "next_step": "create_client",
+                }
+
+            documents_complete = (
+                client["agreement_completed_at"] is not None
+            )
+
+            return {
+                "exists": True,
+                "status": client["status"],
+                "documents_complete": documents_complete,
+                "next_step": (
+                    None
+                    if documents_complete
+                    else "documents"
+                ),
+            }
+
+
+
+def get_active_advisory_documents():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    document_type,
+                    title,
+                    version,
+                    file_url,
+                    summary,
+                    required_for_activation,
+                    effective_date
+                FROM advisory_documents
+                WHERE is_active = TRUE
+                ORDER BY required_for_activation DESC, title;
+                """
+            )
+
+            return cur.fetchall()
+
+            
+def record_client_consent(
+    parity_user_id: str,
+    document_id: str,
+    consent_type: str = "accepted",
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    signature_method: str = "electronic",
+    signature_reference: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Records a document consent for an advisory client.
+
+    If every required active document has been accepted,
+    the client is promoted to documents_complete.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+
+            # Lock advisory client
+            cur.execute(
+                """
+                SELECT *
+                FROM advisory_clients
+                WHERE parity_user_id = %s
+                FOR UPDATE
+                """,
+                (parity_user_id,),
+            )
+
+            client = cur.fetchone()
+
+            if not client:
+                raise ValueError("Advisory client not found")
+
+            # Validate document
+            cur.execute(
+                """
+                SELECT *
+                FROM advisory_documents
+                WHERE id = %s
+                  AND is_active = TRUE
+                """,
+                (document_id,),
+            )
+
+            document = cur.fetchone()
+
+            if not document:
+                raise ValueError("Active advisory document not found")
+
+            # Insert consent
+            cur.execute(
+                """
+                INSERT INTO client_consents (
+                    client_id,
+                    document_id,
+                    consent_type,
+                    signed_at,
+                    ip_address,
+                    user_agent,
+                    signature_method,
+                    signature_reference,
+                    metadata
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    NOW(),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb
+                )
+                RETURNING *
+                """,
+                (
+                    client["id"],
+                    document["id"],
+                    consent_type,
+                    ip_address,
+                    user_agent,
+                    signature_method,
+                    signature_reference,
+                    json.dumps(metadata or {}),
+                ),
+            )
+
+            consent = cur.fetchone()
+
+            # Audit event
+            cur.execute(
+                """
+                INSERT INTO client_events (
+                    client_id,
+                    event_type,
+                    actor_type,
+                    actor_id,
+                    event_data,
+                    occurred_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'client',
+                    %s,
+                    %s::jsonb,
+                    NOW()
+                )
+                """,
+                (
+                    client["id"],
+                    f"DOCUMENT_{consent_type.upper()}",
+                    parity_user_id,
+                    json.dumps(
+                        {
+                            "document_id": str(document["id"]),
+                            "document_type": document["document_type"],
+                            "version": document["version"],
+                        }
+                    ),
+                ),
+            )
+
+            # Check whether every required active document has
+            # a latest consent of "accepted"
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM advisory_documents d
+                WHERE d.required_for_activation = TRUE
+                  AND d.is_active = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM (
+                          SELECT DISTINCT ON (document_id)
+                              document_id,
+                              consent_type
+                          FROM client_consents
+                          WHERE client_id = %s
+                          ORDER BY document_id, signed_at DESC
+                      ) latest
+                      WHERE latest.document_id = d.id
+                        AND latest.consent_type = 'accepted'
+                  )
+                """,
+                (client["id"],),
+            )
+
+            remaining = cur.fetchone()["count"]
+
+            documents_complete = remaining == 0
+
+            if (
+                documents_complete
+                and client["status"] == "onboarding"
+            ):
+                cur.execute(
+                    """
+                    UPDATE advisory_clients
+                    SET
+                        status = 'documents_complete',
+                        agreement_completed_at = NOW()
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (client["id"],),
+                )
+
+                client = cur.fetchone()
+
+                cur.execute(
+                    """
+                    INSERT INTO client_events (
+                        client_id,
+                        event_type,
+                        actor_type,
+                        event_data
+                    )
+                    VALUES (
+                        %s,
+                        'DOCUMENTS_COMPLETE',
+                        'system',
+                        '{}'::jsonb
+                    )
+                    """,
+                    (client["id"],),
+                )
+
+            conn.commit()
+
+            return {
+                "client": client,
+                "consent": consent,
+                "documents_complete": documents_complete,
+            }
 
 
 def upsert_parity_user(

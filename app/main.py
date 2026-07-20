@@ -7,12 +7,16 @@ from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
+from .auth import get_parity_user_id
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
 choose_defined_floor_match,
  inspect_table,
 )
+
+from .routes.advisory import router as advisory_router
+
 
 
 from .db import (
@@ -44,7 +48,7 @@ from .portfolio_dashboard_engine import calculate_portfolio_dashboard
 
 app = FastAPI(title="Parity SnapTrade API")
 
-
+app.include_router(advisory_router)
 @app.on_event("startup")
 def startup():
     init_db()
@@ -64,11 +68,6 @@ snaptrade = SnapTrade(
 )
 
 
-def get_parity_user_id(request: Request) -> str:
-    user_id = request.headers.get("X-Parity-User-Id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Missing X-Parity-User-Id")
-    return user_id
 
 
 class RecommendationRunRequest(BaseModel):

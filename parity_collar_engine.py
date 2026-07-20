@@ -309,7 +309,7 @@ def build_zero_cost_dividend_floor_collar(
         invested_amount = underlying notional + net option debit
 
     Selection hierarchy:
-    1. Prefer collars that meet the requested floor and cost 0–50 bps.
+    1. Prefer collars that meet the requested floor and cost 0â€“50 bps.
     2. If none exist, return the lowest-debit collar meeting the floor.
     3. If no collar meets the floor, return the closest available floor.
     4. Within the selected pool, maximize upside.
@@ -1595,18 +1595,23 @@ def build_zero_cost_target_cap_buffer(
     assumed_dividend_yield=0.01,
     target_buffer_pct=0.10,
     max_near_zero_bps=25,
-    max_debit_bps=10,
     buffer_tolerance_pct=0.015,
 ):
     """
     Product: Buffered Growth
-    
-    Correct logic:
-    1. Pick long put near dividend-adjusted spot.
-    2. Pick short put near long_put_strike - target_buffer_pct * spot.
-    3. Enforce the requested buffer as the product definition.
-    4. Find the highest-cap short call whose resulting net debit
-       remains within the permitted debit budget.
+
+    Construction logic:
+    1. Pick the long put near dividend-adjusted spot.
+    2. Pick the short put near the requested buffer width.
+    3. Enforce the requested buffer before optimizing cost.
+    4. Prefer a zero-cost or smallest-debit structure; net credits are
+       not accepted.
+    5. Calculate returns using the total cash required today:
+
+           invested_amount = underlying_notional + net option debit
+
+       The option debit is included in the initial investment and is not
+       subtracted again from terminal values.
     """
 
     g = expiry_chain.copy()
@@ -1615,9 +1620,13 @@ def build_zero_cost_target_cap_buffer(
 
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())
-    notional = spot * MULT
+    underlying_notional = spot * MULT
 
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
+    expected_dividend_dollars = (
+        underlying_notional
+        * assumed_dividend_yield
+        * (dte / 365.25)
+    )
     expected_dividend_per_share = expected_dividend_dollars / MULT
 
     long_put_target = spot - expected_dividend_per_share
@@ -1626,18 +1635,22 @@ def build_zero_cost_target_cap_buffer(
         (g["strike"] < spot)
         & (g["putBidPrice"] > 0)
         & (g["putAskPrice"] > 0)
+        & np.isfinite(g["putMid"])
+        & (g["putMid"] > 0)
     ].copy()
-    
+
     valid_calls = g[
         (g["strike"] > spot)
         & (g["callBidPrice"] > 0)
         & (g["callAskPrice"] > 0)
+        & np.isfinite(g["callMid"])
+        & (g["callMid"] > 0)
     ].copy()
 
     if valid_puts.empty or valid_calls.empty:
         return None
 
-    # 1. Long put near spot
+    # 1. Long put near dividend-adjusted spot.
     valid_puts["long_put_distance"] = (
         valid_puts["strike"] - long_put_target
     ).abs()
@@ -1650,8 +1663,10 @@ def build_zero_cost_target_cap_buffer(
     long_put_strike = float(long_put["strike"])
     long_put_cost = float(long_put["putMid"]) * MULT
 
-    # 2. Short put near requested buffer
-    short_put_target = long_put_strike - (spot * target_buffer_pct)
+    # 2. Short put near the requested buffer width.
+    short_put_target = long_put_strike - (
+        spot * target_buffer_pct
+    )
 
     short_put_candidates = valid_puts[
         valid_puts["strike"] < long_put_strike
@@ -1673,16 +1688,18 @@ def build_zero_cost_target_cap_buffer(
     )
 
     short_put_candidates["buffer_error"] = (
-        short_put_candidates["buffer_pct"] - target_buffer_pct
+        short_put_candidates["buffer_pct"]
+        - target_buffer_pct
     ).abs()
 
-    # HARD FILTER: do not allow a 5% buffer when we requested 10%
     buffer_pool = short_put_candidates[
-        short_put_candidates["buffer_error"] <= buffer_tolerance_pct
+        short_put_candidates["buffer_error"]
+        <= buffer_tolerance_pct
     ].copy()
 
     if buffer_pool.empty:
-        # fallback: closest actual buffer, but mark it as outside tolerance
+        # Use the closest available buffer when no listed strike falls
+        # within tolerance, and clearly flag the result as a fallback.
         buffer_pool = short_put_candidates.sort_values(
             ["buffer_error", "strike"],
             ascending=[True, False],
@@ -1701,40 +1718,83 @@ def build_zero_cost_target_cap_buffer(
         short_put_strike = float(short_put["strike"])
         short_put_credit = float(short_put["putMid"]) * MULT
 
-        buffer_width_points = long_put_strike - short_put_strike
+        buffer_width_points = (
+            long_put_strike - short_put_strike
+        )
         buffer_pct = buffer_width_points / spot
         buffer_error = abs(buffer_pct - target_buffer_pct)
 
         put_spread_cost = long_put_cost - short_put_credit
 
-        # 3. Now find the call that finances this buffer
+        # 3. Find the call that finances the put spread closest to zero.
         for _, call in valid_calls.iterrows():
             call_strike = float(call["strike"])
             call_credit = float(call["callMid"]) * MULT
 
             net_cost = put_spread_cost - call_credit
-            net_cost_bps = net_cost / notional * 10000
+            net_cost_bps = (
+                net_cost / underlying_notional * 10_000
+            )
             abs_net_cost_bps = abs(net_cost_bps)
 
-            invested_amount = notional + net_cost
-            
+            # Total cash required to establish the position.
+            invested_amount = underlying_notional + net_cost
+
+            if (
+                not np.isfinite(invested_amount)
+                or invested_amount <= 0
+            ):
+                continue
+
+            # Terminal values do not subtract option cost because the
+            # debit is already included in invested_amount.
             cap_value = (
                 call_strike * MULT
                 + expected_dividend_dollars
             )
-            
             cap_return = cap_value / invested_amount - 1
 
-            protected_start_return = long_put_strike / spot - 1
-            protected_end_return = short_put_strike / spot - 1
+            # Across the protected plateau, the underlying plus put
+            # spread finishes at the long-put strike, before dividends.
+            protected_zone_value = (
+                long_put_strike * MULT
+                + expected_dividend_dollars
+            )
+            protected_zone_return = (
+                protected_zone_value / invested_amount - 1
+            )
 
-            long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
-            short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
-            call_bid = float(call.get("callBidPrice", call["callMid"]))
+            # These two fields describe the buffer's location in terms
+            # of the underlying price, not the investor's net return.
+            protected_start_return = (
+                long_put_strike / spot - 1
+            )
+            protected_end_return = (
+                short_put_strike / spot - 1
+            )
 
-            worst_net_cost = (long_put_ask - short_put_bid - call_bid) * MULT
+            long_put_ask = float(
+                long_put.get("putAskPrice", long_put["putMid"])
+            )
+            short_put_bid = float(
+                short_put.get("putBidPrice", short_put["putMid"])
+            )
+            call_bid = float(
+                call.get("callBidPrice", call["callMid"])
+            )
+
+            worst_net_cost = (
+                long_put_ask
+                - short_put_bid
+                - call_bid
+            ) * MULT
+
             bid_ask_drag_dollars = worst_net_cost - net_cost
-            bid_ask_drag_bps = bid_ask_drag_dollars / notional * 10000
+            bid_ask_drag_bps = (
+                bid_ask_drag_dollars
+                / underlying_notional
+                * 10_000
+            )
 
             liq_score, total_volume, total_oi = liquidity_score(
                 long_put,
@@ -1752,13 +1812,15 @@ def build_zero_cost_target_cap_buffer(
                 "put_spread_cost": put_spread_cost,
                 "net_cost": net_cost,
                 "net_cost_bps": net_cost_bps,
-                "invested_amount": invested_amount,
                 "abs_net_cost_bps": abs_net_cost_bps,
+                "invested_amount": invested_amount,
                 "buffer_width_points": buffer_width_points,
                 "buffer_pct": buffer_pct,
                 "buffer_error": buffer_error,
                 "protected_start_return": protected_start_return,
                 "protected_end_return": protected_end_return,
+                "protected_zone_value": protected_zone_value,
+                "protected_zone_return": protected_zone_return,
                 "cap_value": cap_value,
                 "cap_return": cap_return,
                 "bid_ask_drag_bps": bid_ask_drag_bps,
@@ -1771,94 +1833,100 @@ def build_zero_cost_target_cap_buffer(
         return None
 
     candidates = pd.DataFrame(rows)
-    
+
+    # Enforce the requested buffer first. If no listed strikes are
+    # within tolerance, retain only the closest achievable buffer.
     buffer_eligible = candidates[
         candidates["buffer_error"] <= buffer_tolerance_pct
     ].copy()
-    
+
     if buffer_eligible.empty:
-        minimum_buffer_error = candidates["buffer_error"].min()
-    
+        minimum_buffer_error = float(
+            candidates["buffer_error"].min()
+        )
         buffer_eligible = candidates[
             np.isclose(
                 candidates["buffer_error"],
                 minimum_buffer_error,
                 atol=1e-10,
-                rtol=0
+                rtol=0,
             )
         ].copy()
-    
         buffer_exact_match = False
-    
-    debit_eligible = buffer_eligible[
-        (buffer_eligible["net_cost_bps"] >= 0)
-        & (buffer_eligible["net_cost_bps"] <= max_debit_bps)
+
+    # Product rule: zero cost or smallest debit. Do not return credits.
+    non_credit_candidates = buffer_eligible[
+        buffer_eligible["net_cost_bps"] >= 0
     ].copy()
-    
-    if not debit_eligible.empty:
-        selection_mode = "maximize_cap_within_debit_budget"
-    
-        best = debit_eligible.sort_values(
-            [
-                "cap_return",
-                "net_cost_bps",
-                "bid_ask_drag_bps",
-                "total_oi",
-            ],
-            ascending=[False, True, True, False],
-        ).iloc[0]
-    
+
+    if non_credit_candidates.empty:
+        return None
+
+    near_zero_candidates = non_credit_candidates[
+        non_credit_candidates["net_cost_bps"]
+        <= max_near_zero_bps
+    ].copy()
+
+    if not near_zero_candidates.empty:
+        selection_pool = near_zero_candidates
+        selection_mode = "near_zero"
+        outside_tolerance = False
     else:
-        positive_debits = buffer_eligible[
-            buffer_eligible["net_cost_bps"] >= 0
+        minimum_debit_bps = float(
+            non_credit_candidates["net_cost_bps"].min()
+        )
+        selection_pool = non_credit_candidates[
+            np.isclose(
+                non_credit_candidates["net_cost_bps"],
+                minimum_debit_bps,
+                atol=0.01,
+                rtol=0,
+            )
         ].copy()
-    
-        if not positive_debits.empty:
-            selection_mode = "lowest_debit_fallback"
-    
-            best = positive_debits.sort_values(
-                [
-                    "net_cost_bps",
-                    "cap_return",
-                    "bid_ask_drag_bps",
-                    "total_oi",
-                ],
-                ascending=[True, False, True, False],
-            ).iloc[0]
-    
-        else:
-            selection_mode = "closest_to_zero_credit_fallback"
-    
-            best = buffer_eligible.sort_values(
-                [
-                    "abs_net_cost_bps",
-                    "cap_return",
-                    "bid_ask_drag_bps",
-                    "total_oi",
-                ],
-                ascending=[True, False, True, False],
-            ).iloc[0]
+        selection_mode = "lowest_debit"
+        outside_tolerance = True
+
+    # Buffer and cost priorities have already been enforced. Maximize
+    # cap, then prefer lower execution drag and greater liquidity.
+    best = selection_pool.sort_values(
+        [
+            "cap_return",
+            "net_cost_bps",
+            "bid_ask_drag_bps",
+            "total_oi",
+        ],
+        ascending=[False, True, True, False],
+    ).iloc[0]
+
     net_cost = float(best["net_cost"])
     net_cost_bps = float(best["net_cost_bps"])
     invested_amount = float(best["invested_amount"])
 
-    if abs(net_cost_bps) <= max_near_zero_bps:
+    near_zero_cost_ok = bool(
+        0 <= net_cost_bps <= max_near_zero_bps
+    )
+
+    if near_zero_cost_ok:
         cost_display_label = "approximately $0"
-    elif net_cost > 0:
-        cost_display_label = "small debit"
     else:
-        cost_display_label = "small credit"
+        cost_display_label = "debit"
 
     return make_json_safe({
         "product_name": "Buffered Growth",
         "strategy": "buffered_collar_first_loss",
         "structure": "buffer",
-        "backend_structure": "long_underlying_plus_long_put_short_put_short_call",
+        "backend_structure": (
+            "long_underlying_plus_long_put_short_put_short_call"
+        ),
         "expirDate": g["expirDate"].iloc[0],
         "dte": dte,
         "spot": spot,
-        "notional": notional,
-        "underlying_notional": notional,
+
+        # Backward-compatible notional field.
+        "notional": underlying_notional,
+        "underlying_notional": underlying_notional,
+
+        # Actual return denominator.
         "invested_amount": invested_amount,
         "investment_required_today": invested_amount,
 
@@ -1866,6 +1934,7 @@ def build_zero_cost_target_cap_buffer(
         "expected_dividend_dollars": expected_dividend_dollars,
         "expected_dividend_per_share": expected_dividend_per_share,
 
+        "target_gain_pct": target_gain_pct,
         "target_buffer_pct": target_buffer_pct,
         "actual_buffer_pct": float(best["buffer_pct"]),
         "buffer_error": float(best["buffer_error"]),
@@ -1879,20 +1948,38 @@ def build_zero_cost_target_cap_buffer(
         "call_strike": float(best["call_strike"]),
 
         "long_put_cost_dollars": float(best["long_put_cost"]),
-        "short_put_credit_dollars": float(best["short_put_credit"]),
+        "short_put_credit_dollars": float(
+            best["short_put_credit"]
+        ),
         "put_spread_cost_dollars": float(best["put_spread_cost"]),
         "call_credit_dollars": float(best["call_credit"]),
         "net_cost_dollars": net_cost,
         "net_cost_bps": net_cost_bps,
 
-        "near_zero_cost_ok": abs(net_cost_bps) <= max_near_zero_bps,
+        "near_zero_cost_ok": near_zero_cost_ok,
+        "cost_limit_met": near_zero_cost_ok,
+        "outside_tolerance": outside_tolerance,
+        "selection_mode": selection_mode,
         "max_near_zero_bps": max_near_zero_bps,
 
         "buffer_width_points": float(best["buffer_width_points"]),
         "buffer_pct": float(best["buffer_pct"]),
 
-        "protected_start_return": float(best["protected_start_return"]),
-        "protected_end_return": float(best["protected_end_return"]),
+        # Underlying-price locations of the protected zone.
+        "protected_start_return": float(
+            best["protected_start_return"]
+        ),
+        "protected_end_return": float(
+            best["protected_end_return"]
+        ),
+
+        # Investor economics on the protected plateau.
+        "protected_zone_value": float(
+            best["protected_zone_value"]
+        ),
+        "protected_zone_return": float(
+            best["protected_zone_return"]
+        ),
 
         "cap_value": float(best["cap_value"]),
         "cap_return": float(best["cap_return"]),
@@ -1900,44 +1987,51 @@ def build_zero_cost_target_cap_buffer(
         "floor_value": None,
         "floor_return": None,
         "max_loss_dollars": None,
-        # "max_gain_dollars": float(best["cap_value"]) - notional,
-        "max_gain_dollars": float(best["cap_value"]) - invested_amount,
+        "max_gain_dollars": (
+            float(best["cap_value"]) - invested_amount
+        ),
+
         "bid_ask_drag_bps": float(best["bid_ask_drag_bps"]),
         "total_volume": float(best["total_volume"]),
         "total_oi": float(best["total_oi"]),
         "liquidity_score": float(best["liquidity_score"]),
-        "max_debit_bps": max_debit_bps,
-        "selection_mode": selection_mode,
-        "debit_budget_dollars": notional * max_debit_bps / 10_000,
-        "debit_budget_met": bool(
-            0 <= net_cost_bps <= max_debit_bps
-        ),
 
         "display": {
             "title": "Buffered Growth",
             "subtitle": "First-loss buffer with capped upside",
-            "estimated_buffer_pct": round_pct(float(best["buffer_pct"])),
-            "estimated_cap_pct": round_pct(float(best["cap_return"])),
-            "protected_start_pct": round_pct(float(best["protected_start_return"])),
-            "protected_end_pct": round_pct(float(best["protected_end_return"])),
+            "investment_required_today": invested_amount,
+            "estimated_buffer_pct": round_pct(
+                float(best["buffer_pct"])
+            ),
+            "estimated_cap_pct": round_pct(
+                float(best["cap_return"])
+            ),
+            "protected_start_pct": round_pct(
+                float(best["protected_start_return"])
+            ),
+            "protected_end_pct": round_pct(
+                float(best["protected_end_return"])
+            ),
+            "protected_zone_pct": round_pct(
+                float(best["protected_zone_return"])
+            ),
             "estimated_option_cost_dollars": net_cost,
-            "estimated_option_cost_label": cost_display_label,
             "estimated_option_cost_bps": net_cost_bps,
-            "max_debit_bps": max_debit_bps,
-            "debit_budget_dollars": (
-                notional * max_debit_bps / 10_000
+            "estimated_option_cost_label": cost_display_label,
+            "estimated_dividends_dollars": (
+                expected_dividend_dollars
             ),
-            "debit_budget_met": bool(
-                0 <= net_cost_bps <= max_debit_bps
-            ),
+            "cost_limit_met": near_zero_cost_ok,
             "selection_mode": selection_mode,
-            "estimated_dividends_dollars": expected_dividend_dollars,
             "explanation": (
-                "Designed to help offset the first part of market losses using a put spread. "
-                "Upside is capped in exchange for defined downside protection."
+                "Returns are calculated using the total amount required "
+                "to establish the position, including any net option "
+                "debit. Estimated dividends are included in terminal "
+                "outcomes."
             ),
         },
     })
+
 # ============================================================
 # 7. PRODUCT RECOMMENDATION PAYLOAD
 # ============================================================
@@ -1958,7 +2052,6 @@ def build_defined_outcome_recommendations(
     target_gain_pct=0.08,
     assumed_dividend_yield=0.01,
     target_buffer_pct=0.10,
-    max_buffer_debit_bps=100,
 ):
     """
     Builds the two Phase 1 products for Base44:
@@ -1993,11 +2086,10 @@ def build_defined_outcome_recommendations(
     )
 
     buffer = build_zero_cost_target_cap_buffer(
-        expiry_chain,
-        target_gain_pct=target_gain_pct,
-        assumed_dividend_yield=assumed_dividend_yield,
-        target_buffer_pct=target_buffer_pct,
-        max_debit_bps=max_buffer_debit_bps,
+    expiry_chain,
+    target_gain_pct=target_gain_pct,
+    assumed_dividend_yield=assumed_dividend_yield,
+    target_buffer_pct=target_buffer_pct,  # ADD THIS LINE 
     )
 
     payload = {
@@ -2010,11 +2102,10 @@ def build_defined_outcome_recommendations(
                 "Expected dividends are included in terminal economics only. "
                 "They are not assumed to be available upfront."
             ),
-         "cost_note": (
-            "Buffered Growth maximizes upside within the permitted net debit "
-            "budget. A credit structure may be returned only when no "
-            "non-credit structure is available."
-        ),
+            "cost_note": (
+                "Products are constructed using zero-or-smallest-debit option cost. "
+                "Net credits are not accepted."
+            ),
         },
         "products": {
             "defined_floor": collar,
@@ -2074,12 +2165,12 @@ def find_classic_and_buffered_collars(
     #     max_buffer_pct=max_buffer_pct,
     # )
     buffer = build_zero_cost_target_cap_buffer(
-        expiry_chain,
-        target_gain_pct=target_gain_pct,
-        assumed_dividend_yield=assumed_dividend_yield,
-        target_buffer_pct=put_buffer_pct,
-        max_debit_bps=max_net_cost_bps,
-    )
+    expiry_chain,
+    target_gain_pct=target_gain_pct,
+    assumed_dividend_yield=assumed_dividend_yield,
+    target_buffer_pct=put_buffer_pct,
+)
+
 
     rows = []
 
@@ -2271,9 +2362,6 @@ def build_married_put(
         "dte": dte,
         "spot": spot,
         "notional": notional,
-        "underlying_notional": notional,
-        "invested_amount": invested_amount,
-        "investment_required_today": invested_amount,
 
         "assumed_dividend_yield": assumed_dividend_yield,
         "expected_dividend_dollars": expected_dividend_dollars,

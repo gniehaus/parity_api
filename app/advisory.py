@@ -3,7 +3,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .db import record_client_consent,get_advisory_status
+from .db import record_client_consent,get_advisory_status, create_advisory_client
 from .auth import get_parity_user_id
 
 router = APIRouter(
@@ -34,6 +34,25 @@ class RecordConsentRequest(BaseModel):
     signature_reference: str | None = None
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+@router.post("/client")
+def create_client(request: Request):
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        return create_advisory_client(parity_user_id)
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        ) from exc
 
 @router.get("/documents")
 def get_documents():

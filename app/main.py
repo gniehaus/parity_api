@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
-
+from defined_outcome_service import get_page
 
 
 from .db import (
@@ -387,6 +387,17 @@ def investor_profile_get(request: Request):
         "completed": bool(profile["completed"]),
         "profile": profile,
     }
+
+
+@app.get("/test-defined-outcomes")
+def test_defined_outcomes():
+    html = get_page()
+
+    return {
+        "length": len(html)
+    }
+
+
 
 
 

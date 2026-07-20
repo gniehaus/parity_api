@@ -64,14 +64,32 @@ def create_client(
             detail=str(exc),
         ) from exc
 
+import logging
+
+from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
+
+
 @router.get("/documents")
 def get_documents():
-    documents = get_active_advisory_documents()
+    try:
+        documents = get_active_advisory_documents()
 
-    return {
-        "count": len(documents),
-        "documents": documents,
-    }
+        return {
+            "count": len(documents),
+            "documents": documents,
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Failed to load advisory documents"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load advisory documents: {exc}",
+        ) from exc
 
 @router.get("/status")
 def advisory_status(request: Request):

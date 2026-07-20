@@ -7,7 +7,11 @@ from pydantic import BaseModel
 from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
-from .defined_outcome_service import inspect_table,get_defined_outcome
+from .defined_outcome_service import (
+    choose_defined_outcome_match,
+    get_defined_outcome,
+ inspect_table,
+)
 
 
 from .db import (
@@ -64,31 +68,6 @@ def get_parity_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Missing X-Parity-User-Id")
     return user_id
-
-class RecommendationRunRequest(BaseModel):
-    engine_version: str = "v1"
-
-    profile_version: str | None = "v1"
-    profile_payload: Dict[str, Any]
-
-    portfolio_signature: str
-    portfolio_payload: Dict[str, Any] | None = None
-
-    accounts_count: int = 0
-    total_assets: float | None = None
-    cash_pct: float | None = None
-    portfolio_iv: float | None = None
-
-    analysis_only: bool = False
-    aggregate_benefit: float | None = None
-
-    hero_title: str | None = None
-    hero_ticker: str | None = None
-
-    market_data_timestamp: str | None = None
-
-    recommendations: List[Dict[str, Any]] = []
-    findings: List[Dict[str, Any]] = []
 
 
 class RecommendationRunRequest(BaseModel):
@@ -387,6 +366,62 @@ def investor_profile_get(request: Request):
         "completed": bool(profile["completed"]),
         "profile": profile,
     }
+
+
+from fastapi import HTTPException, Query
+
+
+@app.get("/api/defined-outcomes/match")
+def match_defined_outcome(
+    reference_asset: str = Query(
+        description="SPY, QQQ, EFA, or EEM"
+    ),
+    target_buffer: float = Query(
+        ge=0,
+        le=100,
+        description="User's requested remaining buffer percentage",
+    ),
+    maximum_buffer_difference: float = Query(
+        default=5,
+        ge=0,
+        le=100,
+        description="Largest acceptable difference from the requested buffer",
+    ),
+):
+    try:
+        result = choose_defined_outcome_match(
+            reference_asset=reference_asset,
+            target_buffer=target_buffer,
+            maximum_buffer_difference=maximum_buffer_difference,
+        )
+
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No approved buffer ETF is sufficiently close "
+                    "to the requested remaining buffer."
+                ),
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unable to retrieve defined outcome data: "
+                f"{exc}"
+            ),
+        ) from exc
+
 
 
 @app.get("/test-defined-outcome-table")

@@ -127,57 +127,270 @@ def parse_date(value: Any) -> str | None:
     return parsed.date().isoformat()
 
 
-def get_defined_outcome(ticker: str) -> dict:
-    table = get_product_table()
+def get_defined_outcome(ticker: str) -> dict[str, Any]:
+    normalized_ticker = ticker.strip().upper()
 
-    normalized_ticker = ticker.strip().lower()
+    products = get_all_defined_outcomes()
 
-    matches = table[
-        table["ticker"].astype(str).str.strip().str.lower()
-        == normalized_ticker
-    ]
+    match = next(
+        (
+            product
+            for product in products
+            if product["ticker"] == normalized_ticker
+        ),
+        None,
+    )
 
-    if matches.empty:
-        raise ValueError(f"{ticker.upper()} was not found")
-
-    row = matches.iloc[0]
+    if match is None:
+        raise ValueError(
+            f"{normalized_ticker} was not found"
+        )
 
     return {
-        "ticker": str(row["ticker"]).upper(),
-        "name": str(row["name"]),
-        "series": str(row["series"]),
-        "reference_asset": str(row["reference asset"]),
-        "fund_price": parse_number(row["fund price"]),
-        "fund_return": parse_number(row["fund return"]),
+        **match,
+        "retrieved_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "source": "Innovator public defined outcome table",
+    }
+
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any
+
+
+SUPPORTED_REFERENCE_ASSETS = {
+    "SPY",
+    "QQQ",
+    "EFA",
+    "EEM",
+}
+
+# A product must actually be a buffer strategy.
+REQUIRED_STRATEGY_TERMS = {
+    "buffer",
+}
+
+# These are explicitly prohibited, even if Innovator adds names
+# that also contain the word "buffer."
+BLOCKED_STRATEGY_TERMS = {
+    "accelerated",
+    "dual directional",
+    "ultra buffer",
+    "floor",
+    "premium income",
+    "defined protection",
+    "managed floor",
+}
+
+
+def safe_string(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if not text or text.lower() == "nan":
+        return None
+
+    return text
+
+
+def normalize_product_row(row: Any) -> dict[str, Any]:
+    days_remaining_value = parse_number(
+        row.get("remaining outcome period")
+    )
+
+    return {
+        "ticker": safe_string(row.get("ticker")).upper(),
+        "name": safe_string(row.get("name")),
+        "series": safe_string(row.get("series")),
+        "reference_asset": safe_string(
+            row.get("reference asset")
+        ).upper(),
+        "fund_price": parse_number(row.get("fund price")),
+        "fund_return": parse_number(row.get("fund return")),
         "reference_asset_return": parse_number(
-            row["ref. asset return"]
+            row.get("ref. asset return")
         ),
-        "remaining_cap": parse_number(row["remaining cap"]),
+        "remaining_cap": parse_number(
+            row.get("remaining cap")
+        ),
         "remaining_buffer": parse_number(
-            row["remaining buffer"]
+            row.get("remaining buffer")
         ),
         "downside_before_buffer": parse_number(
-            row["downside before buffer"]
+            row.get("downside before buffer")
         ),
-        "days_remaining": int(
-            parse_number(row["remaining outcome period"])
+        "days_remaining": (
+            int(days_remaining_value)
+            if days_remaining_value is not None
+            else None
         ),
-        "starting_cap": parse_number(row["starting cap"]),
+        "starting_cap": parse_number(
+            row.get("starting cap")
+        ),
         "outcome_start": parse_date(
-            row["outcome period start date"]
+            row.get("outcome period start date")
         ),
         "outcome_end": parse_date(
-            row["outcome period end date"]
+            row.get("outcome period end date")
         ),
         "starting_reference_asset_price": parse_number(
-            row["starting ref asset price"]
+            row.get("starting ref asset price")
         ),
         "starting_etf_share_price": parse_number(
-            row["starting etf share price"]
+            row.get("starting etf share price")
         ),
         "reference_asset_price": parse_number(
-            row["index price"]
+            row.get("index price")
         ),
-        "max_nav": parse_number(row["max nav"]),
+        "max_nav": parse_number(row.get("max nav")),
+    }
+
+
+def get_all_defined_outcomes() -> list[dict[str, Any]]:
+    table = get_product_table()
+
+    products: list[dict[str, Any]] = []
+
+    for _, row in table.iterrows():
+        try:
+            product = normalize_product_row(row)
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+        if not product.get("ticker"):
+            continue
+
+        products.append(product)
+
+    return products
+
+
+def is_approved_buffer_product(
+    product: dict[str, Any],
+    *,
+    minimum_days_remaining: int = 90,
+) -> bool:
+    name = str(product.get("name") or "").lower()
+    reference_asset = str(
+        product.get("reference_asset") or ""
+    ).upper()
+
+    remaining_buffer = product.get("remaining_buffer")
+    remaining_cap = product.get("remaining_cap")
+    days_remaining = product.get("days_remaining")
+
+    has_required_strategy = all(
+        term in name
+        for term in REQUIRED_STRATEGY_TERMS
+    )
+
+    has_blocked_strategy = any(
+        term in name
+        for term in BLOCKED_STRATEGY_TERMS
+    )
+
+    return (
+        reference_asset in SUPPORTED_REFERENCE_ASSETS
+        and has_required_strategy
+        and not has_blocked_strategy
+        and remaining_buffer is not None
+        and remaining_cap is not None
+        and remaining_cap > 0
+        and days_remaining is not None
+        and days_remaining >= minimum_days_remaining
+    )
+
+
+def choose_defined_outcome_match(
+    *,
+    reference_asset: str,
+    target_buffer: float,
+    maximum_buffer_difference: float = 5.0,
+    minimum_days_remaining: int = 90,
+) -> dict[str, Any] | None:
+    normalized_asset = reference_asset.strip().upper()
+
+    if normalized_asset not in SUPPORTED_REFERENCE_ASSETS:
+        raise ValueError(
+            "reference_asset must be SPY, QQQ, EFA, or EEM"
+        )
+
+    if not math.isfinite(target_buffer):
+        raise ValueError("target_buffer must be a finite number")
+
+    if target_buffer < 0 or target_buffer > 100:
+        raise ValueError(
+            "target_buffer must be between 0 and 100"
+        )
+
+    if maximum_buffer_difference < 0:
+        raise ValueError(
+            "maximum_buffer_difference cannot be negative"
+        )
+
+    products = get_all_defined_outcomes()
+
+    candidates = [
+        product
+        for product in products
+        if (
+            product["reference_asset"] == normalized_asset
+            and is_approved_buffer_product(
+                product,
+                minimum_days_remaining=minimum_days_remaining,
+            )
+        )
+    ]
+
+    if not candidates:
+        return None
+
+    # Ranking order:
+    # 1. Remaining buffer closest to the user's input
+    # 2. Higher remaining cap
+    # 3. More time remaining
+    candidates.sort(
+        key=lambda product: (
+            abs(
+                product["remaining_buffer"]
+                - target_buffer
+            ),
+            -product["remaining_cap"],
+            -product["days_remaining"],
+        )
+    )
+
+    match = candidates[0]
+
+    absolute_difference = abs(
+        match["remaining_buffer"] - target_buffer
+    )
+
+    # Do not pretend a poor match is suitable.
+    if absolute_difference > maximum_buffer_difference:
+        return None
+
+    return {
+        "requested": {
+            "reference_asset": normalized_asset,
+            "target_buffer": target_buffer,
+        },
+        "match": match,
+        "buffer_difference": round(
+            match["remaining_buffer"] - target_buffer,
+            2,
+        ),
+        "absolute_buffer_difference": round(
+            absolute_difference,
+            2,
+        ),
+        "retrieved_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
         "source": "Innovator public defined outcome table",
     }

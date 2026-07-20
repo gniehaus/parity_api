@@ -154,7 +154,6 @@ def get_defined_outcome(ticker: str) -> dict[str, Any]:
         "source": "Innovator public defined outcome table",
     }
 
-from __future__ import annotations
 
 import math
 from datetime import datetime, timezone

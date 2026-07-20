@@ -15,7 +15,7 @@ choose_defined_floor_match,
  inspect_table,
 )
 
-from .routes.advisory import router as advisory_router
+from .advisory import router as advisory_router
 
 
 

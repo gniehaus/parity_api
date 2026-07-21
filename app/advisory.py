@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from .db import record_client_consent,get_advisory_status, create_advisory_client
 from .auth import get_parity_user_id
-
+from .s3 import generate_document_url
 router = APIRouter(
     prefix="/api/advisory",
     tags=["advisory"],
@@ -71,10 +71,28 @@ from fastapi import HTTPException
 logger = logging.getLogger(__name__)
 
 
+import logging
+
+from fastapi import HTTPException
+
+from ..s3 import generate_document_url
+
+logger = logging.getLogger(__name__)
+
+
 @router.get("/documents")
 def get_documents():
     try:
         documents = get_active_advisory_documents()
+
+        for document in documents:
+            storage_location = document.get("storage_location")
+
+            document["download_url"] = (
+                generate_document_url(storage_location)
+                if storage_location
+                else None
+            )
 
         return {
             "count": len(documents),
@@ -82,15 +100,14 @@ def get_documents():
         }
 
     except Exception as exc:
-        logger.exception(
-            "Failed to load advisory documents"
-        )
+        logger.exception("Failed to load advisory documents")
 
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load advisory documents: {exc}",
         ) from exc
 
+        
 @router.get("/status")
 def advisory_status(request: Request):
     parity_user_id = get_parity_user_id(request)

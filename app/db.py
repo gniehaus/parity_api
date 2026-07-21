@@ -760,23 +760,31 @@ def create_advisory_client(
             
 from typing import Any
 
-def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
+def get_investor_profile(
+    parity_user_id: str,
+) -> dict[str, Any] | None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT
                     parity_user_id,
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed,
                     completed_at,
                     raw_json,
@@ -788,8 +796,9 @@ def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
                 (parity_user_id,),
             )
 
-            row = cur.fetchone()
-            return row if row else None
+            profile = cur.fetchone()
+
+            return profile if profile else None
 
 
 import json

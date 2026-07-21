@@ -792,27 +792,42 @@ def get_investor_profile(parity_user_id: str) -> dict[str, Any] | None:
             return row if row else None
 
 
+import json
+from datetime import date
+from typing import Any
+
+
 def upsert_investor_profile(
     parity_user_id: str,
-    recommendation_use: str | None = None,
-    primary_goal: str | None = None,
-    max_acceptable_loss: float | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    phone: str | None = None,
+    date_of_birth: date | str | None = None,
+    address_line1: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    zip: str | None = None,
+    investment_objective: str | None = None,
+    risk_tolerance: str | None = None,
     time_horizon: str | None = None,
-    liquidity_need: str | None = None,
-    tradeoff_preference: str | None = None,
-    investment_experience: str | None = None,
-    scope: str | None = None,
-    new_investment_amount: float | None = None,
-    contradiction_acknowledged: bool = False,
+    annual_income: str | None = None,
+    net_worth: str | None = None,
+    investable_assets: str | None = None,
+    options_experience: str | None = None,
+    liquidity_needs: str | None = None,
     completed: bool = False,
     raw: dict | None = None,
 ) -> dict[str, Any]:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Ensure a parent user exists before inserting the profile.
+            # Ensure the parent user exists before inserting the profile.
             cur.execute(
                 """
-                INSERT INTO parity_users (id, created_at, last_login_at)
+                INSERT INTO parity_users (
+                    id,
+                    created_at,
+                    last_login_at
+                )
                 VALUES (%s, NOW(), NOW())
                 ON CONFLICT (id)
                 DO UPDATE SET last_login_at = NOW()
@@ -824,16 +839,22 @@ def upsert_investor_profile(
                 """
                 INSERT INTO investor_profiles (
                     parity_user_id,
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed,
                     completed_at,
                     raw_json,
@@ -841,26 +862,39 @@ def upsert_investor_profile(
                     updated_at
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    CASE WHEN %s = TRUE THEN NOW() ELSE NULL END,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    CASE
+                        WHEN %s = TRUE THEN NOW()
+                        ELSE NULL
+                    END,
                     %s::jsonb,
                     NOW(),
                     NOW()
                 )
                 ON CONFLICT (parity_user_id)
                 DO UPDATE SET
-                    recommendation_use = EXCLUDED.recommendation_use,
-                    primary_goal = EXCLUDED.primary_goal,
-                    max_acceptable_loss = EXCLUDED.max_acceptable_loss,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    phone = EXCLUDED.phone,
+                    date_of_birth = EXCLUDED.date_of_birth,
+                    address_line1 = EXCLUDED.address_line1,
+                    city = EXCLUDED.city,
+                    state = EXCLUDED.state,
+                    zip = EXCLUDED.zip,
+                    investment_objective =
+                        EXCLUDED.investment_objective,
+                    risk_tolerance = EXCLUDED.risk_tolerance,
                     time_horizon = EXCLUDED.time_horizon,
-                    liquidity_need = EXCLUDED.liquidity_need,
-                    tradeoff_preference = EXCLUDED.tradeoff_preference,
-                    investment_experience = EXCLUDED.investment_experience,
-                    scope = EXCLUDED.scope,
-                    new_investment_amount = EXCLUDED.new_investment_amount,
-                    contradiction_acknowledged =
-                        EXCLUDED.contradiction_acknowledged,
+                    annual_income = EXCLUDED.annual_income,
+                    net_worth = EXCLUDED.net_worth,
+                    investable_assets =
+                        EXCLUDED.investable_assets,
+                    options_experience =
+                        EXCLUDED.options_experience,
+                    liquidity_needs = EXCLUDED.liquidity_needs,
                     completed = EXCLUDED.completed,
                     completed_at = CASE
                         WHEN EXCLUDED.completed = TRUE
@@ -876,16 +910,22 @@ def upsert_investor_profile(
                 """,
                 (
                     parity_user_id,
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed,
                     completed,
                     json.dumps(raw or {}),

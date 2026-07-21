@@ -121,19 +121,31 @@ class UserUpsertRequest(BaseModel):
     raw: dict | None = None
 
 
-class InvestorProfileRequest(BaseModel):
-    recommendation_use: str | None = None
-    primary_goal: str | None = None
-    max_acceptable_loss: float | None = None
-    time_horizon: str | None = None
-    liquidity_need: str | None = None
-    tradeoff_preference: str | None = None
-    investment_experience: str | None = None
-    scope: str | None = None
-    new_investment_amount: float | None = None
-    contradiction_acknowledged: bool = False
-    completed: bool = False
-    raw: dict | None = None
+from datetime import date
+from pydantic import BaseModel
+
+
+class InvestorProfilePayload(BaseModel):
+    first_name: str
+    last_name: str
+    phone: str
+    date_of_birth: date
+
+    address_line1: str
+    city: str
+    state: str
+    zip: str
+
+    investment_objective: str
+    risk_tolerance: str
+    time_horizon: str
+
+    annual_income: str
+    net_worth: str
+    investable_assets: str
+
+    options_experience: str
+    liquidity_needs: str
     
 class PlaidExchangeRequest(BaseModel):
     public_token: str
@@ -321,6 +333,7 @@ def expense_ratios(req: ExpenseRatioRequest):
 
 
 @app.put("/api/investor-profile")
+@app.put("/api/investor-profile")
 def investor_profile_put(
     req: InvestorProfileRequest,
     request: Request,
@@ -329,25 +342,36 @@ def investor_profile_put(
 
     result = save_investor_profile_and_invalidate_recommendations(
         parity_user_id=parity_user_id,
-        recommendation_use=req.recommendation_use,
-        primary_goal=req.primary_goal,
-        max_acceptable_loss=req.max_acceptable_loss,
+
+        # Step 1 - Client Profile
+        first_name=req.first_name,
+        last_name=req.last_name,
+        phone=req.phone,
+        date_of_birth=req.date_of_birth,
+        address_line1=req.address_line1,
+        city=req.city,
+        state=req.state,
+        zip=req.zip,
+
+        # Step 2 - Suitability
+        investment_objective=req.investment_objective,
+        risk_tolerance=req.risk_tolerance,
         time_horizon=req.time_horizon,
-        liquidity_need=req.liquidity_need,
-        tradeoff_preference=req.tradeoff_preference,
-        investment_experience=req.investment_experience,
-        scope=req.scope,
-        new_investment_amount=req.new_investment_amount,
-        contradiction_acknowledged=req.contradiction_acknowledged,
-        completed=req.completed,
-        raw=req.raw,
+        annual_income=req.annual_income,
+        net_worth=req.net_worth,
+        investable_assets=req.investable_assets,
+        options_experience=req.options_experience,
+        liquidity_needs=req.liquidity_needs,
+
+        # Backend-managed
+        completed=True,
+        raw=req.model_dump(mode="json"),
     )
 
     return {
         "status": "saved",
         **result,
     }
-
 @app.get("/api/investor-profile")
 def investor_profile_get(request: Request):
     parity_user_id = get_parity_user_id(request)

@@ -420,7 +420,7 @@ def init_db():
                 FOR EACH ROW
                 EXECUTE FUNCTION set_updated_at();
 
-                CREATE TABLE investor_profiles IF NOT EXISTS (
+                CREATE TABLE IF NOT EXISTS investor_profiles  (
                     parity_user_id TEXT PRIMARY KEY
                         REFERENCES parity_users(id)
                         ON DELETE CASCADE,

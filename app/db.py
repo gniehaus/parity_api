@@ -1759,8 +1759,6 @@ def get_advisory_status(parity_user_id: str) -> dict:
                 next_step = "documents"
             elif client["agreement_completed_at"] is None:
                 next_step = "advisory_agreement"
-            elif client["status"] != "active":
-                next_step = "brokerage_connection"
             else:
                 next_step = None
 
@@ -1970,11 +1968,13 @@ def record_client_consent(
             ):
                 cur.execute(
                     """
-                    UPDATE advisory_clients
-                    SET
-                        agreement_completed_at = NOW()
-                    WHERE id = %s
-                    RETURNING *
+                UPDATE advisory_clients
+                SET
+                    agreement_completed_at = NOW(),
+                    status = 'active',
+                    activated_at = NOW()
+                WHERE id = %s
+                RETURNING *
                     """,
                     (client["id"],),
                 )

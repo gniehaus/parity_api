@@ -1702,6 +1702,7 @@ import json
 def get_advisory_status(parity_user_id: str) -> dict:
     with get_conn() as conn:
         with conn.cursor() as cur:
+
             cur.execute(
                 """
                 SELECT
@@ -1724,19 +1725,41 @@ def get_advisory_status(parity_user_id: str) -> dict:
                     "next_step": "create_client",
                 }
 
-            documents_complete = (
-                client["agreement_completed_at"] is not None
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM advisory_documents d
+                WHERE d.required_for_activation = TRUE
+                  AND d.is_active = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM client_consents c
+                      WHERE c.client_id = %s
+                        AND c.document_id = d.id
+                        AND c.consent_type = 'accepted'
+                  )
+                """,
+                (client["id"],),
             )
+
+            remaining = cur.fetchone()["count"]
+
+            documents_complete = remaining == 0
+
+            if not documents_complete:
+                next_step = "documents"
+            elif client["agreement_completed_at"] is None:
+                next_step = "advisory_agreement"
+            elif client["status"] != "active":
+                next_step = "brokerage_connection"
+            else:
+                next_step = None
 
             return {
                 "exists": True,
                 "status": client["status"],
                 "documents_complete": documents_complete,
-                "next_step": (
-                    None
-                    if documents_complete
-                    else "documents"
-                ),
+                "next_step": next_step,
             }
 
 
@@ -1919,22 +1942,34 @@ def record_client_consent(
 
             documents_complete = remaining == 0
 
+            if documents_complete and client["status"] == "onboarding":
+                cur.execute(
+                    """
+                    UPDATE advisory_clients
+                    SET
+                        status = 'documents_complete'
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (client["id"],),
+                )
+                client = cur.fetchone()
+
             if (
-                documents_complete
-                and client["status"] == "onboarding"
+                document["document_type"] == "investment_advisory_agreement"
+                and consent_type == "accepted"
             ):
                 cur.execute(
                     """
                     UPDATE advisory_clients
                     SET
-                        status = 'documents_complete',
                         agreement_completed_at = NOW()
                     WHERE id = %s
                     RETURNING *
                     """,
                     (client["id"],),
                 )
-
+            
                 client = cur.fetchone()
 
                 cur.execute(
@@ -1947,7 +1982,7 @@ def record_client_consent(
                     )
                     VALUES (
                         %s,
-                        'DOCUMENTS_COMPLETE',
+                        'AGREEMENT_COMPLETED',
                         'system',
                         '{}'::jsonb
                     )

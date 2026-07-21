@@ -1430,42 +1430,77 @@ def get_current_recommendation_run(
                 "recommendations": recommendations,
                 "findings": findings,
             }
+import json
+from typing import Any
+
+
+PROFILE_FIELDS = (
+    "first_name",
+    "last_name",
+    "phone",
+    "date_of_birth",
+    "address_line1",
+    "city",
+    "state",
+    "zip",
+    "investment_objective",
+    "risk_tolerance",
+    "time_horizon",
+    "annual_income",
+    "net_worth",
+    "investable_assets",
+    "options_experience",
+    "liquidity_needs",
+    "completed",
+)
+
+
 def save_investor_profile_and_invalidate_recommendations(
     parity_user_id: str,
-    recommendation_use: str | None = None,
-    primary_goal: str | None = None,
-    max_acceptable_loss: float | None = None,
-    time_horizon: str | None = None,
-    liquidity_need: str | None = None,
-    tradeoff_preference: str | None = None,
-    investment_experience: str | None = None,
-    scope: str | None = None,
-    new_investment_amount: float | None = None,
-    contradiction_acknowledged: bool = False,
-    completed: bool = False,
+    first_name: str,
+    last_name: str,
+    phone: str,
+    date_of_birth,
+    address_line1: str,
+    city: str,
+    state: str,
+    zip: str,
+    investment_objective: str,
+    risk_tolerance: str,
+    time_horizon: str,
+    annual_income: str,
+    net_worth: str,
+    investable_assets: str,
+    options_experience: str,
+    liquidity_needs: str,
+    completed: bool = True,
     raw: dict | None = None,
 ) -> dict[str, Any]:
     """
-    Saves the user's current investor profile.
+    Save the user's current investor profile.
 
-    If any recommendation-relevant profile field changed, all existing
-    portfolio recommendations for that user are deleted in the same
-    transaction.
-
-    The frontend can then regenerate recommendations.
+    If any recommendation-relevant profile field changes, existing
+    portfolio recommendations for the user are deleted in the same
+    transaction so the frontend can regenerate them.
     """
 
     new_profile_values = {
-        "recommendation_use": recommendation_use,
-        "primary_goal": primary_goal,
-        "max_acceptable_loss": max_acceptable_loss,
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": phone,
+        "date_of_birth": date_of_birth,
+        "address_line1": address_line1,
+        "city": city,
+        "state": state,
+        "zip": zip,
+        "investment_objective": investment_objective,
+        "risk_tolerance": risk_tolerance,
         "time_horizon": time_horizon,
-        "liquidity_need": liquidity_need,
-        "tradeoff_preference": tradeoff_preference,
-        "investment_experience": investment_experience,
-        "scope": scope,
-        "new_investment_amount": new_investment_amount,
-        "contradiction_acknowledged": contradiction_acknowledged,
+        "annual_income": annual_income,
+        "net_worth": net_worth,
+        "investable_assets": investable_assets,
+        "options_experience": options_experience,
+        "liquidity_needs": liquidity_needs,
         "completed": completed,
     }
 
@@ -1487,20 +1522,26 @@ def save_investor_profile_and_invalidate_recommendations(
                 (parity_user_id,),
             )
 
-            # Lock the existing profile row while this transaction runs.
+            # Lock the existing profile row for this transaction.
             cur.execute(
                 """
                 SELECT
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed
                 FROM investor_profiles
                 WHERE parity_user_id = %s
@@ -1523,16 +1564,22 @@ def save_investor_profile_and_invalidate_recommendations(
                 """
                 INSERT INTO investor_profiles (
                     parity_user_id,
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed,
                     completed_at,
                     raw_json,
@@ -1540,6 +1587,12 @@ def save_investor_profile_and_invalidate_recommendations(
                     updated_at
                 )
                 VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
                     %s,
                     %s,
                     %s,
@@ -1562,17 +1615,24 @@ def save_investor_profile_and_invalidate_recommendations(
                 )
                 ON CONFLICT (parity_user_id)
                 DO UPDATE SET
-                    recommendation_use = EXCLUDED.recommendation_use,
-                    primary_goal = EXCLUDED.primary_goal,
-                    max_acceptable_loss = EXCLUDED.max_acceptable_loss,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    phone = EXCLUDED.phone,
+                    date_of_birth = EXCLUDED.date_of_birth,
+                    address_line1 = EXCLUDED.address_line1,
+                    city = EXCLUDED.city,
+                    state = EXCLUDED.state,
+                    zip = EXCLUDED.zip,
+                    investment_objective =
+                        EXCLUDED.investment_objective,
+                    risk_tolerance = EXCLUDED.risk_tolerance,
                     time_horizon = EXCLUDED.time_horizon,
-                    liquidity_need = EXCLUDED.liquidity_need,
-                    tradeoff_preference = EXCLUDED.tradeoff_preference,
-                    investment_experience = EXCLUDED.investment_experience,
-                    scope = EXCLUDED.scope,
-                    new_investment_amount = EXCLUDED.new_investment_amount,
-                    contradiction_acknowledged =
-                        EXCLUDED.contradiction_acknowledged,
+                    annual_income = EXCLUDED.annual_income,
+                    net_worth = EXCLUDED.net_worth,
+                    investable_assets = EXCLUDED.investable_assets,
+                    options_experience =
+                        EXCLUDED.options_experience,
+                    liquidity_needs = EXCLUDED.liquidity_needs,
                     completed = EXCLUDED.completed,
 
                     completed_at = CASE
@@ -1591,16 +1651,22 @@ def save_investor_profile_and_invalidate_recommendations(
                 """,
                 (
                     parity_user_id,
-                    recommendation_use,
-                    primary_goal,
-                    max_acceptable_loss,
+                    first_name,
+                    last_name,
+                    phone,
+                    date_of_birth,
+                    address_line1,
+                    city,
+                    state,
+                    zip,
+                    investment_objective,
+                    risk_tolerance,
                     time_horizon,
-                    liquidity_need,
-                    tradeoff_preference,
-                    investment_experience,
-                    scope,
-                    new_investment_amount,
-                    contradiction_acknowledged,
+                    annual_income,
+                    net_worth,
+                    investable_assets,
+                    options_experience,
+                    liquidity_needs,
                     completed,
                     completed,
                     json.dumps(raw or {}),

@@ -333,7 +333,6 @@ def expense_ratios(req: ExpenseRatioRequest):
 
 
 @app.put("/api/investor-profile")
-@app.put("/api/investor-profile")
 def investor_profile_put(
     req: InvestorProfilePayload,
     request: Request,

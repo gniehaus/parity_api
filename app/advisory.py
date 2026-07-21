@@ -75,7 +75,6 @@ import logging
 
 from fastapi import HTTPException
 
-from ..s3 import generate_document_url
 
 logger = logging.getLogger(__name__)
 

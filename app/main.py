@@ -335,7 +335,7 @@ def expense_ratios(req: ExpenseRatioRequest):
 @app.put("/api/investor-profile")
 @app.put("/api/investor-profile")
 def investor_profile_put(
-    req: InvestorProfileRequest,
+    req: InvestorProfilePayload,
     request: Request,
 ):
     parity_user_id = get_parity_user_id(request)

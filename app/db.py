@@ -420,33 +420,46 @@ def init_db():
                 FOR EACH ROW
                 EXECUTE FUNCTION set_updated_at();
 
-                CREATE TABLE IF NOT EXISTS investor_profiles (
+                CREATE TABLE investor_profiles (
                     parity_user_id TEXT PRIMARY KEY
                         REFERENCES parity_users(id)
                         ON DELETE CASCADE,
-            
-                    recommendation_use TEXT,
-                    primary_goal TEXT,
-                    max_acceptable_loss NUMERIC,
+                
+                    -- Personal information
+                    first_name TEXT,
+                    last_name TEXT,
+                    phone TEXT,
+                    date_of_birth DATE,
+                
+                    -- Address
+                    address_line1 TEXT,
+                    city TEXT,
+                    state CHAR(2),
+                    zip TEXT,
+                
+                    -- Suitability
+                    investment_objective TEXT,
+                    risk_tolerance TEXT,
                     time_horizon TEXT,
-                    liquidity_need TEXT,
-                    tradeoff_preference TEXT,
-                    investment_experience TEXT,
-                    scope TEXT,
-                    new_investment_amount NUMERIC,
-            
-                    contradiction_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+                
+                    annual_income TEXT,
+                    net_worth TEXT,
+                    investable_assets TEXT,
+                
+                    options_experience TEXT,
+                    liquidity_needs TEXT,
+                
                     completed BOOLEAN NOT NULL DEFAULT FALSE,
                     completed_at TIMESTAMPTZ,
-            
+                
                     raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-            
+                
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
-    CREATE INDEX IF NOT EXISTS idx_investor_profiles_completed
-    ON investor_profiles(completed);
+                CREATE INDEX IF NOT EXISTS idx_investor_profiles_completed
+                ON investor_profiles(completed);
 
                 CREATE TABLE IF NOT EXISTS snaptrade_users (
                     parity_user_id TEXT PRIMARY KEY,

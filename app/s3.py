@@ -1,6 +1,7 @@
 import os
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 
@@ -10,6 +11,12 @@ AWS_S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 s3_client = boto3.client(
     "s3",
     region_name=AWS_REGION,
+    config=Config(
+        signature_version="s3v4",
+        s3={
+            "addressing_style": "virtual",
+        },
+    ),
 )
 
 

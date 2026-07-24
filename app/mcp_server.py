@@ -6,7 +6,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from ..parity_collar_engine import (
+from .parity_collar_engine import (
     build_defined_outcome_recommendations,
     fetch_orats_chain,
 )

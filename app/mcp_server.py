@@ -1,13 +1,25 @@
+from typing import Annotated, Any
+
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
+from pydantic import Field
+
+from ..parity_collar_engine import (
+    build_defined_outcome_recommendations,
+    fetch_orats_chain,
+)
+
 
 parity_mcp = FastMCP(
     name="Parity Outcomes",
     instructions=(
-        "Provide illustrative defined-outcome analytics calculated from "
-        "user-entered parameters. Do not rank, select, recommend, connect "
-        "brokerages, or submit transactions."
+        "Calculate illustrative defined-outcome structures from the "
+        "security, time horizon, downside, upside, buffer, and dividend "
+        "parameters entered by the user. Explain tradeoffs factually. "
+        "Do not characterize any result as recommended or optimal. "
+        "Do not connect brokerages or submit transactions."
     ),
     stateless_http=True,
     json_response=True,
@@ -48,3 +60,142 @@ def parity_status() -> dict[str, str]:
         "service": "Parity Outcomes MCP",
         "version": "1.0.0",
     }
+
+
+@parity_mcp.tool(
+    name="model_defined_outcomes",
+    title="Model defined outcomes",
+    description=(
+        "Calculate illustrative Defined Floor and Buffered Growth structures "
+        "for 100 shares using live market data and parameters entered by the "
+        "user. Returns available strikes, expiration, downside, upside, "
+        "buffer, estimated costs, dividends, and liquidity information. "
+        "This tool does not recommend or execute a transaction."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def model_defined_outcomes(
+    symbol: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=12,
+            pattern=r"^[A-Za-z][A-Za-z0-9.\-]*$",
+            description="Stock, ETF, or index ticker, such as SPY or QQQ.",
+        ),
+    ],
+    target_days: Annotated[
+        int,
+        Field(
+            ge=30,
+            le=750,
+            description="Requested outcome period in calendar days.",
+        ),
+    ] = 365,
+    max_loss_percent: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=100,
+            description=(
+                "Maximum-loss input for the illustrative Defined Floor, "
+                "entered as a percentage. Enter 10 for 10%."
+            ),
+        ),
+    ] = 0.5,
+    target_gain_percent: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=200,
+            description=(
+                "Target-gain input for Buffered Growth, entered as a "
+                "percentage. Enter 8 for 8%."
+            ),
+        ),
+    ] = 8.0,
+    target_buffer_percent: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=100,
+            description=(
+                "Requested first-loss buffer, entered as a percentage. "
+                "Enter 10 for 10%."
+            ),
+        ),
+    ] = 10.0,
+    assumed_dividend_yield_percent: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=20,
+            description=(
+                "Annual dividend-yield assumption entered as a percentage. "
+                "Enter 1 for 1%."
+            ),
+        ),
+    ] = 1.0,
+) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+
+    try:
+        chain = fetch_orats_chain(ticker=ticker)
+
+        result = build_defined_outcome_recommendations(
+            df=chain,
+            ticker=ticker,
+            horizon=target_days,
+            max_loss_pct=max_loss_percent / 100,
+            target_gain_pct=target_gain_percent / 100,
+            target_buffer_pct=target_buffer_percent / 100,
+            assumed_dividend_yield=(
+                assumed_dividend_yield_percent / 100
+            ),
+        )
+
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+    except RuntimeError as exc:
+        raise ToolError(
+            "Live option-market data is currently unavailable."
+        ) from exc
+
+    except Exception as exc:
+        raise ToolError(
+            "Parity could not complete the requested calculation."
+        ) from exc
+
+    products = result.get("products", {})
+
+    if not products or not any(products.values()):
+        raise ToolError(
+            "No illustrative structures were available for the requested "
+            "security, parameters, and time horizon."
+        )
+
+    result["analysis_type"] = "illustrative_defined_outcome_calculation"
+    result["requested_parameters"] = {
+        "symbol": ticker,
+        "target_days": target_days,
+        "max_loss_percent": max_loss_percent,
+        "target_gain_percent": target_gain_percent,
+        "target_buffer_percent": target_buffer_percent,
+        "assumed_dividend_yield_percent": (
+            assumed_dividend_yield_percent
+        ),
+        "share_basis": 100,
+    }
+    result["disclosure"] = (
+        "Illustrative analysis based on available market data and the "
+        "parameters entered by the user. Options involve risk. Quotes and "
+        "available strikes can change, and actual execution prices may differ."
+    )
+
+    return result

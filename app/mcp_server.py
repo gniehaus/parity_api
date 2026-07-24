@@ -7,19 +7,22 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from parity_collar_engine import (
+    build_covered_call,
     build_defined_outcome_recommendations,
+    clean_chain,
     fetch_orats_chain,
+    select_single_expiry,
 )
 
 
 parity_mcp = FastMCP(
     name="Parity Outcomes",
     instructions=(
-        "Calculate illustrative defined-outcome structures from the "
-        "security, time horizon, downside, upside, buffer, and dividend "
-        "parameters entered by the user. Explain tradeoffs factually. "
-        "Do not characterize any result as recommended or optimal. "
-        "Do not connect brokerages or submit transactions."
+        "Calculate illustrative Defined Floor, Buffered Growth, and Covered "
+        "Call structures from the security, time horizon, downside, upside, "
+        "buffer, income, and dividend parameters entered by the user. Explain "
+        "tradeoffs factually. Do not characterize any result as recommended "
+        "or optimal. Do not connect brokerages or submit transactions."
     ),
     stateless_http=True,
     json_response=True,
@@ -58,7 +61,7 @@ def parity_status() -> dict[str, str]:
     return {
         "status": "ok",
         "service": "Parity Outcomes MCP",
-        "version": "1.0.0",
+        "version": "1.1.0",
     }
 
 
@@ -66,11 +69,11 @@ def parity_status() -> dict[str, str]:
     name="model_defined_outcomes",
     title="Model defined outcomes",
     description=(
-        "Calculate illustrative Defined Floor and Buffered Growth structures "
-        "for 100 shares using live market data and parameters entered by the "
-        "user. Returns available strikes, expiration, downside, upside, "
-        "buffer, estimated costs, dividends, and liquidity information. "
-        "This tool does not recommend or execute a transaction."
+        "Calculate illustrative Defined Floor, Buffered Growth, and Covered "
+        "Call structures for 100 shares using live market data and parameters "
+        "entered by the user. Returns available strikes, expiration, downside, "
+        "upside, buffer, income, estimated costs, dividends, and liquidity "
+        "information. This tool does not recommend or execute a transaction."
     ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
@@ -130,6 +133,17 @@ def model_defined_outcomes(
             ),
         ),
     ] = 10.0,
+    target_income_percent: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=100,
+            description=(
+                "Requested total income for the Covered Call, entered as a "
+                "percentage. Enter 5 for 5%."
+            ),
+        ),
+    ] = 5.0,
     assumed_dividend_yield_percent: Annotated[
         float,
         Field(
@@ -145,8 +159,10 @@ def model_defined_outcomes(
     ticker = symbol.strip().upper()
 
     try:
+        # Fetch the option chain once for all three calculations.
         chain = fetch_orats_chain(ticker=ticker)
 
+        # Calculate Defined Floor and Buffered Growth.
         result = build_defined_outcome_recommendations(
             df=chain,
             ticker=ticker,
@@ -158,6 +174,33 @@ def model_defined_outcomes(
                 assumed_dividend_yield_percent / 100
             ),
         )
+
+        # Select the appropriate expiration for the Covered Call.
+        cleaned_chain = clean_chain(
+            chain,
+            ticker=ticker,
+        )
+
+        expiry_chain, _, _ = select_single_expiry(
+            cleaned_chain,
+            target_dte=target_days,
+            prefer_at_or_after=True,
+            max_dte_overage=200,
+            max_dte_underage=30,
+        )
+
+        # Calculate the Covered Call using the same market data.
+        covered_call = build_covered_call(
+            expiry_chain,
+            target_income_pct=target_income_percent / 100,
+            assumed_dividend_yield=(
+                assumed_dividend_yield_percent / 100
+            ),
+        )
+
+        # Add it to the products returned by the existing engine.
+        products = result.setdefault("products", {})
+        products["covered_call"] = covered_call
 
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
@@ -180,18 +223,23 @@ def model_defined_outcomes(
             "security, parameters, and time horizon."
         )
 
-    result["analysis_type"] = "illustrative_defined_outcome_calculation"
+    result["analysis_type"] = (
+        "illustrative_defined_outcome_calculation"
+    )
+
     result["requested_parameters"] = {
         "symbol": ticker,
         "target_days": target_days,
         "max_loss_percent": max_loss_percent,
         "target_gain_percent": target_gain_percent,
         "target_buffer_percent": target_buffer_percent,
+        "target_income_percent": target_income_percent,
         "assumed_dividend_yield_percent": (
             assumed_dividend_yield_percent
         ),
         "share_basis": 100,
     }
+
     result["disclosure"] = (
         "Illustrative analysis based on available market data and the "
         "parameters entered by the user. Options involve risk. Quotes and "

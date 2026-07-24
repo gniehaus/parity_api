@@ -1,6 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-
+from mcp.server.transport_security import TransportSecuritySettings
 
 parity_mcp = FastMCP(
     name="Parity Outcomes",
@@ -12,6 +12,22 @@ parity_mcp = FastMCP(
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            "parity-api-snaptrade.onrender.com",
+            "parity-api-snaptrade.onrender.com:*",
+            "localhost:*",
+            "127.0.0.1:*",
+        ],
+        allowed_origins=[
+            "https://parity-api-snaptrade.onrender.com",
+            "https://chatgpt.com",
+            "https://chat.openai.com",
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+        ],
+    ),
 )
 
 

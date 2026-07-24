@@ -13,3 +13,5 @@ scipy
 yfinance
 lxml
 boto3
+datetime
+mcp>=1.27,<2

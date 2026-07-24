@@ -47,13 +47,32 @@ from .plaid_service import (
 )
 from .portfolio_dashboard_engine import calculate_portfolio_dashboard
 
-app = FastAPI(title="Parity SnapTrade API")
+
+from contextlib import asynccontextmanager
+
+from .mcp_server import parity_mcp
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+
+    async with parity_mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(
+    title="Parity SnapTrade API",
+    lifespan=lifespan,
+)
 
 app.include_router(advisory_router)
 app.include_router(subscriptions_router)
-@app.on_event("startup")
-def startup():
-    init_db()
+
+app.mount(
+    "/mcp",
+    parity_mcp.streamable_http_app(),
+)
 
 
 app.add_middleware(
@@ -667,4 +686,6 @@ def brokerage_sync(request: Request):
 def dashboard_portfolio(request: Request):
     parity_user_id = get_parity_user_id(request)
     return get_portfolio_summary(parity_user_id)
+
+
 

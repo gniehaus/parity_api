@@ -2,7 +2,7 @@ import os
 import json
 import psycopg
 from psycopg.rows import dict_row
-
+from datetime import datetime
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
@@ -177,7 +177,96 @@ def init_db():
                     OR terminated_at IS NOT NULL
                 )
             );
-
+            CREATE TABLE IF NOT EXISTS parity_subscriptions (
+                parity_user_id TEXT PRIMARY KEY
+                    REFERENCES parity_users(id)
+                    ON DELETE CASCADE,
+            
+                subscription_tier TEXT NOT NULL DEFAULT 'free'
+                    CHECK (
+                        subscription_tier IN (
+                            'free',
+                            'connected',
+                            'complete'
+                        )
+                    ),
+            
+                subscription_status TEXT NOT NULL DEFAULT 'none'
+                    CHECK (
+                        subscription_status IN (
+                            'none',
+                            'incomplete',
+                            'trialing',
+                            'active',
+                            'past_due',
+                            'canceled',
+                            'unpaid',
+                            'paused'
+                        )
+                    ),
+            
+                stripe_customer_id TEXT UNIQUE,
+                stripe_subscription_id TEXT UNIQUE,
+                stripe_price_id TEXT,
+            
+                current_period_start TIMESTAMPTZ,
+                current_period_end TIMESTAMPTZ,
+            
+                cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+                canceled_at TIMESTAMPTZ,
+            
+                pending_tier TEXT
+                    CHECK (
+                        pending_tier IS NULL
+                        OR pending_tier IN (
+                            'connected',
+                            'complete'
+                        )
+                    ),
+                pending_change_at TIMESTAMPTZ,
+            
+                access_grace_until TIMESTAMPTZ,
+            
+                complimentary_snapshot_started_at TIMESTAMPTZ,
+                complimentary_snapshot_expires_at TIMESTAMPTZ,
+            
+                last_event_key TEXT,
+                last_event_type TEXT,
+                last_event_at TIMESTAMPTZ,
+            
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            
+            CREATE TABLE IF NOT EXISTS parity_subscription_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                event_key TEXT NOT NULL UNIQUE,
+            
+                parity_user_id TEXT NOT NULL
+                    REFERENCES parity_users(id)
+                    ON DELETE CASCADE,
+            
+                event_type TEXT NOT NULL,
+            
+                previous_tier TEXT,
+                new_tier TEXT,
+                previous_status TEXT,
+                new_status TEXT,
+            
+                event_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                effective_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_parity_subscriptions_status
+            ON parity_subscriptions(subscription_status);
+            
+            CREATE INDEX IF NOT EXISTS idx_parity_subscription_events_user
+            ON parity_subscription_events(
+                parity_user_id,
+                effective_at DESC
+            );
 
             CREATE TABLE IF NOT EXISTS advisory_documents (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2006,6 +2095,389 @@ def record_client_consent(
                 "consent": consent,
                 "documents_complete": documents_complete,
             }
+
+
+def sync_parity_subscription(
+    parity_user_id: str,
+    event_key: str,
+    event_type: str,
+    subscription_tier: str,
+    subscription_status: str,
+    stripe_customer_id: str | None = None,
+    stripe_subscription_id: str | None = None,
+    stripe_price_id: str | None = None,
+    current_period_start: str | None = None,
+    current_period_end: str | None = None,
+    cancel_at_period_end: bool = False,
+    canceled_at: str | None = None,
+    pending_tier: str | None = None,
+    pending_change_at: str | None = None,
+    access_grace_until: str | None = None,
+    event_data: dict | None = None,
+) -> dict:
+    """
+    Pushes a signup, tier change, cancellation, or payment-status
+    change into Postgres.
+
+    event_key must be unique so repeated events are not processed twice.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM parity_users
+                WHERE id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            if not cur.fetchone():
+                raise ValueError("Parity user does not exist")
+
+            cur.execute(
+                """
+                INSERT INTO parity_subscriptions (
+                    parity_user_id
+                )
+                VALUES (%s)
+                ON CONFLICT (parity_user_id) DO NOTHING
+                """,
+                (parity_user_id,),
+            )
+
+            cur.execute(
+                """
+                SELECT *
+                FROM parity_subscriptions
+                WHERE parity_user_id = %s
+                FOR UPDATE
+                """,
+                (parity_user_id,),
+            )
+
+            previous = cur.fetchone()
+
+            cur.execute(
+                """
+                INSERT INTO parity_subscription_events (
+                    event_key,
+                    parity_user_id,
+                    event_type,
+                    previous_tier,
+                    new_tier,
+                    previous_status,
+                    new_status,
+                    event_data,
+                    effective_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s::jsonb, NOW()
+                )
+                ON CONFLICT (event_key) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    event_key,
+                    parity_user_id,
+                    event_type,
+                    previous["subscription_tier"],
+                    subscription_tier,
+                    previous["subscription_status"],
+                    subscription_status,
+                    json.dumps(event_data or {}),
+                ),
+            )
+
+            event_inserted = cur.fetchone()
+
+            if not event_inserted:
+                return previous
+
+            cur.execute(
+                """
+                UPDATE parity_subscriptions
+                SET
+                    subscription_tier = %s,
+                    subscription_status = %s,
+                    stripe_customer_id = COALESCE(
+                        %s,
+                        stripe_customer_id
+                    ),
+                    stripe_subscription_id = COALESCE(
+                        %s,
+                        stripe_subscription_id
+                    ),
+                    stripe_price_id = COALESCE(
+                        %s,
+                        stripe_price_id
+                    ),
+                    current_period_start = %s,
+                    current_period_end = %s,
+                    cancel_at_period_end = %s,
+                    canceled_at = %s,
+                    pending_tier = %s,
+                    pending_change_at = %s,
+                    access_grace_until = %s,
+                    last_event_key = %s,
+                    last_event_type = %s,
+                    last_event_at = NOW(),
+                    updated_at = NOW()
+                WHERE parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    subscription_tier,
+                    subscription_status,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    stripe_price_id,
+                    current_period_start,
+                    current_period_end,
+                    cancel_at_period_end,
+                    canceled_at,
+                    pending_tier,
+                    pending_change_at,
+                    access_grace_until,
+                    event_key,
+                    event_type,
+                    parity_user_id,
+                ),
+            )
+
+            subscription = cur.fetchone()
+            conn.commit()
+
+            return subscription
+
+
+def get_subscription_access(
+    parity_user_id: str,
+) -> dict | None:
+    """
+    Returns the frontend permissions for one authenticated Parity user.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    u.id AS parity_user_id,
+
+                    COALESCE(
+                        s.subscription_tier,
+                        'free'
+                    ) AS subscription_tier,
+
+                    COALESCE(
+                        s.subscription_status,
+                        'none'
+                    ) AS subscription_status,
+
+                    COALESCE(
+                        s.cancel_at_period_end,
+                        FALSE
+                    ) AS cancel_at_period_end,
+
+                    s.current_period_end,
+                    s.pending_tier,
+                    s.pending_change_at,
+                    s.complimentary_snapshot_started_at,
+                    s.complimentary_snapshot_expires_at,
+
+                    CASE
+                        WHEN
+                            s.subscription_status IN (
+                                'active',
+                                'trialing'
+                            )
+                            AND (
+                                s.current_period_end IS NULL
+                                OR s.current_period_end > NOW()
+                            )
+                        THEN TRUE
+
+                        WHEN
+                            s.subscription_status = 'past_due'
+                            AND s.access_grace_until > NOW()
+                        THEN TRUE
+
+                        ELSE FALSE
+                    END AS has_paid_access
+
+                FROM parity_users u
+
+                LEFT JOIN parity_subscriptions s
+                    ON s.parity_user_id = u.id
+
+                WHERE u.id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    has_paid_access = row["has_paid_access"]
+
+    effective_tier = (
+        row["subscription_tier"]
+        if has_paid_access
+        else "free"
+    )
+
+    snapshot_started = (
+        row["complimentary_snapshot_started_at"]
+    )
+    snapshot_expires = (
+        row["complimentary_snapshot_expires_at"]
+    )
+
+    if snapshot_started is None:
+        snapshot_status = "available"
+    elif snapshot_expires and snapshot_expires > datetime.now(
+        snapshot_expires.tzinfo
+    ):
+        snapshot_status = "active"
+    else:
+        snapshot_status = "used"
+
+    return {
+        "parity_user_id": parity_user_id,
+        "effective_tier": effective_tier,
+        "subscription_tier": row["subscription_tier"],
+        "subscription_status": row["subscription_status"],
+        "cancel_at_period_end": row["cancel_at_period_end"],
+        "current_period_end": row["current_period_end"],
+        "pending_tier": row["pending_tier"],
+        "pending_change_at": row["pending_change_at"],
+        "snapshot_status": snapshot_status,
+        "snapshot_expires_at": snapshot_expires,
+
+        # Free
+        "can_browse_marketplace": True,
+        "can_compare_outcomes": True,
+        "can_use_advanced_options_analytics": True,
+        "can_use_portfolio_stress_test": True,
+        "can_use_portfolio_overview": True,
+        "can_start_complimentary_snapshot": (
+            snapshot_status == "available"
+        ),
+        "can_use_complimentary_snapshot": (
+            snapshot_status == "active"
+        ),
+
+        # Connected and Complete
+        "can_use_live_brokerage_connections": (
+            has_paid_access
+            and effective_tier in (
+                "connected",
+                "complete",
+            )
+        ),
+        "can_export_csv_pdf": (
+            has_paid_access
+            and effective_tier in (
+                "connected",
+                "complete",
+            )
+        ),
+
+        # Complete
+        "can_create_or_renew_outcomes": (
+            has_paid_access
+            and effective_tier == "complete"
+        ),
+        "can_execute_new_orders": (
+            has_paid_access
+            and effective_tier == "complete"
+        ),
+        "can_use_active_outcome_monitoring": (
+            has_paid_access
+            and effective_tier == "complete"
+        ),
+        "can_use_position_expiration_alerts": (
+            has_paid_access
+            and effective_tier == "complete"
+        ),
+
+        # Safety features are never removed.
+        "can_view_existing_outcomes": True,
+        "can_close_existing_outcomes": True,
+        "receives_basic_expiration_reminders": True,
+    }
+
+
+def start_complimentary_snapshot(
+    parity_user_id: str,
+) -> dict:
+    """
+    Starts the user's one complimentary 24-hour snapshot.
+    Calling this again does not reset the expiration.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM parity_users
+                WHERE id = %s
+                """,
+                (parity_user_id,),
+            )
+
+            if not cur.fetchone():
+                raise ValueError("Parity user does not exist")
+
+            cur.execute(
+                """
+                INSERT INTO parity_subscriptions (
+                    parity_user_id
+                )
+                VALUES (%s)
+                ON CONFLICT (parity_user_id) DO NOTHING
+                """,
+                (parity_user_id,),
+            )
+
+            cur.execute(
+                """
+                UPDATE parity_subscriptions
+                SET
+                    complimentary_snapshot_started_at = NOW(),
+                    complimentary_snapshot_expires_at =
+                        NOW() + INTERVAL '24 hours',
+                    updated_at = NOW()
+                WHERE parity_user_id = %s
+                  AND complimentary_snapshot_started_at IS NULL
+                RETURNING *
+                """,
+                (parity_user_id,),
+            )
+
+            snapshot = cur.fetchone()
+
+            if not snapshot:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM parity_subscriptions
+                    WHERE parity_user_id = %s
+                    """,
+                    (parity_user_id,),
+                )
+                snapshot = cur.fetchone()
+
+            conn.commit()
+
+            return snapshot
+
 
 
 def upsert_parity_user(

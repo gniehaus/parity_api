@@ -8,6 +8,7 @@ from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 from .auth import get_parity_user_id
+from .subscriptions import router as subscriptions_router
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
@@ -49,6 +50,7 @@ from .portfolio_dashboard_engine import calculate_portfolio_dashboard
 app = FastAPI(title="Parity SnapTrade API")
 
 app.include_router(advisory_router)
+app.include_router(subscriptions_router)
 @app.on_event("startup")
 def startup():
     init_db()

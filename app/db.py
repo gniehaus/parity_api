@@ -2820,20 +2820,25 @@ def upsert_orats_summary_snapshots(
 import math
 
 
+import math
+import numbers
+
 def clean_json_value(value):
-    if isinstance(value, float) and math.isnan(value):
-        return None
+    if isinstance(value, numbers.Real):
+        if math.isnan(float(value)):
+            return None
+        return float(value)
 
     if isinstance(value, dict):
         return {
-            key: clean_json_value(item)
-            for key, item in value.items()
+            k: clean_json_value(v)
+            for k, v in value.items()
         }
 
     if isinstance(value, list):
         return [
-            clean_json_value(item)
-            for item in value
+            clean_json_value(v)
+            for v in value
         ]
 
     return value

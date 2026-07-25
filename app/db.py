@@ -2806,6 +2806,7 @@ def upsert_orats_summary_snapshots(
         normalize_orats_summary(row)
         for row in rows
         if row.get("ticker")
+        and str(row.get("ticker")).lower() != "nan"
     ]
 
     with get_conn() as conn:
@@ -2815,6 +2816,28 @@ def upsert_orats_summary_snapshots(
         conn.commit()
 
     return len(normalized_rows)
+
+import math
+
+
+def clean_json_value(value):
+    if isinstance(value, float) and math.isnan(value):
+        return None
+
+    if isinstance(value, dict):
+        return {
+            key: clean_json_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            clean_json_value(item)
+            for item in value
+        ]
+
+    return value
+
 
 def normalize_orats_summary(
     row: dict[str, Any],
@@ -2885,7 +2908,10 @@ def normalize_orats_summary(
         "snapshot_date": row.get("snapShotDate"),
         "ticker_id": row.get("tickerId"),
 
-        "raw_json": json.dumps(row),
+        "raw_json": json.dumps(
+        clean_json_value(row),
+        allow_nan=False,
+    ),
     }
 
 def get_orats_summary(ticker: str) -> dict | None:

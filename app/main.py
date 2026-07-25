@@ -66,6 +66,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# Public OAuth metadata used by ChatGPT to authenticate with Parity.
+@app.get("/.well-known/oauth-protected-resource/mcp/")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+async def oauth_protected_resource_metadata():
+    return {
+        "resource": "https://mcp.parityoutcomes.com/mcp/",
+        "authorization_servers": [
+            "https://mcp.parityoutcomes.com"
+        ],
+        "bearer_methods_supported": ["header"],
+    }
+
+
 app.include_router(advisory_router)
 app.include_router(subscriptions_router)
 
@@ -73,7 +87,6 @@ app.mount(
     "/mcp",
     parity_mcp.streamable_http_app(),
 )
-
 
 app.add_middleware(
     CORSMiddleware,

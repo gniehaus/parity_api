@@ -6,7 +6,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
-from dividend_data import get_dividend_data
+from .dividend_data import get_dividend_data
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl

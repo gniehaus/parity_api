@@ -1,10 +1,15 @@
 from typing import Annotated, Any
-
+import os
+import requests
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
+
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
+from pydantic import AnyHttpUrl
 
 from parity_collar_engine import (
     build_covered_call,
@@ -14,7 +19,45 @@ from parity_collar_engine import (
     select_single_expiry,
 )
 
+class ClerkTokenVerifier(TokenVerifier):
+    async def verify_token(self, token: str) -> AccessToken | None:
+        client_id = os.getenv("CLERK_OAUTH_CLIENT_ID")
+        client_secret = os.getenv("CLERK_OAUTH_CLIENT_SECRET")
 
+        if not client_id or not client_secret:
+            raise RuntimeError("Clerk OAuth credentials are not configured.")
+
+        response = requests.post(
+            "https://clerk.parityoutcomes.com/oauth/token_info",
+            data={"token": token},
+            auth=(client_id, client_secret),
+            timeout=10,
+        )
+
+        if not response.ok:
+            return None
+
+        token_info = response.json()
+
+        if (
+            not token_info.get("active")
+            or token_info.get("client_id") != client_id
+        ):
+            return None
+
+        scopes = token_info.get("scope", "").split()
+
+        if "profile" not in scopes:
+            return None
+
+        return AccessToken(
+            token=token,
+            client_id=token_info.get("sub", "parity-user"),
+            scopes=scopes,
+        )
+
+
+        
 parity_mcp = FastMCP(
     name="Parity Outcomes",
     instructions=(
@@ -26,6 +69,14 @@ parity_mcp = FastMCP(
     ),
     stateless_http=True,
     json_response=True,
+    token_verifier=ClerkTokenVerifier(),
+    auth=AuthSettings(
+        issuer_url=AnyHttpUrl("https://clerk.parityoutcomes.com"),
+        resource_server_url=AnyHttpUrl(
+            "https://mcp.parityoutcomes.com/mcp/"
+        ),
+        required_scopes=["profile"],
+    ),
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,

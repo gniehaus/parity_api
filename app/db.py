@@ -65,7 +65,24 @@ def init_db():
                 
                     is_current BOOLEAN NOT NULL DEFAULT TRUE
                 );
-                
+
+
+                CREATE TABLE IF NOT EXISTS dividend_snapshots (
+                ticker VARCHAR(12) PRIMARY KEY,
+                stock_price DOUBLE PRECISION,
+                annual_dividend_per_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+                annual_implied_dividend DOUBLE PRECISION,
+                next_dividend_per_share DOUBLE PRECISION,
+                implied_next_dividend_per_share DOUBLE PRECISION,
+                dividend_yield DOUBLE PRECISION,
+                source_updated_at TIMESTAMPTZ,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source VARCHAR(30) NOT NULL DEFAULT 'ORATS'
+                        );
+            
+                CREATE INDEX IF NOT EXISTS idx_dividend_snapshots_fetched_at
+                ON dividend_snapshots (fetched_at);
+                    
                 CREATE TABLE IF NOT EXISTS recommendations (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 

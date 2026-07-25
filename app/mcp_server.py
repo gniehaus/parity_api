@@ -6,7 +6,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
-
+from dividend_data import get_dividend_data
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
@@ -63,7 +63,8 @@ parity_mcp = FastMCP(
     instructions=(
         "Calculate illustrative Defined Floor, Buffered Growth, and Covered "
         "Call structures from the security, time horizon, downside, upside, "
-        "buffer, income, and dividend parameters entered by the user. Explain "
+        "buffer and income parameters entered by the user, together with "
+        "market-sourced dividend data. Explain "
         "tradeoffs factually. Do not characterize any result as recommended "
         "or optimal. Do not connect brokerages or submit transactions."
     ),
@@ -197,22 +198,21 @@ def model_defined_outcomes(
             ),
         ),
     ] = 5.0,
-    assumed_dividend_yield_percent: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=20,
-            description=(
-                "Annual dividend-yield assumption entered as a percentage. "
-                "Enter 1 for 1%."
-            ),
-        ),
-    ] = 1.0,
 ) -> dict[str, Any]:
     ticker = symbol.strip().upper()
 
     try:
-        # Fetch the option chain once for all three calculations.
+        dividend_data = get_dividend_data(ticker)
+
+        annual_dividend_per_share = float(
+            dividend_data.get("annual_dividend_per_share") or 0
+        )
+
+        dividend_yield = float(
+            dividend_data.get("dividend_yield") or 0
+        )
+
+        # Fetch the option chain once for all calculations.
         chain = fetch_orats_chain(ticker=ticker)
 
         # Calculate Defined Floor and Buffered Growth.
@@ -223,9 +223,7 @@ def model_defined_outcomes(
             max_loss_pct=max_loss_percent / 100,
             target_gain_pct=target_gain_percent / 100,
             target_buffer_pct=target_buffer_percent / 100,
-            assumed_dividend_yield=(
-                assumed_dividend_yield_percent / 100
-            ),
+            assumed_dividend_yield=dividend_yield,
         )
 
         # Select the appropriate expiration for the Covered Call.
@@ -246,21 +244,18 @@ def model_defined_outcomes(
         covered_call = build_covered_call(
             expiry_chain,
             target_income_pct=target_income_percent / 100,
-            assumed_dividend_yield=(
-                assumed_dividend_yield_percent / 100
-            ),
+            assumed_dividend_yield=dividend_yield,
         )
 
-        # Add it to the products returned by the existing engine.
         products = result.setdefault("products", {})
         products["covered_call"] = covered_call
-
+        
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
 
     except RuntimeError as exc:
         raise ToolError(
-            "Live option-market data is currently unavailable."
+            "Live option-market or dividend data is currently unavailable."
         ) from exc
 
     except Exception as exc:
@@ -287,10 +282,27 @@ def model_defined_outcomes(
         "target_gain_percent": target_gain_percent,
         "target_buffer_percent": target_buffer_percent,
         "target_income_percent": target_income_percent,
-        "assumed_dividend_yield_percent": (
-            assumed_dividend_yield_percent
-        ),
         "share_basis": 100,
+    }
+    result["dividend_assumptions"] = {
+        "ticker": ticker,
+        "annual_dividend_per_share": annual_dividend_per_share,
+        "annual_dividend_yield_percent": dividend_yield * 100,
+        "source": dividend_data.get("source", "ORATS"),
+        "source_updated_at": (
+            str(dividend_data.get("source_updated_at"))
+            if dividend_data.get("source_updated_at")
+            else None
+        ),
+        "fetched_at": (
+            str(dividend_data.get("fetched_at"))
+            if dividend_data.get("fetched_at")
+            else None
+        ),
+        "methodology": (
+            "The current annual dividend rate is prorated over the "
+            "selected option period."
+        ),
     }
 
     result["disclosure"] = (

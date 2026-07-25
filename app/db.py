@@ -3,6 +3,7 @@ import json
 import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime
+from orats_summary_service import fetch_all_orats_summaries
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
@@ -82,6 +83,96 @@ def init_db():
             
                 CREATE INDEX IF NOT EXISTS idx_dividend_snapshots_fetched_at
                 ON dividend_snapshots (fetched_at);
+
+
+
+
+
+                CREATE TABLE IF NOT EXISTS orats_summary_snapshots (
+                    ticker VARCHAR(20) PRIMARY KEY,
+                
+                    -- Market information
+                    trade_date DATE,
+                    stock_price DOUBLE PRECISION,
+                
+                    -- Dividend information
+                    annual_actual_dividend DOUBLE PRECISION,
+                    annual_implied_dividend DOUBLE PRECISION,
+                    next_dividend DOUBLE PRECISION,
+                    implied_next_dividend DOUBLE PRECISION,
+                
+                    -- Borrow and rates
+                    borrow_30d DOUBLE PRECISION,
+                    borrow_2y DOUBLE PRECISION,
+                    risk_free_30d DOUBLE PRECISION,
+                    risk_free_2y DOUBLE PRECISION,
+                
+                    -- Summary confidence
+                    confidence DOUBLE PRECISION,
+                    total_error_confidence DOUBLE PRECISION,
+                
+                    -- Standard implied volatility term structure
+                    iv_10d DOUBLE PRECISION,
+                    iv_20d DOUBLE PRECISION,
+                    iv_30d DOUBLE PRECISION,
+                    iv_60d DOUBLE PRECISION,
+                    iv_90d DOUBLE PRECISION,
+                    iv_6m DOUBLE PRECISION,
+                    iv_1y DOUBLE PRECISION,
+                
+                    -- Earnings-adjusted implied volatility
+                    ex_earnings_iv_10d DOUBLE PRECISION,
+                    ex_earnings_iv_20d DOUBLE PRECISION,
+                    ex_earnings_iv_30d DOUBLE PRECISION,
+                    ex_earnings_iv_60d DOUBLE PRECISION,
+                    ex_earnings_iv_90d DOUBLE PRECISION,
+                    ex_earnings_iv_6m DOUBLE PRECISION,
+                    ex_earnings_iv_1y DOUBLE PRECISION,
+                
+                    -- Earnings information
+                    implied_earnings_effect DOUBLE PRECISION,
+                    implied_move DOUBLE PRECISION,
+                    implied_earnings_move DOUBLE PRECISION,
+                
+                    -- Term structure and volatility fit
+                    mw_adjusted_30d DOUBLE PRECISION,
+                    mw_adjusted_2y DOUBLE PRECISION,
+                    residual_driver_30d DOUBLE PRECISION,
+                    residual_driver_2y DOUBLE PRECISION,
+                    residual_slope_30d DOUBLE PRECISION,
+                    residual_slope_2y DOUBLE PRECISION,
+                    residual_volatility_30d DOUBLE PRECISION,
+                    residual_volatility_2y DOUBLE PRECISION,
+                    relative_implied_price DOUBLE PRECISION,
+                    skewing DOUBLE PRECISION,
+                    contango DOUBLE PRECISION,
+                
+                    -- ORATS timestamps and identifiers
+                    quote_date TIMESTAMPTZ,
+                    source_updated_at TIMESTAMPTZ,
+                    snapshot_est_time TEXT,
+                    snapshot_date TIMESTAMPTZ,
+                    ticker_id BIGINT,
+                
+                    -- Preserve every vendor field, including new ones
+                    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                
+                    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source VARCHAR(40) NOT NULL DEFAULT 'ORATS'
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_orats_summary_fetched_at
+                ON orats_summary_snapshots (fetched_at DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_orats_summary_trade_date
+                ON orats_summary_snapshots (trade_date DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_orats_summary_iv30
+                ON orats_summary_snapshots (iv_30d);
+                
+                CREATE INDEX IF NOT EXISTS idx_orats_summary_ticker_id
+                ON orats_summary_snapshots (ticker_id);
+                                
                     
                 CREATE TABLE IF NOT EXISTS recommendations (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2495,7 +2586,333 @@ def start_complimentary_snapshot(
 
             return snapshot
 
+import json
+from typing import Any
 
+
+def upsert_orats_summary_snapshots(
+    rows: list[dict[str, Any]],
+) -> int:
+    if not rows:
+        return 0
+
+    query = """
+        INSERT INTO orats_summary_snapshots (
+            ticker,
+            trade_date,
+            stock_price,
+
+            annual_actual_dividend,
+            annual_implied_dividend,
+            next_dividend,
+            implied_next_dividend,
+
+            borrow_30d,
+            borrow_2y,
+            risk_free_30d,
+            risk_free_2y,
+
+            confidence,
+            total_error_confidence,
+
+            iv_10d,
+            iv_20d,
+            iv_30d,
+            iv_60d,
+            iv_90d,
+            iv_6m,
+            iv_1y,
+
+            ex_earnings_iv_10d,
+            ex_earnings_iv_20d,
+            ex_earnings_iv_30d,
+            ex_earnings_iv_60d,
+            ex_earnings_iv_90d,
+            ex_earnings_iv_6m,
+            ex_earnings_iv_1y,
+
+            implied_earnings_effect,
+            implied_move,
+            implied_earnings_move,
+
+            mw_adjusted_30d,
+            mw_adjusted_2y,
+            residual_driver_30d,
+            residual_driver_2y,
+            residual_slope_30d,
+            residual_slope_2y,
+            residual_volatility_30d,
+            residual_volatility_2y,
+            relative_implied_price,
+            skewing,
+            contango,
+
+            quote_date,
+            source_updated_at,
+            snapshot_est_time,
+            snapshot_date,
+            ticker_id,
+
+            raw_json,
+            fetched_at,
+            source
+        )
+        VALUES (
+            %(ticker)s,
+            %(trade_date)s,
+            %(stock_price)s,
+
+            %(annual_actual_dividend)s,
+            %(annual_implied_dividend)s,
+            %(next_dividend)s,
+            %(implied_next_dividend)s,
+
+            %(borrow_30d)s,
+            %(borrow_2y)s,
+            %(risk_free_30d)s,
+            %(risk_free_2y)s,
+
+            %(confidence)s,
+            %(total_error_confidence)s,
+
+            %(iv_10d)s,
+            %(iv_20d)s,
+            %(iv_30d)s,
+            %(iv_60d)s,
+            %(iv_90d)s,
+            %(iv_6m)s,
+            %(iv_1y)s,
+
+            %(ex_earnings_iv_10d)s,
+            %(ex_earnings_iv_20d)s,
+            %(ex_earnings_iv_30d)s,
+            %(ex_earnings_iv_60d)s,
+            %(ex_earnings_iv_90d)s,
+            %(ex_earnings_iv_6m)s,
+            %(ex_earnings_iv_1y)s,
+
+            %(implied_earnings_effect)s,
+            %(implied_move)s,
+            %(implied_earnings_move)s,
+
+            %(mw_adjusted_30d)s,
+            %(mw_adjusted_2y)s,
+            %(residual_driver_30d)s,
+            %(residual_driver_2y)s,
+            %(residual_slope_30d)s,
+            %(residual_slope_2y)s,
+            %(residual_volatility_30d)s,
+            %(residual_volatility_2y)s,
+            %(relative_implied_price)s,
+            %(skewing)s,
+            %(contango)s,
+
+            %(quote_date)s,
+            %(source_updated_at)s,
+            %(snapshot_est_time)s,
+            %(snapshot_date)s,
+            %(ticker_id)s,
+
+            %(raw_json)s::jsonb,
+            NOW(),
+            'ORATS'
+        )
+        ON CONFLICT (ticker)
+        DO UPDATE SET
+            trade_date = EXCLUDED.trade_date,
+            stock_price = EXCLUDED.stock_price,
+
+            annual_actual_dividend =
+                EXCLUDED.annual_actual_dividend,
+            annual_implied_dividend =
+                EXCLUDED.annual_implied_dividend,
+            next_dividend = EXCLUDED.next_dividend,
+            implied_next_dividend =
+                EXCLUDED.implied_next_dividend,
+
+            borrow_30d = EXCLUDED.borrow_30d,
+            borrow_2y = EXCLUDED.borrow_2y,
+            risk_free_30d = EXCLUDED.risk_free_30d,
+            risk_free_2y = EXCLUDED.risk_free_2y,
+
+            confidence = EXCLUDED.confidence,
+            total_error_confidence =
+                EXCLUDED.total_error_confidence,
+
+            iv_10d = EXCLUDED.iv_10d,
+            iv_20d = EXCLUDED.iv_20d,
+            iv_30d = EXCLUDED.iv_30d,
+            iv_60d = EXCLUDED.iv_60d,
+            iv_90d = EXCLUDED.iv_90d,
+            iv_6m = EXCLUDED.iv_6m,
+            iv_1y = EXCLUDED.iv_1y,
+
+            ex_earnings_iv_10d =
+                EXCLUDED.ex_earnings_iv_10d,
+            ex_earnings_iv_20d =
+                EXCLUDED.ex_earnings_iv_20d,
+            ex_earnings_iv_30d =
+                EXCLUDED.ex_earnings_iv_30d,
+            ex_earnings_iv_60d =
+                EXCLUDED.ex_earnings_iv_60d,
+            ex_earnings_iv_90d =
+                EXCLUDED.ex_earnings_iv_90d,
+            ex_earnings_iv_6m =
+                EXCLUDED.ex_earnings_iv_6m,
+            ex_earnings_iv_1y =
+                EXCLUDED.ex_earnings_iv_1y,
+
+            implied_earnings_effect =
+                EXCLUDED.implied_earnings_effect,
+            implied_move = EXCLUDED.implied_move,
+            implied_earnings_move =
+                EXCLUDED.implied_earnings_move,
+
+            mw_adjusted_30d =
+                EXCLUDED.mw_adjusted_30d,
+            mw_adjusted_2y =
+                EXCLUDED.mw_adjusted_2y,
+            residual_driver_30d =
+                EXCLUDED.residual_driver_30d,
+            residual_driver_2y =
+                EXCLUDED.residual_driver_2y,
+            residual_slope_30d =
+                EXCLUDED.residual_slope_30d,
+            residual_slope_2y =
+                EXCLUDED.residual_slope_2y,
+            residual_volatility_30d =
+                EXCLUDED.residual_volatility_30d,
+            residual_volatility_2y =
+                EXCLUDED.residual_volatility_2y,
+            relative_implied_price =
+                EXCLUDED.relative_implied_price,
+            skewing = EXCLUDED.skewing,
+            contango = EXCLUDED.contango,
+
+            quote_date = EXCLUDED.quote_date,
+            source_updated_at =
+                EXCLUDED.source_updated_at,
+            snapshot_est_time =
+                EXCLUDED.snapshot_est_time,
+            snapshot_date = EXCLUDED.snapshot_date,
+            ticker_id = EXCLUDED.ticker_id,
+
+            raw_json = EXCLUDED.raw_json,
+            fetched_at = NOW(),
+            source = EXCLUDED.source
+    """
+
+    normalized_rows = [
+        normalize_orats_summary(row)
+        for row in rows
+        if row.get("ticker")
+    ]
+
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(query, normalized_rows)
+
+        conn.commit()
+
+    return len(normalized_rows)
+
+def normalize_orats_summary(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ticker": str(row["ticker"]).upper(),
+        "trade_date": row.get("tradeDate"),
+        "stock_price": row.get("stockPrice"),
+
+        "annual_actual_dividend": row.get("annActDiv"),
+        "annual_implied_dividend": row.get("annIdiv"),
+        "next_dividend": row.get("nextDiv"),
+        "implied_next_dividend": row.get(
+            "impliedNextDiv"
+        ),
+
+        "borrow_30d": row.get("borrow30"),
+        "borrow_2y": row.get("borrow2y"),
+        "risk_free_30d": row.get("riskFree30"),
+        "risk_free_2y": row.get("riskFree2y"),
+
+        "confidence": row.get("confidence"),
+        "total_error_confidence": row.get(
+            "totalErrorConf"
+        ),
+
+        "iv_10d": row.get("iv10d"),
+        "iv_20d": row.get("iv20d"),
+        "iv_30d": row.get("iv30d"),
+        "iv_60d": row.get("iv60d"),
+        "iv_90d": row.get("iv90d"),
+        "iv_6m": row.get("iv6m"),
+        "iv_1y": row.get("iv1y"),
+
+        "ex_earnings_iv_10d": row.get("exErnIv10d"),
+        "ex_earnings_iv_20d": row.get("exErnIv20d"),
+        "ex_earnings_iv_30d": row.get("exErnIv30d"),
+        "ex_earnings_iv_60d": row.get("exErnIv60d"),
+        "ex_earnings_iv_90d": row.get("exErnIv90d"),
+        "ex_earnings_iv_6m": row.get("exErnIv6m"),
+        "ex_earnings_iv_1y": row.get("exErnIv1y"),
+
+        "implied_earnings_effect": row.get(
+            "ieeEarnEffect"
+        ),
+        "implied_move": row.get("impliedMove"),
+        "implied_earnings_move": row.get(
+            "impliedEarningsMove"
+        ),
+
+        "mw_adjusted_30d": row.get("mwAdj30"),
+        "mw_adjusted_2y": row.get("mwAdj2y"),
+        "residual_driver_30d": row.get("rDrv30"),
+        "residual_driver_2y": row.get("rDrv2y"),
+        "residual_slope_30d": row.get("rSlp30"),
+        "residual_slope_2y": row.get("rSlp2y"),
+        "residual_volatility_30d": row.get("rVol30"),
+        "residual_volatility_2y": row.get("rVol2y"),
+        "relative_implied_price": row.get("rip"),
+        "skewing": row.get("skewing"),
+        "contango": row.get("contango"),
+
+        "quote_date": row.get("quoteDate"),
+        "source_updated_at": row.get("updatedAt"),
+        "snapshot_est_time": row.get(
+            "snapShotEstTime"
+        ),
+        "snapshot_date": row.get("snapShotDate"),
+        "ticker_id": row.get("tickerId"),
+
+        "raw_json": json.dumps(row),
+    }
+
+def get_orats_summary(ticker: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM orats_summary_snapshots
+                WHERE ticker = %s
+                """,
+                (ticker.upper(),),
+            )
+
+            return cursor.fetchone()
+
+
+def refresh_orats_summary_cache() -> dict:
+    rows = fetch_all_orats_summaries()
+
+    saved_count = upsert_orats_summary_snapshots(rows)
+
+    return {
+        "received": len(rows),
+        "saved": saved_count,
+        "refreshed_at": datetime.now().isoformat(),
+    }
 
 def upsert_parity_user(
     user_id: str,

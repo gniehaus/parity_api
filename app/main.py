@@ -74,7 +74,7 @@ async def oauth_protected_resource_metadata():
     return {
         "resource": "https://mcp.parityoutcomes.com/mcp/",
         "authorization_servers": [
-            "https://mcp.parityoutcomes.com"
+    "https://clerk.parityoutcomes.com"
         ],
         "bearer_methods_supported": ["header"],
     }

@@ -225,7 +225,7 @@ def get_dividend_data(
             "dividend_yield": row[6],
             "source_updated_at": row[7],
             "fetched_at": row[8],
-            "source": "ORATS database cache",
+            "source": "Market Implied Dividend Rate",
         }
 
     return refresh_dividend(ticker)

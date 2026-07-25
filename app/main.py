@@ -1,6 +1,6 @@
 import os
 from typing import Any, Dict, List, Optional
-
+from fastapi.responses import PlainTextResponse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -82,6 +82,23 @@ async def oauth_protected_resource_metadata():
 
 app.include_router(advisory_router)
 app.include_router(subscriptions_router)
+
+
+@app.get(
+    "/.well-known/openai-apps-challenge",
+    response_class=PlainTextResponse,
+)
+async def openai_apps_challenge():
+    token = os.getenv("OPENAI_APPS_CHALLENGE_TOKEN")
+
+    if not token:
+        raise HTTPException(
+            status_code=404,
+            detail="Verification token not configured",
+        )
+
+    return token
+
 
 app.mount(
     "/mcp",

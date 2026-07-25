@@ -288,7 +288,7 @@ def model_defined_outcomes(
         "ticker": ticker,
         "annual_dividend_per_share": annual_dividend_per_share,
         "annual_dividend_yield_percent": dividend_yield * 100,
-        "source": dividend_data.get("source", "ORATS"),
+        "source": dividend_data.get("source", "Implied market dividend data"),
         "source_updated_at": (
             str(dividend_data.get("source_updated_at"))
             if dividend_data.get("source_updated_at")

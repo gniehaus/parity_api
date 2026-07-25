@@ -3,7 +3,7 @@ import json
 import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime
-from orats_summary_service import fetch_all_orats_summaries
+from .orats_summary_service import fetch_all_orats_summaries
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 

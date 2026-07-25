@@ -34,6 +34,8 @@ parity_mcp = FastMCP(
             "parity-api-snaptrade.onrender.com:*",
             "localhost:*",
             "127.0.0.1:*",
+            "mcp.parityoutcomes.com",
+            "parity-api-snaptrade.onrender.com",
         ],
         allowed_origins=[
             "https://parity-api-snaptrade.onrender.com",

@@ -26,18 +26,17 @@ def fetch_all_orats_summaries() -> list[dict[str, Any]]:
     content_type = response.headers.get("content-type", "")
 
     if "application/json" in content_type:
-        payload = response.json()
-
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+    
         if isinstance(payload, dict):
             rows = payload.get("data", [])
-        elif isinstance(payload, list):
-            rows = payload
-        else:
-            raise RuntimeError(
-                "Unexpected ORATS summaries response format"
-            )
-
-        return rows
+            return rows
+    
+        if isinstance(payload, list):
+            return payload
 
     # The one-minute endpoint may return CSV.
     import pandas as pd

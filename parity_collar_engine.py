@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from app.db import get_orats_summary
 
 MULT = 100
 
@@ -235,6 +236,40 @@ def get_closest_expiry_chains(
 # ============================================================
 # 4. HELPERS
 # ============================================================
+
+
+def get_backend_dividend_data(ticker: str) -> dict:
+    summary = get_orats_summary(ticker)
+
+    if not summary:
+        raise ValueError(
+            f"No ORATS summary found in the database for {ticker}."
+        )
+
+    stock_price = float(
+        summary.get("stock_price") or 0.0
+    )
+
+    annual_dividend_per_share = float(
+        summary.get("annual_actual_dividend")
+        or summary.get("annual_implied_dividend")
+        or 0.0
+    )
+
+    annual_dividend_yield = (
+        annual_dividend_per_share / stock_price
+        if stock_price > 0
+        else 0.0
+    )
+
+    return {
+        "ticker": ticker.upper(),
+        "stock_price": stock_price,
+        "annual_dividend_per_share": annual_dividend_per_share,
+        "annual_dividend_yield": annual_dividend_yield,
+        "source_updated_at": summary.get("source_updated_at"),
+        "fetched_at": summary.get("fetched_at"),
+    }
 
 def liquidity_score(*rows):
     total_volume = 0.0
@@ -1883,7 +1918,7 @@ def build_defined_outcome_recommendations(
     horizon=365,
     max_loss_pct=0.005,
     target_gain_pct=0.08,
-    assumed_dividend_yield=0.01,
+    assumed_dividend_yield=None,
     target_buffer_pct=0.10,
 ):
     """
@@ -1901,7 +1936,13 @@ def build_defined_outcome_recommendations(
 
     Both products use the same selected expiration.
     """
+    dividend_data = get_backend_dividend_data(ticker)
 
+    # The database is authoritative. Any value supplied by the
+    # frontend or caller is overwritten here.
+    assumed_dividend_yield = dividend_data[
+        "annual_dividend_yield"
+    ]
     chain = clean_chain(df, ticker=ticker)
 
     expiry_chain, selected_expiry_summary, _ = select_single_expiry(

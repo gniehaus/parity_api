@@ -2146,11 +2146,14 @@ def build_frontend_payload(
 def build_married_put(
     expiry_chain,
     max_loss_pct=0.10,
-    assumed_dividend_yield=0.0,
+    assumed_dividend_yield=None,
 ):
     """
     Product: Insured Upside
     Long underlying + long put.
+
+    Dividend data is loaded from the backend database.
+    Any dividend yield supplied by the caller is ignored.
 
     Logic:
     - User chooses a protection level, e.g. 10%.
@@ -2160,9 +2163,31 @@ def build_married_put(
     """
 
     g = expiry_chain.copy()
+
     if g.empty:
         return None
 
+    if (
+        "ticker" not in g.columns
+        or g["ticker"].dropna().empty
+    ):
+        raise ValueError(
+            "Married put requires a ticker in expiry_chain "
+            "to load dividend data from the database."
+        )
+
+    ticker = (
+        str(g["ticker"].dropna().iloc[0])
+        .strip()
+        .upper()
+    )
+
+    dividend_data = get_backend_dividend_data(ticker)
+
+    # The database is authoritative.
+    assumed_dividend_yield = dividend_data[
+        "annual_dividend_yield"
+    ]
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())
     notional = spot * MULT
@@ -2304,19 +2329,42 @@ def build_married_put(
 def build_covered_call(
     expiry_chain,
     target_income_pct=0.05,
-    assumed_dividend_yield=0.0,
+    assumed_dividend_yield=None,
 ):
     """
     Product: Income
     Long underlying + short call.
 
-    Finds the call strike that gets closest to the user's preferred income.
-    Shows the tradeoff: known income, capped upside, downside still exposed.
+    Dividend data is loaded from the backend database.
+    Any dividend yield supplied by the caller is ignored.
     """
 
     g = expiry_chain.copy()
+
     if g.empty:
         return None
+
+    if (
+        "ticker" not in g.columns
+        or g["ticker"].dropna().empty
+    ):
+        raise ValueError(
+            "Covered call requires a ticker in expiry_chain "
+            "to load dividend data from the database."
+        )
+
+    ticker = (
+        str(g["ticker"].dropna().iloc[0])
+        .strip()
+        .upper()
+    )
+
+    dividend_data = get_backend_dividend_data(ticker)
+
+    # The database is authoritative.
+    assumed_dividend_yield = dividend_data[
+        "annual_dividend_yield"
+    ]
 
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())

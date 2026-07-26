@@ -213,7 +213,6 @@ def get_recommendations(request: RecommendationRequest):
             horizon=request.horizon,
             max_loss_pct=request.max_loss,
             target_gain_pct=request.target_gain,
-            assumed_dividend_yield=request.assumed_dividend_yield,
             target_buffer_pct=request.target_buffer_pct,
         )
 

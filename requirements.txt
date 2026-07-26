@@ -6,3 +6,4 @@ numpy
 pydantic
 pulp
 snaptrade-python-sdk
+psycopg2-binary==2.9.10

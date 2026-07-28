@@ -813,10 +813,105 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_portfolio_recommendations_user
                 ON portfolio_recommendations(parity_user_id);
+
+
+                CREATE TABLE IF NOT EXISTS public_scorecard_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload JSONB NOT NULL,
+                market_data_timestamp TIMESTAMPTZ NOT NULL,
+                generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+                
             """)
             conn.commit()
 
 from typing import Any
+
+
+def save_public_scorecard_snapshot(
+    cache_key: str,
+    payload: dict[str, Any],
+    market_data_timestamp: datetime,
+) -> dict[str, Any]:
+    """
+    Insert or replace one complete public homepage scorecard snapshot.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public_scorecard_cache (
+                    cache_key,
+                    payload,
+                    market_data_timestamp,
+                    generated_at,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    %s::jsonb,
+                    %s,
+                    NOW(),
+                    NOW()
+                )
+                ON CONFLICT (cache_key)
+                DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    market_data_timestamp = EXCLUDED.market_data_timestamp,
+                    generated_at = NOW(),
+                    updated_at = NOW()
+                RETURNING
+                    cache_key,
+                    payload,
+                    market_data_timestamp,
+                    generated_at,
+                    updated_at
+                """,
+                (
+                    cache_key,
+                    json.dumps(payload),
+                    market_data_timestamp,
+                ),
+            )
+
+            saved_snapshot = cur.fetchone()
+            conn.commit()
+
+    return dict(saved_snapshot)
+
+def get_public_scorecard_snapshot(
+    cache_key: str = "homepage_v1",
+) -> dict[str, Any] | None:
+    """
+    Return the current cached homepage scorecard snapshot without
+    calling ORATS or recalculating outcomes.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    cache_key,
+                    payload,
+                    market_data_timestamp,
+                    generated_at,
+                    updated_at
+                FROM public_scorecard_cache
+                WHERE cache_key = %s
+                """,
+                (cache_key,),
+            )
+
+            snapshot = cur.fetchone()
+
+    if snapshot is None:
+        return None
+
+    return dict(snapshot)
 
 
 def create_advisory_client(

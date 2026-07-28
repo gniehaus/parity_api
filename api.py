@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from nanos_engine import build_weekly_outcomes_payload
-
+from app.db import get_public_scorecard_snapshot
 from parity_collar_engine import (
     fetch_orats_chain,
     build_defined_outcome_recommendations,
@@ -186,6 +186,47 @@ def get_portfolio(request: PortfolioRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/public-scorecards")
+def get_public_scorecards():
+    """
+    Return the latest cached homepage scorecards from Postgres.
+    This endpoint does not call ORATS or recalculate outcomes.
+    """
+
+    try:
+        snapshot = get_public_scorecard_snapshot(
+            cache_key="homepage_v1"
+        )
+
+        if snapshot is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Public scorecards have not been generated yet.",
+            )
+
+        payload = snapshot["payload"]
+
+        return make_json_safe(
+            {
+                "cache_key": snapshot["cache_key"],
+                "market_data_timestamp": (
+                    snapshot["market_data_timestamp"]
+                ),
+                "generated_at": snapshot["generated_at"],
+                "updated_at": snapshot["updated_at"],
+                "cards": payload.get("cards", []),
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to load public scorecards: {error}",
+        )
 
 
 @app.get("/weekly-outcomes")

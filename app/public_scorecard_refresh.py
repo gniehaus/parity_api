@@ -113,10 +113,10 @@ def fetch_unique_orats_chains() -> dict[str, Any]:
     for ticker in unique_tickers:
         print(f"Fetching ORATS chain for {ticker}")
     
-    chains[ticker] = fetch_orats_chain_with_retry(
-        ticker=ticker,
-        token=token,
-    )
+        chains[ticker] = fetch_orats_chain_with_retry(
+            ticker=ticker,
+            token=token,
+        )
 
     return chains
 def build_buffered_growth_cards(

@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timezone
 from typing import Any
+import time
+
 
 from app.db import save_public_scorecard_snapshot
 from parity_collar_engine import (
@@ -47,7 +49,48 @@ def get_orats_token() -> str:
 
     return token
 
+def fetch_orats_chain_with_retry(
+    ticker: str,
+    token: str,
+    max_attempts: int = 3,
+) -> Any:
+    """
+    Retry transient ORATS authorization, rate-limit, and server failures.
+    """
 
+    retryable_statuses = ("403", "429", "500", "502", "503", "504")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fetch_orats_chain(
+                ticker=ticker,
+                token=token,
+            )
+        except RuntimeError as error:
+            message = str(error)
+            is_retryable = any(
+                status in message
+                for status in retryable_statuses
+            )
+
+            if not is_retryable or attempt == max_attempts:
+                raise
+
+            wait_seconds = attempt * 5
+
+            print(
+                f"Transient ORATS failure for {ticker} "
+                f"on attempt {attempt}/{max_attempts}. "
+                f"Retrying in {wait_seconds} seconds."
+            )
+
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        f"ORATS retry loop ended unexpectedly for {ticker}"
+    )
+
+    
 def fetch_unique_orats_chains() -> dict[str, Any]:
     """
     Fetch each homepage ticker from ORATS exactly once during a refresh.
@@ -69,11 +112,11 @@ def fetch_unique_orats_chains() -> dict[str, Any]:
 
     for ticker in unique_tickers:
         print(f"Fetching ORATS chain for {ticker}")
-
-        chains[ticker] = fetch_orats_chain(
-            ticker=ticker,
-            token=token,
-        )
+    
+    chains[ticker] = fetch_orats_chain_with_retry(
+        ticker=ticker,
+        token=token,
+    )
 
     return chains
 def build_buffered_growth_cards(

@@ -859,6 +859,78 @@ def init_db():
                 status,
                 prepared_at DESC
             );
+
+
+            CREATE TABLE IF NOT EXISTS execution_workflows (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                parity_user_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                brokerage_slug TEXT NOT NULL,
+            
+                strategy_type TEXT NOT NULL
+                    CHECK (
+                        strategy_type IN (
+                            'covered_call',
+                            'collar',
+                            'buffer'
+                        )
+                    ),
+            
+                underlying_source TEXT NOT NULL
+                    CHECK (
+                        underlying_source IN (
+                            'existing',
+                            'new'
+                        )
+                    ),
+            
+                underlying_symbol TEXT NOT NULL,
+                underlying_shares INTEGER NOT NULL
+                    CHECK (
+                        underlying_shares > 0
+                        AND underlying_shares % 100 = 0
+                    ),
+                option_contracts INTEGER NOT NULL
+                    CHECK (option_contracts > 0),
+            
+                status TEXT NOT NULL DEFAULT 'DRAFT'
+                    CHECK (
+                        status IN (
+                            'DRAFT',
+                            'UNDERLYING_ORDER_PREPARED',
+                            'UNDERLYING_SUBMITTED',
+                            'AWAITING_UNDERLYING_FILL',
+                            'OPTIONS_ORDER_PREPARED',
+                            'OPTIONS_SUBMITTED',
+                            'COMPLETE',
+                            'FAILED',
+                            'CANCELED'
+                        )
+                    ),
+            
+                underlying_prepared_order_id UUID
+                    REFERENCES prepared_option_orders(id)
+                    ON DELETE SET NULL,
+            
+                options_prepared_order_id UUID
+                    REFERENCES prepared_option_orders(id)
+                    ON DELETE SET NULL,
+            
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_execution_workflows_user_status
+            ON execution_workflows (
+                parity_user_id,
+                status,
+                created_at DESC
+            );
+
+
+
+            
             """)
             conn.commit()
 
@@ -3114,3 +3186,80 @@ def upsert_parity_user(
                 ),
             )
             conn.commit()
+
+
+
+def create_prepared_option_order(
+    parity_user_id: str,
+    account_id: str,
+    brokerage_slug: str,
+    strategy_type: str,
+    order_payload: dict,
+    quote_snapshot: dict | None,
+    expires_at: str,
+) -> dict:
+    """
+    Save an order that has been prepared for user review but not submitted.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO prepared_option_orders (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    strategy_type,
+                    order_payload,
+                    quote_snapshot,
+                    expires_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb,
+                    %s::jsonb,
+                    %s
+                )
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    strategy_type,
+                    json.dumps(order_payload),
+                    json.dumps(quote_snapshot or {}),
+                    expires_at,
+                ),
+            )
+            prepared_order = cur.fetchone()
+            conn.commit()
+
+    return prepared_order
+
+
+def get_prepared_option_order(
+    parity_user_id: str,
+    prepared_order_id: str,
+) -> dict | None:
+    """
+    Return one prepared order only when it belongs to the requesting user.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM prepared_option_orders
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    prepared_order_id,
+                    parity_user_id,
+                ),
+            )
+            return cur.fetchone()

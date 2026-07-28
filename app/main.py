@@ -29,6 +29,8 @@ from .db import (
     save_investor_profile_and_invalidate_recommendations,
     persist_recommendation_run,
     get_current_recommendation_run,
+    create_execution_workflow,
+
 )
 
 from .snaptrade_service import (
@@ -154,7 +156,16 @@ class RecommendationRunRequest(BaseModel):
     findings: List[Dict[str, Any]] = Field(
         default_factory=list
     )
-    
+
+
+
+class ExecutionWorkflowCreateRequest(BaseModel):
+    account_id: str
+    strategy_type: str
+    underlying_source: str
+    underlying_symbol: str
+    underlying_shares: int
+
 class ExpenseRatioRequest(BaseModel):
     symbols: List[str]
 
@@ -762,6 +773,96 @@ def brokerage_execution_capabilities(
             capabilities.supports_option_orders
         ),
     }
+
+
+@app.post("/api/execution/workflows")
+def execution_workflow_create(
+    req: ExecutionWorkflowCreateRequest,
+    request: Request,
+):
+    """
+    Create an execution workflow.
+
+    This endpoint does not prepare or submit an order.
+    """
+    parity_user_id = get_parity_user_id(request)
+
+    allowed_strategies = {
+        "covered_call",
+        "collar",
+        "buffer",
+    }
+
+    allowed_sources = {
+        "existing",
+        "new",
+    }
+
+    if req.strategy_type not in allowed_strategies:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported execution strategy",
+        )
+
+    if req.underlying_source not in allowed_sources:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "underlying_source must be existing or new"
+            ),
+        )
+
+    if req.underlying_shares < 100:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least 100 shares are required "
+                "for one standard option contract"
+            ),
+        )
+
+    if req.underlying_shares % 100 != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Shares must be selected in increments of 100"
+            ),
+        )
+
+    try:
+        account = get_execution_account_context(
+            parity_user_id=parity_user_id,
+            account_id=req.account_id,
+        )
+
+        workflow = create_execution_workflow(
+            parity_user_id=parity_user_id,
+            account_id=account["account_id"],
+            brokerage_slug=account["brokerage_slug"],
+            strategy_type=req.strategy_type,
+            underlying_source=req.underlying_source,
+            underlying_symbol=req.underlying_symbol,
+            underlying_shares=req.underlying_shares,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    next_action = (
+        "PREPARE_OPTIONS"
+        if req.underlying_source == "existing"
+        else "PREPARE_UNDERLYING"
+    )
+
+    return {
+        "workflow": workflow,
+        "next_action": next_action,
+    }
+
+
 
 @app.get("/api/dashboard/portfolio")
 def dashboard_portfolio(request: Request):

@@ -3263,3 +3263,133 @@ def get_prepared_option_order(
                 ),
             )
             return cur.fetchone()
+
+def create_execution_workflow(
+    parity_user_id: str,
+    account_id: str,
+    brokerage_slug: str,
+    strategy_type: str,
+    underlying_source: str,
+    underlying_symbol: str,
+    underlying_shares: int,
+) -> dict:
+    """
+    Create a parent workflow before any underlying or option order is prepared.
+    """
+    option_contracts = underlying_shares // 100
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO execution_workflows (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    strategy_type,
+                    underlying_source,
+                    underlying_symbol,
+                    underlying_shares,
+                    option_contracts
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    strategy_type,
+                    underlying_source,
+                    underlying_symbol.upper(),
+                    underlying_shares,
+                    option_contracts,
+                ),
+            )
+            workflow = cur.fetchone()
+            conn.commit()
+
+    return workflow
+
+
+def get_execution_workflow(
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict | None:
+    """
+    Return a workflow only when it belongs to the requesting user.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            return cur.fetchone()
+
+
+def update_execution_workflow(
+    parity_user_id: str,
+    workflow_id: str,
+    status: str,
+    underlying_prepared_order_id: str | None = None,
+    options_prepared_order_id: str | None = None,
+) -> dict:
+    """
+    Advance a workflow without allowing a user to update another user's record.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    status = %s,
+                    underlying_prepared_order_id = COALESCE(
+                        %s,
+                        underlying_prepared_order_id
+                    ),
+                    options_prepared_order_id = COALESCE(
+                        %s,
+                        options_prepared_order_id
+                    ),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    status,
+                    underlying_prepared_order_id,
+                    options_prepared_order_id,
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+
+            if not workflow:
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            conn.commit()
+
+    return workflow

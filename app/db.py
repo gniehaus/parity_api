@@ -872,6 +872,7 @@ def init_db():
                     CHECK (
                         strategy_type IN (
                             'covered_call',
+                            'married_put',
                             'collar',
                             'buffer'
                         )
@@ -931,6 +932,23 @@ def init_db():
 
 
             
+            """)
+            cur.execute("""
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_strategy_type_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_strategy_type_check
+                CHECK (
+                    strategy_type IN (
+                        'covered_call',
+                        'married_put',
+                        'collar',
+                        'buffer'
+                    )
+                );
             """)
             conn.commit()
 

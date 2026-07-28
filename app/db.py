@@ -823,7 +823,42 @@ def init_db():
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
-                
+                CREATE TABLE IF NOT EXISTS prepared_option_orders (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                parity_user_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                brokerage_slug TEXT NOT NULL,
+                strategy_type TEXT NOT NULL,
+            
+                status TEXT NOT NULL DEFAULT 'PREPARED'
+                    CHECK (
+                        status IN (
+                            'PREPARED',
+                            'SUBMITTED',
+                            'EXPIRED',
+                            'CANCELED',
+                            'SUBMISSION_FAILED'
+                        )
+                    ),
+            
+                order_payload JSONB NOT NULL,
+                quote_snapshot JSONB,
+                client_order_id UUID NOT NULL DEFAULT gen_random_uuid(),
+            
+                prepared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL,
+                submitted_at TIMESTAMPTZ,
+            
+                snaptrade_brokerage_order_id TEXT,
+                submission_response JSONB
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_prepared_option_orders_user_status
+            ON prepared_option_orders (
+                parity_user_id,
+                status,
+                prepared_at DESC
+            );
             """)
             conn.commit()
 
@@ -869,6 +904,7 @@ def save_public_scorecard_snapshot(
                     market_data_timestamp,
                     generated_at,
                     updated_at
+
                 """,
                 (
                     cache_key,

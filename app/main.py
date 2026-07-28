@@ -16,6 +16,7 @@ choose_defined_floor_match,
  inspect_table,
 )
 
+
 from .advisory import router as advisory_router
 
 
@@ -38,6 +39,7 @@ from .snaptrade_service import (
     get_portfolio_summary,
     get_dashboard_holdings_for_metrics,
     get_account_level_portfolio_summary,
+    get_execution_account_context
 )
 from .plaid_service import (
     create_link_token,
@@ -711,6 +713,55 @@ def brokerage_sync(request: Request):
     parity_user_id = get_parity_user_id(request)
     return sync_brokerage_accounts_and_holdings(parity_user_id)
 
+
+@app.get(
+    "/api/brokerage/accounts/{account_id}/execution-capabilities"
+)
+def brokerage_execution_capabilities(
+    account_id: str,
+    request: Request,
+):
+    """
+    Read-only check used before Parity allows a user to prepare an order.
+    """
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        context = get_execution_account_context(
+            parity_user_id=parity_user_id,
+            account_id=account_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    capabilities = context["capabilities"]
+
+    return {
+        "account_id": context["account_id"],
+        "institution_name": context["institution_name"],
+        "account_name": context["account_name"],
+        "account_number_mask": context["account_number_mask"],
+        "brokerage_slug": context["brokerage_slug"],
+        "is_paper": context["is_paper"],
+        "supports_execution": (
+            capabilities.supports_execution
+        ),
+        "supports_multi_leg_options": (
+            capabilities.supports_multi_leg_options
+        ),
+        "supports_order_preview": (
+            capabilities.supports_order_preview
+        ),
+        "supports_equity_orders": (
+            capabilities.supports_equity_orders
+        ),
+        "supports_option_orders": (
+            capabilities.supports_option_orders
+        ),
+    }
 
 @app.get("/api/dashboard/portfolio")
 def dashboard_portfolio(request: Request):

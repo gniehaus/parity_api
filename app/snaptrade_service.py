@@ -6,6 +6,14 @@ from snaptrade_client import SnapTrade
 from .db import get_conn
 from .security import encrypt_secret, decrypt_secret
 
+
+from .broker_capabilities import (
+    BrokerExecutionCapabilities,
+    get_broker_capabilities,
+    resolve_brokerage_slug,
+)
+
+
 snaptrade = SnapTrade(
     client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
     consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
@@ -373,6 +381,74 @@ def list_accounts(parity_user_id: str):
 
     return _to_plain(response.body) or []
 
+def get_execution_account_context(
+    parity_user_id: str,
+    account_id: str,
+) -> dict:
+    """
+    Return a connected account only when it belongs to this user and is an
+    explicitly supported Parity execution brokerage.
+
+    This reads the locally synced account record. It does not place a trade.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    institution_name,
+                    account_name,
+                    account_number_mask,
+                    raw_json
+                FROM brokerage_accounts
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (account_id, parity_user_id),
+            )
+            account = cur.fetchone()
+
+    if not account:
+        raise ValueError(
+            "Connected brokerage account was not found"
+        )
+
+    raw_account = account["raw_json"] or {}
+
+    brokerage_slug = resolve_brokerage_slug(
+        institution_name=account["institution_name"],
+        is_paper=bool(raw_account.get("is_paper", False)),
+    )
+
+    if not brokerage_slug:
+        raise ValueError(
+            "This brokerage is not enabled for Parity execution"
+        )
+
+    capabilities: BrokerExecutionCapabilities | None = (
+        get_broker_capabilities(brokerage_slug)
+    )
+
+    if not capabilities or not capabilities.supports_execution:
+        raise ValueError(
+            "This brokerage is not enabled for Parity execution"
+        )
+
+    if not capabilities.supports_multi_leg_options:
+        raise ValueError(
+            "This brokerage does not support multi-leg option execution"
+        )
+
+    return {
+        "account_id": account["id"],
+        "institution_name": account["institution_name"],
+        "account_name": account["account_name"],
+        "account_number_mask": account["account_number_mask"],
+        "brokerage_slug": brokerage_slug,
+        "is_paper": bool(raw_account.get("is_paper", False)),
+        "capabilities": capabilities,
+    }
 
 def get_account_positions(parity_user_id: str, account_id: str):
     user = get_or_create_snaptrade_user(parity_user_id)

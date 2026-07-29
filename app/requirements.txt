@@ -16,3 +16,4 @@ lxml
 boto3
 mcp>=1.27,<2
 psycopg2-binary==2.9.10
+pandas-market-calendars>=4.6,<6

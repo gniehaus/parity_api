@@ -1,7 +1,7 @@
 import json
 import os
 from decimal import Decimal
-from snaptrade_client import SnapTrade
+from snaptrade_client import SnapTrade, SnapTradeAuth
 
 from .db import get_conn
 from .security import encrypt_secret, decrypt_secret
@@ -15,8 +15,10 @@ from .broker_capabilities import (
 
 
 snaptrade = SnapTrade(
-    client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
-    consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
+    auth=SnapTradeAuth.commercial_api_key(
+        client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
+        consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
+    ),
 )
 
 

@@ -9,6 +9,7 @@ from .db import (
     get_execution_workflow,
     get_execution_workflow_lots,
     get_execution_workflow_orders,
+    refresh_execution_order_draft,
 )
 from .execution_quotes import get_orats_option_quote
 from .mleg_payloads import (
@@ -271,7 +272,7 @@ def prepare_close_options_overlay_draft(
         "contracts": quoted_contracts,
     }
 
-    return create_execution_order(
+    order = create_execution_order(
         parity_user_id=parity_user_id,
         workflow_id=workflow_id,
         lot_id=lot_id,
@@ -285,6 +286,18 @@ def prepare_close_options_overlay_draft(
         requested_quantity=int(lot["share_quantity"]) // 100,
         order_payload=order_payload,
         execution_phase="CLOSE_OPTIONS",
+        limit_price=float(order_payload["limit_price"]),
+        price_effect=order_payload["price_effect"],
+        quote_snapshot=quote_snapshot,
+    )
+
+    if order["status"] != "DRAFT":
+        return order
+
+    return refresh_execution_order_draft(
+        parity_user_id=parity_user_id,
+        order_id=order["id"],
+        order_payload=order_payload,
         limit_price=float(order_payload["limit_price"]),
         price_effect=order_payload["price_effect"],
         quote_snapshot=quote_snapshot,

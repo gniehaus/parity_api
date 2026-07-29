@@ -19,6 +19,11 @@ from .execution_status import (
     refresh_execution_order_status,
 )
 
+from .execution_closing import (
+    prepare_close_options_overlay_draft,
+)
+
+
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
@@ -163,6 +168,12 @@ class ExecutionOrderSubmitRequest(BaseModel):
 
 class ExecutionOrderCancelRequest(BaseModel):
     confirm_cancellation: bool
+
+class ExecutionCloseOptionsOverlayRequest(BaseModel):
+    lot_id: str
+    limit_price: float = Field(gt=0)
+    price_effect: str
+    time_in_force: str = "Day"
 
 
 class ExecutionWorkflowAbandonRequest(BaseModel):
@@ -1050,6 +1061,53 @@ def execution_equity_order_draft_create(
     }
 
 
+
+
+
+@app.post("/api/execution/workflows/{workflow_id}/options-close/draft")
+def execution_options_close_draft_create(
+    workflow_id: str,
+    req: ExecutionCloseOptionsOverlayRequest,
+    request: Request,
+):
+    """
+    Create a fresh-quoted, unsubmitted draft that closes only the
+    option overlay of a completed workflow lot.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_close_existing_outcomes",
+    )
+
+    try:
+        order = prepare_close_options_overlay_draft(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            lot_id=req.lot_id,
+            limit_price=req.limit_price,
+            price_effect=req.price_effect,
+            time_in_force=req.time_in_force,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "order": order,
+    }
+
+
+
+
+
+
+
+
 @app.post("/api/execution/orders/{order_id}/prepare")
 def execution_order_prepare(
     order_id: str,
@@ -1057,9 +1115,15 @@ def execution_order_prepare(
 ):
     parity_user_id = get_parity_user_id(request)
 
+    required_feature = (
+        "can_close_existing_outcomes"
+        if order["execution_phase"] == "CLOSE_OPTIONS"
+        else "can_execute_new_orders"
+    )
+
     require_subscription_feature(
         request,
-        "can_execute_new_orders",
+        required_feature,
     )
 
     order = get_execution_order(
@@ -1122,11 +1186,27 @@ def execution_order_submit(
 
     parity_user_id = get_parity_user_id(request)
 
-    require_subscription_feature(
-        request,
-        "can_execute_new_orders",
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
     )
 
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution order was not found",
+        )
+
+    required_feature = (
+        "can_close_existing_outcomes"
+        if order["execution_phase"] == "CLOSE_OPTIONS"
+        else "can_execute_new_orders"
+    )
+
+    require_subscription_feature(
+        request,
+        required_feature,
+    )
     try:
         result = submit_prepared_option_order(
             parity_user_id=parity_user_id,

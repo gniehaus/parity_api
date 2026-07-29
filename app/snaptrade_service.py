@@ -463,6 +463,46 @@ def get_account_positions(parity_user_id: str, account_id: str):
 
     return _to_plain(response.body) or []
 
+def get_all_account_positions(
+    parity_user_id: str,
+    account_id: str,
+) -> dict:
+    """
+    Return SnapTrade's current account positions, including options.
+
+    This is read-only and uses the non-deprecated endpoint.
+    """
+
+    user = get_or_create_snaptrade_user(parity_user_id)
+
+    response = (
+        snaptrade.account_information
+        .get_all_account_positions(
+            user_id=user["snaptrade_user_id"],
+            user_secret=user["user_secret"],
+            account_id=account_id,
+        )
+    )
+
+    body = _to_plain(response.body) or {}
+
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            "SnapTrade returned an invalid all-positions response"
+        )
+
+    positions = body.get("results") or []
+
+    if not isinstance(positions, list):
+        raise RuntimeError(
+            "SnapTrade returned an invalid positions list"
+        )
+
+    return {
+        "positions": positions,
+        "data_freshness": body.get("data_freshness"),
+    }
+
 
 def sync_brokerage_accounts_and_holdings(parity_user_id: str):
     accounts = list_accounts(parity_user_id)

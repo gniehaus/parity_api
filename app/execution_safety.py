@@ -114,15 +114,23 @@ def assert_order_submission_window(
 def validate_execution_order_safety(
     order: dict[str, Any],
     now: datetime | None = None,
+    allowed_statuses: set[str] | None = None,
 ) -> dict[str, Any]:
     """
     Validate a stored DRAFT order immediately before it can be promoted
     to PREPARED. This function never submits an order.
     """
 
-    if order["status"] != "DRAFT":
+    permitted_statuses = allowed_statuses or {"DRAFT"}
+
+    if order["status"] not in permitted_statuses:
+        allowed_status_list = ", ".join(
+            sorted(permitted_statuses)
+        )
+
         raise ExecutionSafetyError(
-            "Only DRAFT orders can be prepared for submission"
+            "Order status must be one of: "
+            f"{allowed_status_list}"
         )
 
     payload = order.get("order_payload") or {}

@@ -118,7 +118,7 @@ def submit_prepared_option_order(
                 symbol=payload["symbol"],
                 trading_session=payload["trading_session"],
                 units=payload["units"],
-                client_order_id=submitting_order["client_order_id"],
+                client_order_id=str(submitting_order["client_order_id"]),
                 user_id=snaptrade_user["snaptrade_user_id"],
                 user_secret=snaptrade_user["user_secret"],
             )

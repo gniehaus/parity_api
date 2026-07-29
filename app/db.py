@@ -4186,3 +4186,95 @@ def mark_execution_order_action_required(
             conn.commit()
 
     return action_required_order
+
+def update_execution_order_broker_status(
+    parity_user_id: str,
+    order_id: str,
+    status: str,
+    filled_quantity: float,
+    average_fill_price: float | None,
+    broker_response: dict,
+    rejection_reason: str | None = None,
+) -> dict:
+    """
+    Save the latest broker-reported state for one submitted order.
+
+    This records status only. It does not submit, cancel, replace, or
+    advance any later workflow step.
+    """
+
+    allowed_statuses = {
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELED",
+        "EXPIRED",
+        "REJECTED",
+        "REQUOTE_REQUIRED",
+        "ACTION_REQUIRED",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError(
+            f"Invalid execution order status: {status}"
+        )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = %s,
+                    filled_quantity = %s,
+                    average_fill_price = %s,
+                    broker_response = %s::jsonb,
+                    rejection_reason = %s,
+                    last_checked_at = NOW(),
+                    filled_at = CASE
+                        WHEN %s = 'FILLED' THEN NOW()
+                        ELSE filled_at
+                    END,
+                    canceled_at = CASE
+                        WHEN %s IN (
+                            'CANCELED',
+                            'EXPIRED',
+                            'REJECTED'
+                        ) THEN NOW()
+                        ELSE canceled_at
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'SUBMITTED',
+                      'WORKING',
+                      'PARTIALLY_FILLED',
+                      'ACTION_REQUIRED'
+                  )
+                RETURNING *
+                """,
+                (
+                    status,
+                    filled_quantity,
+                    average_fill_price,
+                    json.dumps(broker_response),
+                    rejection_reason,
+                    status,
+                    status,
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            updated_order = cur.fetchone()
+
+            if not updated_order:
+                raise ValueError(
+                    "Only submitted execution orders can be reconciled"
+                )
+
+            conn.commit()
+
+    return updated_order

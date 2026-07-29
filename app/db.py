@@ -4068,14 +4068,17 @@ def claim_execution_order_submission(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE execution_orders
+                UPDATE execution_orders eo
                 SET
                     status = 'SUBMITTING',
                     updated_at = NOW()
-                WHERE id = %s
-                  AND parity_user_id = %s
-                  AND status = 'PREPARED'
-                RETURNING *
+                FROM execution_workflows ew
+                WHERE eo.id = %s
+                  AND eo.parity_user_id = %s
+                  AND eo.status = 'PREPARED'
+                  AND ew.id = eo.workflow_id
+                  AND ew.status <> 'CANCELED'
+                RETURNING eo.*
                 """,
                 (
                     order_id,
@@ -4569,3 +4572,137 @@ def mark_execution_workflow_complete_if_all_lots_complete(
             conn.commit()
 
     return workflow
+
+
+def abandon_execution_workflow(
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict:
+    """
+    Permanently abandon an unfilled execution workflow.
+
+    This never calls a broker. It refuses to release reservations if
+    any order is active, uncertain, or has filled quantity.
+    """
+
+    active_or_uncertain_statuses = {
+        "SUBMITTING",
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "CANCELING",
+        "ACTION_REQUIRED",
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+
+            if not workflow:
+                raise ValueError("Execution workflow was not found")
+
+            if workflow["status"] == "COMPLETE":
+                raise ValueError(
+                    "Completed workflows cannot be abandoned"
+                )
+
+            if workflow["status"] == "CANCELED":
+                return workflow
+
+            cur.execute(
+                """
+                SELECT status, filled_quantity
+                FROM execution_orders
+                WHERE workflow_id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            orders = cur.fetchall()
+
+            has_fills = any(
+                float(order["filled_quantity"] or 0) > 0
+                for order in orders
+            )
+            has_active_or_uncertain_order = any(
+                order["status"] in active_or_uncertain_statuses
+                for order in orders
+            )
+
+            if has_fills or has_active_or_uncertain_order:
+                raise ValueError(
+                    "A workflow can be abandoned only after every "
+                    "order is terminal, confirmed, and unfilled"
+                )
+
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'CANCELED',
+                    canceled_at = COALESCE(canceled_at, NOW()),
+                    updated_at = NOW()
+                WHERE workflow_id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'DRAFT',
+                      'PREPARED',
+                      'REQUOTE_REQUIRED'
+                  )
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            cur.execute(
+                """
+                UPDATE execution_workflow_lots
+                SET
+                    reserved_share_quantity = 0,
+                    status = 'CANCELED',
+                    updated_at = NOW()
+                WHERE workflow_id = %s
+                  AND status <> 'COMPLETE'
+                """,
+                (workflow_id,),
+            )
+
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    status = 'CANCELED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            abandoned_workflow = cur.fetchone()
+
+            conn.commit()
+
+            return abandoned_workflow

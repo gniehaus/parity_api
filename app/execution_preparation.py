@@ -304,4 +304,4 @@ def prepare_option_order_draft(
         )
 
     return order
-    )
+    

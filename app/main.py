@@ -20,12 +20,19 @@ choose_defined_floor_match,
  inspect_table,
 )
 from .execution_plan import build_execution_plan
+
 from .execution_safety import (
     ExecutionSafetyError,
     validate_execution_order_safety,
 )
 from .advisory import router as advisory_router
 from .execution_preparation import prepare_option_order_draft
+
+
+from .execution_submission import (
+    ExecutionSubmissionError,
+    submit_prepared_option_order,
+)
 
 
 from .db import (
@@ -136,7 +143,8 @@ snaptrade = SnapTrade(
 )
 
 
-
+class ExecutionOrderSubmitRequest(BaseModel):
+    confirm_submission: bool
 
 class RecommendationRunRequest(BaseModel):
     engine_version: str = "v1"
@@ -1029,7 +1037,50 @@ def execution_order_prepare(
         "order": prepared_order,
         "safety": safety,
     }
-    
+
+
+@app.post("/api/execution/orders/{order_id}/submit")
+def execution_order_submit(
+    order_id: str,
+    req: ExecutionOrderSubmitRequest,
+    request: Request,
+):
+    """
+    Explicitly submit one PREPARED option order.
+
+    This is the only endpoint in this workflow that may call SnapTrade.
+    """
+
+    if req.confirm_submission is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_submission must be true before an order "
+                "can be submitted"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+
+    try:
+        result = submit_prepared_option_order(
+            parity_user_id=parity_user_id,
+            order_id=order_id,
+        )
+
+    except ExecutionSubmissionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    return result
+
 
 @app.get("/api/dashboard/portfolio")
 def dashboard_portfolio(request: Request):

@@ -3,6 +3,9 @@ from typing import Any
 from .db import (
     get_execution_order,
     update_execution_order_broker_status,
+    advance_execution_lot_after_fill,
+    get_execution_workflow,
+    mark_execution_workflow_complete_if_all_lots_complete,
 )
 from .snaptrade_service import (
     _to_plain,
@@ -138,51 +141,164 @@ def refresh_execution_order_status(
             "SnapTrade returned an invalid recent-orders list"
         )
 
-    matched_broker_order = next(
-        (
+    submitted_broker_response = (
+        order.get("broker_response") or {}
+    )
+    submitted_children = (
+        submitted_broker_response.get("orders") or []
+    )
+
+    expected_child_order_ids = {
+        str(child.get("brokerage_order_id"))
+        for child in submitted_children
+        if child.get("brokerage_order_id")
+    }
+
+    if (
+        order["order_scope"] == "OPTIONS_PACKAGE"
+        and expected_child_order_ids
+    ):
+        matched_child_orders = [
             broker_order
             for broker_order in broker_orders
             if str(
                 broker_order.get("brokerage_order_id")
-            ) == str(broker_order_id)
-        ),
-        None,
-    )
+            ) in expected_child_order_ids
+        ]
 
-    if not matched_broker_order:
-        return {
-            "found": False,
-            "order": order,
-            "message": (
-                "SnapTrade has not returned this order in the "
-                "account-orders feed yet"
-            ),
+        if not matched_child_orders:
+            return {
+                "found": False,
+                "order": order,
+                "message": (
+                    "SnapTrade has not returned this option package "
+                    "in the account-orders feed yet"
+                ),
+            }
+
+        child_statuses = {
+            str(child.get("status") or "").upper()
+            for child in matched_child_orders
         }
 
-    filled_quantity = _as_float(
-        matched_broker_order.get("filled_quantity")
-    )
+        child_filled_quantities = [
+            _as_float(child.get("filled_quantity"))
+            for child in matched_child_orders
+        ]
 
-    execution_price_value = (
-        matched_broker_order.get("execution_price")
-    )
+        all_children_executed = (
+            len(matched_child_orders)
+            == len(expected_child_order_ids)
+            and child_statuses == {"EXECUTED"}
+        )
 
-    average_fill_price = (
-        _as_float(execution_price_value)
-        if execution_price_value is not None
-        else None
-    )
+        any_child_filled = any(
+            quantity > 0
+            for quantity in child_filled_quantities
+        )
 
-    local_status = _map_broker_status(
-        broker_status=matched_broker_order.get("status"),
-        filled_quantity=filled_quantity,
-    )
+        terminal_child_statuses = {
+            "CANCELED",
+            "CANCELLED",
+            "PARTIAL_CANCELED",
+            "EXPIRED",
+            "FAILED",
+            "REJECTED",
+            "REPLACED",
+        }
+
+        if all_children_executed:
+            local_status = "FILLED"
+            filled_quantity = float(
+                order["requested_quantity"]
+            )
+
+            buy_total = sum(
+                _as_float(child.get("execution_price"))
+                for child in matched_child_orders
+                if str(child.get("action") or "").upper()
+                .startswith("BUY")
+            )
+            sell_total = sum(
+                _as_float(child.get("execution_price"))
+                for child in matched_child_orders
+                if str(child.get("action") or "").upper()
+                .startswith("SELL")
+            )
+
+            if order.get("price_effect") == "CREDIT":
+                average_fill_price = sell_total - buy_total
+            elif order.get("price_effect") == "DEBIT":
+                average_fill_price = buy_total - sell_total
+            else:
+                average_fill_price = 0.0
+
+        elif (
+            any_child_filled
+            or child_statuses & terminal_child_statuses
+        ):
+            local_status = "ACTION_REQUIRED"
+            filled_quantity = min(child_filled_quantities)
+            average_fill_price = None
+
+        else:
+            local_status = "WORKING"
+            filled_quantity = 0.0
+            average_fill_price = None
+
+        matched_broker_order = {
+            "brokerage_order_id": order["broker_order_id"],
+            "orders": matched_child_orders,
+        }
+
+    else:
+        matched_broker_order = next(
+            (
+                broker_order
+                for broker_order in broker_orders
+                if str(
+                    broker_order.get("brokerage_order_id")
+                ) == str(broker_order_id)
+            ),
+            None,
+        )
+
+        if not matched_broker_order:
+            return {
+                "found": False,
+                "order": order,
+                "message": (
+                    "SnapTrade has not returned this order in the "
+                    "account-orders feed yet"
+                ),
+            }
+
+        filled_quantity = _as_float(
+            matched_broker_order.get("filled_quantity")
+        )
+
+        execution_price_value = (
+            matched_broker_order.get("execution_price")
+        )
+
+        average_fill_price = (
+            _as_float(execution_price_value)
+            if execution_price_value is not None
+            else None
+        )
+
+        local_status = _map_broker_status(
+            broker_status=matched_broker_order.get("status"),
+            filled_quantity=filled_quantity,
+        )
 
     rejection_reason = None
 
     if local_status in {"REJECTED", "ACTION_REQUIRED"}:
-        rejection_reason = str(
-            matched_broker_order.get("status")
+        rejection_reason = (
+            "One or more option-package legs require review"
+            if order["order_scope"] == "OPTIONS_PACKAGE"
+            else str(matched_broker_order.get("status"))
         )
 
     updated_order = update_execution_order_broker_status(
@@ -198,8 +314,53 @@ def refresh_execution_order_status(
         rejection_reason=rejection_reason,
     )
 
+    updated_lot = None
+    updated_workflow = None
+
+    if local_status == "FILLED":
+        workflow = get_execution_workflow(
+            parity_user_id=parity_user_id,
+            workflow_id=updated_order["workflow_id"],
+        )
+
+        if not workflow:
+            raise ExecutionStatusError(
+                "Execution workflow was not found"
+            )
+
+        execution_plan = workflow.get("execution_plan") or []
+
+        if not execution_plan:
+            raise ExecutionStatusError(
+                "Execution workflow is missing its execution plan"
+            )
+
+        final_sequence = max(
+            step["sequence"]
+            for step in execution_plan
+        )
+
+        updated_lot = advance_execution_lot_after_fill(
+            parity_user_id=parity_user_id,
+            workflow_id=updated_order["workflow_id"],
+            lot_id=updated_order["lot_id"],
+            is_final_step=(
+                updated_order["sequence"] == final_sequence
+            ),
+        )
+
+        if updated_lot["status"] == "COMPLETE":
+            updated_workflow = (
+                mark_execution_workflow_complete_if_all_lots_complete(
+                    parity_user_id=parity_user_id,
+                    workflow_id=updated_order["workflow_id"],
+                )
+            )
+
     return {
         "found": True,
         "order": updated_order,
+        "lot": updated_lot,
+        "workflow": updated_workflow,
         "broker_order": matched_broker_order,
     }

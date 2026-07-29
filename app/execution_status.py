@@ -387,7 +387,10 @@ def refresh_execution_order_status(
     updated_lot = None
     updated_workflow = None
 
-    if local_status == "FILLED":
+    if (
+        local_status == "FILLED"
+        and updated_order["execution_phase"] == "INITIAL"
+        ):
         workflow = get_execution_workflow(
             parity_user_id=parity_user_id,
             workflow_id=updated_order["workflow_id"],

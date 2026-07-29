@@ -1038,7 +1038,10 @@ def init_db():
                                 'SELL_COVERED_CALL',
                                 'COLLAR_OPTIONS_PACKAGE',
                                 'BUFFER_OPTIONS_PACKAGE',
-                                'BUY_PUT_SPREAD_PACKAGE'
+                                'BUY_PUT_SPREAD_PACKAGE',
+                                'CLOSE_OPTIONS_OVERLAY'
+                                
+                                
                             )
                         ),
 
@@ -1057,7 +1060,8 @@ def init_db():
                                 'INITIAL',
                                 'CONTINUATION',
                                 'RECONCILIATION',
-                                'REQUOTE'
+                                'REQUOTE',
+                                'CLOSE_OPTIONS'
                             )
                         ),
 
@@ -1159,6 +1163,43 @@ def init_db():
                         'FAILED',
                         'REQUOTE_REQUIRED',
                         'ACTION_REQUIRED'
+                    )
+                );
+                ALTER TABLE execution_orders
+                DROP CONSTRAINT IF EXISTS
+                    execution_orders_order_role_check;
+
+                ALTER TABLE execution_orders
+                ADD CONSTRAINT
+                    execution_orders_order_role_check
+                CHECK (
+                    order_role IN (
+                        'BUY_UNDERLYING',
+                        'BUY_PROTECTIVE_PUT',
+                        'BUY_HIGHER_STRIKE_PUT',
+                        'SELL_LOWER_STRIKE_PUT',
+                        'SELL_COVERED_CALL',
+                        'COLLAR_OPTIONS_PACKAGE',
+                        'BUFFER_OPTIONS_PACKAGE',
+                        'BUY_PUT_SPREAD_PACKAGE',
+                        'CLOSE_OPTIONS_OVERLAY'
+                    )
+                );
+
+                ALTER TABLE execution_orders
+                DROP CONSTRAINT IF EXISTS
+                    execution_orders_execution_phase_check;
+
+                ALTER TABLE execution_orders
+                ADD CONSTRAINT
+                    execution_orders_execution_phase_check
+                CHECK (
+                    execution_phase IN (
+                        'INITIAL',
+                        'CONTINUATION',
+                        'RECONCILIATION',
+                        'REQUOTE',
+                        'CLOSE_OPTIONS'
                     )
                 );
             """)

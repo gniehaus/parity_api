@@ -383,6 +383,85 @@ def list_accounts(parity_user_id: str):
 
     return _to_plain(response.body) or []
 
+
+
+
+
+def _require_active_trade_authorization_for_account(
+    *,
+    parity_user_id: str,
+    account_id: str,
+) -> None:
+    """
+    Confirm this exact account is attached to an active SnapTrade
+    connection authorized for trading.
+    """
+
+    user = get_or_create_snaptrade_user(parity_user_id)
+
+    response = snaptrade.connections.list_brokerage_authorizations(
+        user_id=user["snaptrade_user_id"],
+        user_secret=user["user_secret"],
+    )
+
+    authorizations = _to_plain(response.body) or []
+
+    if not isinstance(authorizations, list):
+        raise ValueError(
+            "SnapTrade returned an invalid brokerage-connections response"
+        )
+
+    for authorization in authorizations:
+        if (
+            str(authorization.get("type", "")).lower() != "trade"
+            or authorization.get("disabled") is True
+        ):
+            continue
+
+        authorization_id = authorization.get("id")
+
+        if not authorization_id:
+            continue
+
+        accounts_response = (
+            snaptrade.connections
+            .list_brokerage_authorization_accounts(
+                authorization_id=str(authorization_id),
+                user_id=user["snaptrade_user_id"],
+                user_secret=user["user_secret"],
+            )
+        )
+
+        authorization_accounts = (
+            _to_plain(accounts_response.body) or []
+        )
+
+        if isinstance(authorization_accounts, dict):
+            authorization_accounts = (
+                authorization_accounts.get("accounts") or []
+            )
+
+        if not isinstance(authorization_accounts, list):
+            continue
+
+        if any(
+            str(candidate.get("id")) == str(account_id)
+            for candidate in authorization_accounts
+            if isinstance(candidate, dict)
+        ):
+            return
+
+    raise ValueError(
+        "This account does not have an active trading authorization"
+    )
+
+
+
+
+
+
+
+
 def get_execution_account_context(
     parity_user_id: str,
     account_id: str,
@@ -416,6 +495,10 @@ def get_execution_account_context(
             "Connected brokerage account was not found"
         )
 
+    _require_active_trade_authorization_for_account(
+        parity_user_id=parity_user_id,
+        account_id=account_id,
+    )
     raw_account = account["raw_json"] or {}
 
     brokerage_slug = resolve_brokerage_slug(

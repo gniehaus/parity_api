@@ -798,21 +798,13 @@ def brokerage_accounts(request: Request):
     return list_accounts(parity_user_id)
 
 
-@app.get("/api/brokerage/accounts/{account_id}/positions")
-def brokerage_positions(account_id: str, request: Request):
-    parity_user_id = get_parity_user_id(request)
-    return get_account_positions(parity_user_id, account_id)
-
-
 @app.post("/api/brokerage/sync")
 def brokerage_sync(request: Request):
     parity_user_id = get_parity_user_id(request)
     return sync_brokerage_accounts_and_holdings(parity_user_id)
 
 
-@app.get(
-    "/api/brokerage/accounts/{account_id}/execution-capabilities"
-)
+@app.get("/api/brokerage/accounts/{account_id}/execution-capabilities")
 def brokerage_execution_capabilities(
     account_id: str,
     request: Request,

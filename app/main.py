@@ -82,7 +82,7 @@ from .snaptrade_service import (
     get_dashboard_holdings_for_metrics,
     get_account_level_portfolio_summary,
     get_execution_account_context,
-    get_all_account_positions
+    get_all_account_positions,
 )
 from .plaid_service import (
     create_link_token,

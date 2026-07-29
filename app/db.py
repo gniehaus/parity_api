@@ -4000,6 +4000,78 @@ def mark_execution_order_prepared(
                 "Only DRAFT execution orders can be prepared; "
                 f"current status is {existing_order['status']}"
             )
+
+
+
+def claim_execution_order_submission(
+    parity_user_id: str,
+    order_id: str,
+) -> dict:
+    """
+    Atomically claim a PREPARED order for broker submission.
+
+    Once claimed, duplicate requests cannot submit the same order again.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'SUBMITTING',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'PREPARED'
+                RETURNING *
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            submitting_order = cur.fetchone()
+
+            if submitting_order:
+                conn.commit()
+                return submitting_order
+
+            cur.execute(
+                """
+                SELECT status
+                FROM execution_orders
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            existing_order = cur.fetchone()
+
+            if not existing_order:
+                raise ValueError(
+                    "Execution order was not found"
+                )
+
+            if existing_order["status"] == "SUBMITTING":
+                raise ValueError(
+                    "Execution order is already being submitted"
+                )
+
+            raise ValueError(
+                "Only PREPARED orders can be submitted; "
+                f"current status is {existing_order['status']}"
+            )
+
+
+
+
+            
 def mark_execution_order_submitted(
     parity_user_id: str,
     order_id: str,
@@ -4027,7 +4099,7 @@ def mark_execution_order_submitted(
                     updated_at = NOW()
                 WHERE id = %s
                   AND parity_user_id = %s
-                  AND status = 'PREPARED'
+                  AND status = 'SUBMITTING'
                 RETURNING *
                 """,
                 (
@@ -4059,7 +4131,7 @@ def mark_execution_order_submitted(
                     )
 
                 raise ValueError(
-                    "Only PREPARED orders can be marked submitted"
+                    "Only SUBMITTING orders can be marked submitted"
                 )
 
             conn.commit()

@@ -83,6 +83,7 @@ from .snaptrade_service import (
     get_account_level_portfolio_summary,
     get_execution_account_context,
     get_all_account_positions,
+    create_connection_url,
 )
 from .plaid_service import (
     create_link_token,
@@ -804,6 +805,32 @@ def plaid_bank_accounts(request: Request):
 def brokerage_connect_url(request: Request):
     parity_user_id = get_parity_user_id(request)
     return create_connection_url(parity_user_id)
+
+
+@app.post(
+    "/api/brokerage/connections/{authorization_id}/enable-trading"
+)
+def brokerage_connection_enable_trading(
+    authorization_id: str,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+
+    try:
+        return create_trading_reconnect_url(
+            parity_user_id=parity_user_id,
+            authorization_id=authorization_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
 @app.get("/api/brokerage/accounts")

@@ -65,6 +65,7 @@ from .db import (
     get_execution_workflow_orders,
     get_execution_order,
     mark_execution_order_prepared,
+    abandon_execution_workflow,
 )
 
 from .snaptrade_service import (
@@ -163,6 +164,9 @@ class ExecutionOrderSubmitRequest(BaseModel):
 class ExecutionOrderCancelRequest(BaseModel):
     confirm_cancellation: bool
 
+
+class ExecutionWorkflowAbandonRequest(BaseModel):
+    confirm_abandonment: bool
 
 class RecommendationRunRequest(BaseModel):
     engine_version: str = "v1"
@@ -1177,6 +1181,51 @@ def execution_order_cancel(
             detail=str(exc),
         ) from exc
 
+
+
+@app.post(
+    "/api/execution/workflows/{workflow_id}/abandon"
+)
+def execution_workflow_abandon(
+    workflow_id: str,
+    req: ExecutionWorkflowAbandonRequest,
+    request: Request,
+):
+    """
+    Permanently abandon an unfilled workflow and release any
+    existing-share reservation. This never calls SnapTrade.
+    """
+
+    if req.confirm_abandonment is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_abandonment must be true before a workflow "
+                "can be abandoned"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_close_existing_outcomes",
+    )
+
+    try:
+        workflow = abandon_execution_workflow(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "workflow": workflow,
+    }
 
 
 

@@ -54,7 +54,7 @@ def submit_prepared_option_order(
     order_id: str,
 ) -> dict[str, Any]:
     """
-    Submit one explicitly approved, PREPARED option order to SnapTrade.
+    Submit one explicitly approved, PREPARED execution order to SnapTrade.
 
     This function must only be called by an authenticated endpoint that
     has rechecked can_execute_new_orders immediately before this call.
@@ -81,7 +81,7 @@ def submit_prepared_option_order(
         "EQUITY",
     }:
         raise ExecutionSubmissionError(
-            "This submission service supports option orders only"
+            "Unsupported execution order scope"
         )
 
     try:

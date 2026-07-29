@@ -21,37 +21,18 @@ def _cancellation_target_order_ids(
     order: dict[str, Any],
 ) -> list[str]:
     """
-    Cancel each child order of an options package. For a single-leg
-    order, cancel its brokerage order ID directly.
+    Cancel a multi-leg order through its SnapTrade group ID. Single-leg
+    orders use their brokerage order ID directly.
     """
-
-    if order["order_scope"] == "OPTIONS_PACKAGE":
-        broker_response = order.get("broker_response") or {}
-        children = (
-            broker_response.get("orders")
-            or (
-                broker_response.get("order") or {}
-            ).get("orders")
-            or []
-        )
-
-        child_ids = [
-            str(child["brokerage_order_id"])
-            for child in children
-            if child.get("brokerage_order_id")
-        ]
-
-        if child_ids:
-            return child_ids
 
     broker_order_id = order.get("broker_order_id")
 
-    if broker_order_id:
-        return [str(broker_order_id)]
+    if not broker_order_id:
+        raise ExecutionCancellationError(
+            "Execution order is missing its brokerage order ID"
+        )
 
-    raise ExecutionCancellationError(
-        "Execution order is missing its brokerage order ID"
-    )
+    return [str(broker_order_id)]
 
 
 def request_execution_order_cancellation(

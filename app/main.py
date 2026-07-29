@@ -43,6 +43,11 @@ from .execution_submission import (
     submit_prepared_option_order,
 )
 
+from .execution_cancellation import (
+    ExecutionCancellationError,
+    request_execution_order_cancellation,
+)
+
 
 from .db import (
     init_db,
@@ -154,6 +159,10 @@ snaptrade = SnapTrade(
 
 class ExecutionOrderSubmitRequest(BaseModel):
     confirm_submission: bool
+
+class ExecutionOrderCancelRequest(BaseModel):
+    confirm_cancellation: bool
+
 
 class RecommendationRunRequest(BaseModel):
     engine_version: str = "v1"
@@ -1127,6 +1136,48 @@ def execution_order_submit(
         ) from exc
 
     return result
+
+
+
+@app.post("/api/execution/orders/{order_id}/cancel")
+def execution_order_cancel(
+    order_id: str,
+    req: ExecutionOrderCancelRequest,
+    request: Request,
+):
+    """
+    Explicitly request cancellation of one working brokerage order.
+    """
+
+    if req.confirm_cancellation is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_cancellation must be true before an order "
+                "can be canceled"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_close_existing_outcomes",
+    )
+
+    try:
+        return request_execution_order_cancellation(
+            parity_user_id=parity_user_id,
+            order_id=order_id,
+        )
+
+    except ExecutionCancellationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
 
 
 @app.post("/api/execution/orders/{order_id}/status/refresh")

@@ -114,18 +114,28 @@ def refresh_execution_order_status(
         parity_user_id
     )
 
-    response = snaptrade.account_information.get_user_account_orders(
-        user_id=snaptrade_user["snaptrade_user_id"],
-        user_secret=snaptrade_user["user_secret"],
-        account_id=order["account_id"],
-        days=1,
+    response = (
+        snaptrade.account_information
+        .get_user_account_recent_orders(
+            user_id=snaptrade_user["snaptrade_user_id"],
+            user_secret=snaptrade_user["user_secret"],
+            account_id=order["account_id"],
+            only_executed=False,
+        )
     )
 
-    broker_orders = _to_plain(response.body)
+    recent_orders_response = _to_plain(response.body)
+
+    if not isinstance(recent_orders_response, dict):
+        raise ExecutionStatusError(
+            "SnapTrade returned an unexpected recent-orders response"
+        )
+
+    broker_orders = recent_orders_response.get("orders") or []
 
     if not isinstance(broker_orders, list):
         raise ExecutionStatusError(
-            "SnapTrade returned an unexpected orders response"
+            "SnapTrade returned an invalid recent-orders list"
         )
 
     matched_broker_order = next(

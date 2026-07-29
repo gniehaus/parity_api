@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from fastapi.responses import PlainTextResponse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -168,6 +168,11 @@ class ExecutionWorkflowCreateRequest(BaseModel):
     underlying_source: str
     underlying_symbol: str
     underlying_shares: int
+    execution_preference: Literal[
+        "preserve_outcome",
+        "balanced",
+        "complete_sooner",
+    ] = "balanced"
 
 class ExpenseRatioRequest(BaseModel):
     symbols: List[str]
@@ -857,7 +862,8 @@ def execution_workflow_create(
             parity_user_id=parity_user_id,
             workflow_id=workflow["id"],
             execution_plan=execution_plan,
-    )
+            execution_preference=req.execution_preference,
+        )
 
     except ValueError as exc:
         raise HTTPException(

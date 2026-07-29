@@ -1066,6 +1066,7 @@ def init_db():
                             status IN (
                                 'DRAFT',
                                 'PREPARED',
+                                'SUBMITTING',
                                 'SUBMITTED',
                                 'WORKING',
                                 'PARTIALLY_FILLED',
@@ -1134,6 +1135,31 @@ def init_db():
                     broker_order_id
                 )
                 WHERE broker_order_id IS NOT NULL;
+            """)
+            cur.execute("""
+                ALTER TABLE execution_orders
+                DROP CONSTRAINT IF EXISTS
+                    execution_orders_status_check;
+
+                ALTER TABLE execution_orders
+                ADD CONSTRAINT execution_orders_status_check
+                CHECK (
+                    status IN (
+                        'DRAFT',
+                        'PREPARED',
+                        'SUBMITTING',
+                        'SUBMITTED',
+                        'WORKING',
+                        'PARTIALLY_FILLED',
+                        'FILLED',
+                        'CANCELED',
+                        'EXPIRED',
+                        'REJECTED',
+                        'FAILED',
+                        'REQUOTE_REQUIRED',
+                        'ACTION_REQUIRED'
+                    )
+                );
             """)
             conn.commit()
 

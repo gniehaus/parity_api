@@ -4327,3 +4327,57 @@ def update_execution_order_broker_status(
             conn.commit()
 
     return updated_order
+
+def advance_execution_lot_after_fill(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    lot_id: str,
+    is_final_step: bool,
+) -> dict:
+    """
+    Advance one lot after a child order has been broker-confirmed FILLED.
+    """
+
+    next_status = (
+        "COMPLETE"
+        if is_final_step
+        else "WAITING_FOR_NEXT_STEP"
+    )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflow_lots l
+                SET
+                    status = %s,
+                    completed_at = CASE
+                        WHEN %s THEN NOW()
+                        ELSE completed_at
+                    END,
+                    updated_at = NOW()
+                FROM execution_workflows w
+                WHERE l.id = %s
+                  AND l.workflow_id = %s
+                  AND w.id = l.workflow_id
+                  AND w.parity_user_id = %s
+                RETURNING l.*
+                """,
+                (
+                    next_status,
+                    is_final_step,
+                    lot_id,
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            lot = cur.fetchone()
+
+            if not lot:
+                raise ValueError("Execution lot was not found")
+
+            conn.commit()
+
+    return lot

@@ -929,6 +929,57 @@ def init_db():
                 created_at DESC
             );
 
+            CREATE TABLE IF NOT EXISTS execution_workflow_lots (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        
+            workflow_id UUID NOT NULL
+                REFERENCES execution_workflows(id)
+                ON DELETE CASCADE,
+        
+            lot_number INTEGER NOT NULL
+                CHECK (lot_number > 0),
+        
+            share_quantity INTEGER NOT NULL DEFAULT 100
+                CHECK (share_quantity = 100),
+        
+            reserved_share_quantity INTEGER NOT NULL DEFAULT 0
+                CHECK (
+                    reserved_share_quantity >= 0
+                    AND reserved_share_quantity <= 100
+                ),
+        
+            status TEXT NOT NULL DEFAULT 'UNSTARTED'
+                CHECK (
+                    status IN (
+                        'UNSTARTED',
+                        'ORDER_WORKING',
+                        'PARTIALLY_FILLED',
+                        'WAITING_FOR_NEXT_STEP',
+                        'NEXT_STEP_WORKING',
+                        'REQUOTE_REQUIRED',
+                        'ACTION_REQUIRED',
+                        'EXCEPTION_RECONCILIATION',
+                        'COMPLETE',
+                        'CANCELED'
+                    )
+                ),
+        
+            committed_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ,
+        
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        
+            UNIQUE (workflow_id, lot_number)
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_execution_workflow_lots_workflow_status
+        ON execution_workflow_lots (
+            workflow_id,
+            status,
+            lot_number
+        );
+
 
 
             

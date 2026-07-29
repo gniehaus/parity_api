@@ -85,13 +85,13 @@ def request_execution_order_cancellation(
             "Only working orders can be canceled"
         )
 
+    target_order_ids = _cancellation_target_order_ids(
+        order
+    )
+
     canceling_order = claim_execution_order_cancellation(
         parity_user_id=parity_user_id,
         order_id=order_id,
-    )
-
-    target_order_ids = _cancellation_target_order_ids(
-        canceling_order
     )
 
     responses = []

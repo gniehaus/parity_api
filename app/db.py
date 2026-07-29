@@ -3812,6 +3812,7 @@ def create_execution_order(
                   AND status IN (
                       'DRAFT',
                       'PREPARED',
+                      'SUBMITTING',
                       'SUBMITTED',
                       'WORKING',
                       'PARTIALLY_FILLED'

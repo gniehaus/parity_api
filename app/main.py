@@ -34,6 +34,7 @@ from .db import (
     get_execution_workflow,
     get_execution_workflow_lots,
     save_execution_workflow_plan,
+    get_execution_workflow_orders
 )
 
 from .snaptrade_service import (
@@ -902,9 +903,15 @@ def execution_workflow_get(
         workflow_id=workflow_id,
     )
 
+    orders = get_execution_workflow_orders(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
     return {
         "workflow": workflow,
         "lots": lots,
+        "orders": orders,
         "execution_plan": build_execution_plan(
             strategy_type=workflow["strategy_type"],
             underlying_source=workflow["underlying_source"],

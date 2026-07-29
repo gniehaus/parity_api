@@ -1008,6 +1008,133 @@ def init_db():
                 ALTER TABLE execution_workflows
                 ADD COLUMN IF NOT EXISTS execution_preference TEXT;
             """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS execution_orders (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+                    workflow_id UUID NOT NULL
+                        REFERENCES execution_workflows(id)
+                        ON DELETE CASCADE,
+
+                    lot_id UUID NOT NULL
+                        REFERENCES execution_workflow_lots(id)
+                        ON DELETE CASCADE,
+
+                    parity_user_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    brokerage_slug TEXT NOT NULL,
+
+                    sequence INTEGER NOT NULL
+                        CHECK (sequence > 0),
+
+                    order_role TEXT NOT NULL
+                        CHECK (
+                            order_role IN (
+                                'BUY_UNDERLYING',
+                                'BUY_PROTECTIVE_PUT',
+                                'BUY_HIGHER_STRIKE_PUT',
+                                'SELL_LOWER_STRIKE_PUT',
+                                'SELL_COVERED_CALL',
+                                'COLLAR_OPTIONS_PACKAGE',
+                                'BUFFER_OPTIONS_PACKAGE',
+                                'BUY_PUT_SPREAD_PACKAGE'
+                            )
+                        ),
+
+                    order_scope TEXT NOT NULL
+                        CHECK (
+                            order_scope IN (
+                                'EQUITY',
+                                'OPTIONS',
+                                'OPTIONS_PACKAGE'
+                            )
+                        ),
+
+                    execution_phase TEXT NOT NULL DEFAULT 'INITIAL'
+                        CHECK (
+                            execution_phase IN (
+                                'INITIAL',
+                                'CONTINUATION',
+                                'RECONCILIATION',
+                                'REQUOTE'
+                            )
+                        ),
+
+                    status TEXT NOT NULL DEFAULT 'DRAFT'
+                        CHECK (
+                            status IN (
+                                'DRAFT',
+                                'PREPARED',
+                                'SUBMITTED',
+                                'WORKING',
+                                'PARTIALLY_FILLED',
+                                'FILLED',
+                                'CANCELED',
+                                'EXPIRED',
+                                'REJECTED',
+                                'FAILED',
+                                'REQUOTE_REQUIRED',
+                                'ACTION_REQUIRED'
+                            )
+                        ),
+
+                    requested_quantity NUMERIC NOT NULL
+                        CHECK (requested_quantity > 0),
+
+                    filled_quantity NUMERIC NOT NULL DEFAULT 0
+                        CHECK (filled_quantity >= 0),
+
+                    limit_price NUMERIC,
+                    price_effect TEXT
+                        CHECK (
+                            price_effect IN (
+                                'DEBIT',
+                                'CREDIT',
+                                'EVEN'
+                            )
+                        ),
+
+                    average_fill_price NUMERIC,
+
+                    broker_order_id TEXT,
+                    client_order_id UUID NOT NULL
+                        DEFAULT gen_random_uuid(),
+
+                    order_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    quote_snapshot JSONB,
+                    broker_response JSONB,
+                    rejection_reason TEXT,
+
+                    submitted_at TIMESTAMPTZ,
+                    last_checked_at TIMESTAMPTZ,
+                    filled_at TIMESTAMPTZ,
+                    canceled_at TIMESTAMPTZ,
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                    UNIQUE (workflow_id, lot_id, sequence, order_role,
+                            execution_phase, client_order_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_execution_orders_workflow_lot_status
+                ON execution_orders (
+                    workflow_id,
+                    lot_id,
+                    status,
+                    sequence
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_execution_orders_broker_order
+                ON execution_orders (
+                    brokerage_slug,
+                    broker_order_id
+                )
+                WHERE broker_order_id IS NOT NULL;
+            """)
             conn.commit()
 
 from typing import Any
@@ -3612,3 +3739,109 @@ def save_execution_workflow_plan(
             conn.commit()
 
     return workflow
+
+def create_execution_order(
+    parity_user_id: str,
+    workflow_id: str,
+    lot_id: str,
+    sequence: int,
+    order_role: str,
+    order_scope: str,
+    requested_quantity: float,
+    order_payload: dict,
+    execution_phase: str = "INITIAL",
+    limit_price: float | None = None,
+    price_effect: str | None = None,
+    quote_snapshot: dict | None = None,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO execution_orders (
+                    workflow_id,
+                    lot_id,
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    sequence,
+                    order_role,
+                    order_scope,
+                    execution_phase,
+                    requested_quantity,
+                    limit_price,
+                    price_effect,
+                    order_payload,
+                    quote_snapshot
+                )
+                SELECT
+                    w.id,
+                    l.id,
+                    w.parity_user_id,
+                    w.account_id,
+                    w.brokerage_slug,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb,
+                    %s::jsonb
+                FROM execution_workflows w
+                JOIN execution_workflow_lots l
+                  ON l.workflow_id = w.id
+                WHERE w.id = %s
+                  AND w.parity_user_id = %s
+                  AND l.id = %s
+                RETURNING *
+                """,
+                (
+                    sequence,
+                    order_role,
+                    order_scope,
+                    execution_phase,
+                    requested_quantity,
+                    limit_price,
+                    price_effect,
+                    json.dumps(order_payload),
+                    json.dumps(quote_snapshot or {}),
+                    workflow_id,
+                    parity_user_id,
+                    lot_id,
+                ),
+            )
+
+            execution_order = cur.fetchone()
+
+            if not execution_order:
+                raise ValueError(
+                    "Execution workflow or lot was not found"
+                )
+
+            conn.commit()
+
+    return execution_order
+
+
+def get_execution_workflow_orders(
+    parity_user_id: str,
+    workflow_id: str,
+) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT eo.*
+                FROM execution_orders eo
+                JOIN execution_workflows w
+                  ON w.id = eo.workflow_id
+                WHERE eo.workflow_id = %s
+                  AND w.parity_user_id = %s
+                ORDER BY eo.sequence, eo.created_at
+                """,
+                (workflow_id, parity_user_id),
+            )
+
+            return cur.fetchall()

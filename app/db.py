@@ -3758,6 +3758,55 @@ def create_execution_order(
         with conn.cursor() as cur:
             cur.execute(
                 """
+                SELECT id
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            if not cur.fetchone():
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_orders
+                WHERE workflow_id = %s
+                  AND lot_id = %s
+                  AND sequence = %s
+                  AND execution_phase = %s
+                  AND status IN (
+                      'DRAFT',
+                      'PREPARED',
+                      'SUBMITTED',
+                      'WORKING',
+                      'PARTIALLY_FILLED'
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (
+                    workflow_id,
+                    lot_id,
+                    sequence,
+                    execution_phase,
+                ),
+            )
+
+            existing_execution_order = cur.fetchone()
+
+            if existing_execution_order:
+                return existing_execution_order
+            cur.execute(
+                """
                 INSERT INTO execution_orders (
                     workflow_id,
                     lot_id,

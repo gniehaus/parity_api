@@ -8,6 +8,7 @@ from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 from .auth import get_parity_user_id
+
 from .subscriptions import (
     router as subscriptions_router,
     require_subscription_feature,
@@ -31,7 +32,10 @@ from .execution_safety import (
     validate_execution_order_safety,
 )
 from .advisory import router as advisory_router
-from .execution_preparation import prepare_option_order_draft
+from .execution_preparation import (
+    prepare_equity_order_draft,
+    prepare_option_order_draft,
+)
 
 
 from .execution_submission import (
@@ -214,6 +218,11 @@ class ExecutionPrepareOptionOrderRequest(BaseModel):
     limit_price: float = Field(gt=0)
     price_effect: str
     refresh_draft: bool = False
+    time_in_force: str = "Day"
+
+class ExecutionPrepareEquityOrderRequest(BaseModel):
+    lot_id: str
+    sequence: int
     time_in_force: str = "Day"
 
 
@@ -997,6 +1006,37 @@ def execution_option_order_draft_create(
     return {
         "order": order,
     }
+
+
+@app.post(
+    "/api/execution/workflows/{workflow_id}/equity-orders/draft"
+)
+def execution_equity_order_draft_create(
+    workflow_id: str,
+    req: ExecutionPrepareEquityOrderRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        order = prepare_equity_order_draft(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            lot_id=req.lot_id,
+            sequence=req.sequence,
+            time_in_force=req.time_in_force,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "order": order,
+    }
+
+
 @app.post("/api/execution/orders/{order_id}/prepare")
 def execution_order_prepare(
     order_id: str,

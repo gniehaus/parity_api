@@ -4381,3 +4381,41 @@ def advance_execution_lot_after_fill(
             conn.commit()
 
     return lot
+
+def mark_execution_workflow_complete_if_all_lots_complete(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict | None:
+    """
+    Mark a workflow COMPLETE only after every one of its lots is COMPLETE.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows w
+                SET
+                    status = 'COMPLETE',
+                    updated_at = NOW()
+                WHERE w.id = %s
+                  AND w.parity_user_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM execution_workflow_lots l
+                      WHERE l.workflow_id = w.id
+                        AND l.status <> 'COMPLETE'
+                  )
+                RETURNING w.*
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+            conn.commit()
+
+    return workflow

@@ -8,7 +8,7 @@ from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 from .auth import get_parity_user_id
-
+from .execution_access import require_new_execution_enabled
 from .subscriptions import (
     router as subscriptions_router,
     require_subscription_feature,
@@ -1200,6 +1200,9 @@ def execution_order_submit(
         request,
         required_feature,
     )
+
+    if order["execution_phase"] != "CLOSE_OPTIONS":
+        require_new_execution_enabled(parity_user_id)
     try:
         result = submit_prepared_option_order(
             parity_user_id=parity_user_id,

@@ -3815,7 +3815,8 @@ def create_execution_order(
                       'SUBMITTING',
                       'SUBMITTED',
                       'WORKING',
-                      'PARTIALLY_FILLED'
+                      'PARTIALLY_FILLED',
+                      'ACTION_REQUIRED'
                   )
                 ORDER BY created_at DESC
                 LIMIT 1

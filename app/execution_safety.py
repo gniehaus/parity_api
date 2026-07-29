@@ -117,8 +117,8 @@ def validate_execution_order_safety(
     allowed_statuses: set[str] | None = None,
 ) -> dict[str, Any]:
     """
-    Validate a stored DRAFT order immediately before it can be promoted
-    to PREPARED. This function never submits an order.
+    Validate a stored order immediately before it is prepared or submitted.
+    This function never submits an order.
     """
 
     permitted_statuses = allowed_statuses or {"DRAFT"}
@@ -134,6 +134,69 @@ def validate_execution_order_safety(
         )
 
     payload = order.get("order_payload") or {}
+    order_scope = order.get("order_scope")
+
+    if order_scope == "EQUITY":
+        if order.get("order_role") != "BUY_UNDERLYING":
+            raise ExecutionSafetyError(
+                "Unsupported equity execution order"
+            )
+
+        if payload.get("action") != "BUY":
+            raise ExecutionSafetyError(
+                "New-holding equity orders must buy shares"
+            )
+
+        if payload.get("order_type") != "Market":
+            raise ExecutionSafetyError(
+                "New-holding equity orders must use a market order"
+            )
+
+        if payload.get("time_in_force") != "Day":
+            raise ExecutionSafetyError(
+                "Equity market orders must use Day time in force"
+            )
+
+        if payload.get("trading_session") != "REGULAR":
+            raise ExecutionSafetyError(
+                "Equity orders must use the regular session"
+            )
+
+        if not payload.get("symbol"):
+            raise ExecutionSafetyError(
+                "Equity order is missing its symbol"
+            )
+
+        requested_quantity = float(
+            order.get("requested_quantity") or 0
+        )
+        payload_quantity = float(payload.get("units") or 0)
+
+        if (
+            requested_quantity <= 0
+            or payload_quantity != requested_quantity
+        ):
+            raise ExecutionSafetyError(
+                "Equity order quantity does not match its workflow"
+            )
+
+        window = assert_order_submission_window(now=now)
+
+        current_time = (
+            now or datetime.now(timezone.utc)
+        ).astimezone(timezone.utc)
+
+        return {
+            "checked_at": current_time.isoformat(),
+            "market_window": window,
+            "quote_count": 0,
+            "status": "SAFE_TO_PREPARE",
+        }
+
+    if order_scope not in {"OPTIONS", "OPTIONS_PACKAGE"}:
+        raise ExecutionSafetyError(
+            "Unsupported execution order scope"
+        )
 
     if payload.get("order_type") != "LIMIT":
         raise ExecutionSafetyError(

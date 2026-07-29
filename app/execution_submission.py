@@ -78,6 +78,7 @@ def submit_prepared_option_order(
     if order["order_scope"] not in {
         "OPTIONS",
         "OPTIONS_PACKAGE",
+        "EQUITY",
     }:
         raise ExecutionSubmissionError(
             "This submission service supports option orders only"
@@ -106,12 +107,28 @@ def submit_prepared_option_order(
             parity_user_id
         )
 
-        response = snaptrade.trading.place_mleg_order(
-            body=submitting_order["order_payload"],
-            account_id=submitting_order["account_id"],
-            user_id=snaptrade_user["snaptrade_user_id"],
-            user_secret=snaptrade_user["user_secret"],
-        )
+        if submitting_order["order_scope"] == "EQUITY":
+            payload = submitting_order["order_payload"]
+
+            response = snaptrade.trading.place_force_order(
+                account_id=submitting_order["account_id"],
+                action=payload["action"],
+                order_type=payload["order_type"],
+                time_in_force=payload["time_in_force"],
+                symbol=payload["symbol"],
+                trading_session=payload["trading_session"],
+                units=payload["units"],
+                client_order_id=submitting_order["client_order_id"],
+                user_id=snaptrade_user["snaptrade_user_id"],
+                user_secret=snaptrade_user["user_secret"],
+            )
+        else:
+            response = snaptrade.trading.place_mleg_order(
+                body=submitting_order["order_payload"],
+                account_id=submitting_order["account_id"],
+                user_id=snaptrade_user["snaptrade_user_id"],
+                user_secret=snaptrade_user["user_secret"],
+            )
 
         broker_response = _to_plain(response.body)
 

@@ -3901,6 +3901,55 @@ def create_execution_order(
     return execution_order
 
 
+
+def refresh_execution_order_draft(
+    *,
+    parity_user_id: str,
+    order_id: str,
+    order_payload: dict,
+    limit_price: float,
+    price_effect: str,
+    quote_snapshot: dict,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    order_payload = %s::jsonb,
+                    limit_price = %s,
+                    price_effect = %s,
+                    quote_snapshot = %s::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'DRAFT'
+                RETURNING *
+                """,
+                (
+                    json.dumps(order_payload),
+                    limit_price,
+                    price_effect,
+                    json.dumps(quote_snapshot),
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+            order = cur.fetchone()
+
+            if not order:
+                raise ValueError(
+                    "Only DRAFT execution orders can refresh quotes"
+                )
+
+            conn.commit()
+
+    return order
+
+
+
+    
 def get_execution_workflow_orders(
     parity_user_id: str,
     workflow_id: str,

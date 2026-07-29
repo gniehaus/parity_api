@@ -7,6 +7,7 @@ from parity_collar_engine import fetch_orats_chain
 
 from .db import (
     create_execution_order,
+    refresh_execution_order_draft,
     get_execution_workflow,
     get_execution_workflow_lots,
 )
@@ -157,6 +158,7 @@ def prepare_option_order_draft(
     contracts: list[dict[str, Any]],
     limit_price: str | float,
     price_effect: str,
+    refresh_draft: bool = False,
     time_in_force: str = "Day",
 ) -> dict[str, Any]:
     """
@@ -276,7 +278,7 @@ def prepare_option_order_draft(
         "contracts": quoted_contracts,
     }
 
-    return create_execution_order(
+    order = create_execution_order(
         parity_user_id=parity_user_id,
         workflow_id=workflow_id,
         lot_id=lot_id,
@@ -289,4 +291,17 @@ def prepare_option_order_draft(
         limit_price=float(order_payload["limit_price"]),
         price_effect=order_payload["price_effect"],
         quote_snapshot=quote_snapshot,
+    )
+
+    if refresh_draft:
+        return refresh_execution_order_draft(
+            parity_user_id=parity_user_id,
+            order_id=order["id"],
+            order_payload=order_payload,
+            limit_price=float(order_payload["limit_price"]),
+            price_effect=order_payload["price_effect"],
+            quote_snapshot=quote_snapshot,
+        )
+
+    return order
     )

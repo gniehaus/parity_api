@@ -213,6 +213,7 @@ class ExecutionPrepareOptionOrderRequest(BaseModel):
     contracts: list[ExecutionOptionContractRequest]
     limit_price: float = Field(gt=0)
     price_effect: str
+    refresh_draft: bool = False
     time_in_force: str = "Day"
 
 
@@ -985,6 +986,7 @@ def execution_option_order_draft_create(
             limit_price=req.limit_price,
             price_effect=req.price_effect,
             time_in_force=req.time_in_force,
+            refresh_draft=req.refresh_draft,
         )
     except ValueError as exc:
         raise HTTPException(

@@ -13,6 +13,11 @@ from .subscriptions import (
     require_subscription_feature,
 )
 
+from .execution_status import (
+    ExecutionStatusError,
+    refresh_execution_order_status,
+)
+
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
@@ -1080,6 +1085,38 @@ def execution_order_submit(
         ) from exc
 
     return result
+
+
+@app.post("/api/execution/orders/{order_id}/status/refresh")
+def execution_order_status_refresh(
+    order_id: str,
+    request: Request,
+):
+    """
+    Refresh one submitted order from SnapTrade.
+
+    This reads broker status and updates Parity's local record only.
+    It never submits, cancels, replaces, or re-prices an order.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_view_existing_outcomes",
+    )
+
+    try:
+        return refresh_execution_order_status(
+            parity_user_id=parity_user_id,
+            order_id=order_id,
+        )
+
+    except ExecutionStatusError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
 
 @app.get("/api/dashboard/portfolio")

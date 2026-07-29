@@ -907,15 +907,19 @@ def execution_workflow_get(
         parity_user_id=parity_user_id,
         workflow_id=workflow_id,
     )
+    execution_plan = (
+        workflow["execution_plan"]
+        or build_execution_plan(
+            strategy_type=workflow["strategy_type"],
+            underlying_source=workflow["underlying_source"],
+        )
+    )
 
     return {
         "workflow": workflow,
         "lots": lots,
         "orders": orders,
-        "execution_plan": build_execution_plan(
-            strategy_type=workflow["strategy_type"],
-            underlying_source=workflow["underlying_source"],
-        ),
+        "execution_plan": execution_plan
     }
 
 

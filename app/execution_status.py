@@ -100,6 +100,7 @@ def refresh_execution_order_status(
         "SUBMITTED",
         "WORKING",
         "PARTIALLY_FILLED",
+        "CANCELING",
         "ACTION_REQUIRED",
     }:
         raise ExecutionStatusError(
@@ -191,7 +192,15 @@ def refresh_execution_order_status(
             == len(expected_child_order_ids)
             and child_statuses == {"EXECUTED"}
         )
-
+        
+        all_children_canceled = (
+            len(matched_child_orders)
+            == len(expected_child_order_ids)
+            and child_statuses <= {
+                "CANCELED",
+                "CANCELLED",
+            }
+        )
         any_child_filled = any(
             quantity > 0
             for quantity in child_filled_quantities
@@ -232,6 +241,10 @@ def refresh_execution_order_status(
                 average_fill_price = buy_total - sell_total
             else:
                 average_fill_price = 0.0
+        elif all_children_canceled:
+            local_status = "CANCELED"
+            filled_quantity = 0.0
+            average_fill_price = None
 
         elif (
             any_child_filled
@@ -291,7 +304,13 @@ def refresh_execution_order_status(
             broker_status=matched_broker_order.get("status"),
             filled_quantity=filled_quantity,
         )
-
+    
+    if order["status"] == "CANCELING":
+        if local_status == "WORKING":
+            local_status = "CANCELING"
+        elif local_status == "PARTIALLY_FILLED":
+            local_status = "ACTION_REQUIRED"
+                
     rejection_reason = None
 
     if local_status in {"REJECTED", "ACTION_REQUIRED"}:

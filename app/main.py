@@ -1108,17 +1108,6 @@ def execution_order_prepare(
 ):
     parity_user_id = get_parity_user_id(request)
 
-    required_feature = (
-        "can_close_existing_outcomes"
-        if order["execution_phase"] == "CLOSE_OPTIONS"
-        else "can_execute_new_orders"
-    )
-
-    require_subscription_feature(
-        request,
-        required_feature,
-    )
-
     order = get_execution_order(
         parity_user_id=parity_user_id,
         order_id=order_id,
@@ -1129,6 +1118,17 @@ def execution_order_prepare(
             status_code=404,
             detail="Execution order was not found",
         )
+
+    required_feature = (
+        "can_close_existing_outcomes"
+        if order["execution_phase"] == "CLOSE_OPTIONS"
+        else "can_execute_new_orders"
+    )
+
+    require_subscription_feature(
+        request,
+        required_feature,
+    )
 
     try:
         safety = validate_execution_order_safety(order)

@@ -1,0 +1,158 @@
+from typing import Any
+
+from .db import (
+    claim_execution_order_cancellation,
+    get_execution_order,
+    mark_execution_order_cancellation_action_required,
+    record_execution_order_cancellation_request,
+)
+from .snaptrade_service import (
+    _to_plain,
+    get_or_create_snaptrade_user,
+    snaptrade,
+)
+
+
+class ExecutionCancellationError(ValueError):
+    pass
+
+
+def _cancellation_target_order_ids(
+    order: dict[str, Any],
+) -> list[str]:
+    """
+    Cancel each child order of an options package. For a single-leg
+    order, cancel its brokerage order ID directly.
+    """
+
+    if order["order_scope"] == "OPTIONS_PACKAGE":
+        broker_response = order.get("broker_response") or {}
+        children = (
+            broker_response.get("orders")
+            or (
+                broker_response.get("order") or {}
+            ).get("orders")
+            or []
+        )
+
+        child_ids = [
+            str(child["brokerage_order_id"])
+            for child in children
+            if child.get("brokerage_order_id")
+        ]
+
+        if child_ids:
+            return child_ids
+
+    broker_order_id = order.get("broker_order_id")
+
+    if broker_order_id:
+        return [str(broker_order_id)]
+
+    raise ExecutionCancellationError(
+        "Execution order is missing its brokerage order ID"
+    )
+
+
+def request_execution_order_cancellation(
+    parity_user_id: str,
+    order_id: str,
+) -> dict[str, Any]:
+    """
+    Explicitly request cancellation of one working order.
+
+    This function may call SnapTrade, but never creates, replaces, or
+    resubmits an order.
+    """
+
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+    )
+
+    if not order:
+        raise ExecutionCancellationError(
+            "Execution order was not found"
+        )
+
+    if order["status"] not in {
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "ACTION_REQUIRED",
+    }:
+        raise ExecutionCancellationError(
+            "Only working orders can be canceled"
+        )
+
+    canceling_order = claim_execution_order_cancellation(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+    )
+
+    target_order_ids = _cancellation_target_order_ids(
+        canceling_order
+    )
+
+    responses = []
+
+    try:
+        snaptrade_user = get_or_create_snaptrade_user(
+            parity_user_id
+        )
+
+        for brokerage_order_id in target_order_ids:
+            response = snaptrade.trading.cancel_order(
+                brokerage_order_id=brokerage_order_id,
+                account_id=canceling_order["account_id"],
+                user_id=snaptrade_user["snaptrade_user_id"],
+                user_secret=snaptrade_user["user_secret"],
+            )
+
+            responses.append(
+                {
+                    "brokerage_order_id": brokerage_order_id,
+                    "response": _to_plain(response.body),
+                }
+            )
+
+    except Exception as exc:
+        failure_response = {
+            "requested_broker_order_ids": target_order_ids,
+            "responses": responses,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+
+        try:
+            mark_execution_order_cancellation_action_required(
+                parity_user_id=parity_user_id,
+                order_id=order_id,
+                reason=(
+                    "Cancellation outcome requires review before "
+                    "any further action."
+                ),
+                broker_response=failure_response,
+            )
+        except Exception:
+            pass
+
+        raise ExecutionCancellationError(
+            "Cancellation outcome requires review before retrying"
+        ) from exc
+
+    cancellation_response = {
+        "requested_broker_order_ids": target_order_ids,
+        "responses": responses,
+    }
+
+    updated_order = record_execution_order_cancellation_request(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+        broker_response=cancellation_response,
+    )
+
+    return {
+        "order": updated_order,
+        "broker_response": cancellation_response,
+    }

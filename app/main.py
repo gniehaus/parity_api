@@ -150,14 +150,28 @@ app.mount(
     parity_mcp.streamable_http_app(),
 )
 
+cors_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        (
+            "https://parityoutcomes.com,"
+            "https://www.parityoutcomes.com"
+        ),
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+    ],
 )
-
 snaptrade = SnapTrade(
     client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
     consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),

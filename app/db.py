@@ -3475,6 +3475,29 @@ def create_execution_workflow_lots(
 
     return lots
 
+    
+def get_execution_workflow_lots(
+    parity_user_id: str,
+    workflow_id: str,
+) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflow_lots
+                WHERE workflow_id = %s
+                  AND workflow_id IN (
+                      SELECT id
+                      FROM execution_workflows
+                      WHERE parity_user_id = %s
+                  )
+                ORDER BY lot_number
+                """,
+                (workflow_id, parity_user_id),
+            )
+
+            return cur.fetchall()
 
 
 

@@ -31,7 +31,8 @@ from .db import (
     get_current_recommendation_run,
     create_execution_workflow,
     create_execution_workflow_lots,
-
+    get_execution_workflow,
+    get_execution_workflow_lots,
 )
 
 from .snaptrade_service import (
@@ -863,6 +864,40 @@ def execution_workflow_create(
         "execution_plan": execution_plan,
         "next_step": execution_plan[0],
     }
+
+
+@app.get("/api/execution/workflows/{workflow_id}")
+def execution_workflow_get(
+    workflow_id: str,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    if not workflow:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution workflow not found",
+        )
+
+    lots = get_execution_workflow_lots(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    return {
+        "workflow": workflow,
+        "lots": lots,
+        "execution_plan": build_execution_plan(
+            strategy_type=workflow["strategy_type"],
+            underlying_source=workflow["underlying_source"],
+        ),
+    }
+
 
 
 @app.get("/api/dashboard/portfolio")

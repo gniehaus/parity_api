@@ -8,7 +8,11 @@ from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 from .auth import get_parity_user_id
-from .subscriptions import router as subscriptions_router
+from .subscriptions import (
+    router as subscriptions_router,
+    require_subscription_feature,
+)
+
 from .defined_outcome_service import (
     choose_defined_outcome_match,
     get_defined_outcome,
@@ -16,7 +20,10 @@ choose_defined_floor_match,
  inspect_table,
 )
 from .execution_plan import build_execution_plan
-
+from .execution_safety import (
+    ExecutionSafetyError,
+    validate_execution_order_safety,
+)
 from .advisory import router as advisory_router
 from .execution_preparation import prepare_option_order_draft
 
@@ -35,6 +42,8 @@ from .db import (
     get_execution_workflow_lots,
     save_execution_workflow_plan,
     get_execution_workflow_orders
+    get_execution_order,
+    mark_execution_order_prepared,
 )
 
 from .snaptrade_service import (
@@ -973,7 +982,54 @@ def execution_option_order_draft_create(
     return {
         "order": order,
     }
+@app.post("/api/execution/orders/{order_id}/prepare")
+def execution_order_prepare(
+    order_id: str,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
 
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+    )
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution order was not found",
+        )
+
+    try:
+        safety = validate_execution_order_safety(order)
+
+        prepared_order = mark_execution_order_prepared(
+            parity_user_id=parity_user_id,
+            order_id=order_id,
+        )
+
+    except ExecutionSafetyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "order": prepared_order,
+        "safety": safety,
+    }
+    
 
 @app.get("/api/dashboard/portfolio")
 def dashboard_portfolio(request: Request):

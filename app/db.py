@@ -4137,3 +4137,52 @@ def mark_execution_order_submitted(
             conn.commit()
 
     return submitted_order
+
+
+def mark_execution_order_action_required(
+    parity_user_id: str,
+    order_id: str,
+    reason: str,
+    broker_response: dict | None = None,
+) -> dict:
+    """
+    Preserve an ambiguous broker-submission outcome for human review.
+
+    This is intentionally not returned to PREPARED because the broker may
+    have received the order even when the API call did not return normally.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'ACTION_REQUIRED',
+                    rejection_reason = %s,
+                    broker_response = %s::jsonb,
+                    last_checked_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'SUBMITTING'
+                RETURNING *
+                """,
+                (
+                    reason,
+                    json.dumps(broker_response or {}),
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            action_required_order = cur.fetchone()
+
+            if not action_required_order:
+                raise ValueError(
+                    "Only SUBMITTING orders can require action"
+                )
+
+            conn.commit()
+
+    return action_required_order

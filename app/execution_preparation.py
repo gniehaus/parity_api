@@ -188,9 +188,12 @@ def prepare_option_order_draft(
         parity_user_id=parity_user_id,
         workflow_id=workflow_id,
     )
-
     lot = next(
-        (candidate for candidate in lots if candidate["id"] == lot_id),
+        (
+            candidate
+            for candidate in lots
+            if str(candidate["id"]) == str(lot_id)
+        ),
         None,
     )
 

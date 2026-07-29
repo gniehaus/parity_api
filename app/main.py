@@ -33,6 +33,7 @@ from .db import (
     create_execution_workflow_lots,
     get_execution_workflow,
     get_execution_workflow_lots,
+    save_execution_workflow_plan,
 )
 
 from .snaptrade_service import (
@@ -851,6 +852,12 @@ def execution_workflow_create(
             underlying_source=req.underlying_source,
             option_contracts=workflow["option_contracts"],
         )
+
+        workflow = save_execution_workflow_plan(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow["id"],
+            execution_plan=execution_plan,
+    )
 
     except ValueError as exc:
         raise HTTPException(

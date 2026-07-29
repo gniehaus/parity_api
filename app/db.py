@@ -3580,3 +3580,35 @@ def update_execution_workflow(
             conn.commit()
 
     return workflow
+
+
+def save_execution_workflow_plan(
+    parity_user_id: str,
+    workflow_id: str,
+    execution_plan: list[dict],
+    execution_preference: str | None = None,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET execution_plan = %s::jsonb,
+                    execution_preference = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    json.dumps(execution_plan),
+                    execution_preference,
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+            conn.commit()
+
+    return workflow

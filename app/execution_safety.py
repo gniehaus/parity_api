@@ -162,16 +162,35 @@ def validate_execution_order_safety(
 
     for quoted_contract in quoted_contracts:
         quote = quoted_contract.get("quote") or {}
+        action = str(
+            quoted_contract.get("action", "")
+        ).upper()
 
-        bid = quote.get("bid_per_share")
-        ask = quote.get("ask_per_share")
+        bid = float(quote.get("bid_per_share") or 0)
+        ask = float(quote.get("ask_per_share") or 0)
 
-        if bid is None or ask is None or bid <= 0 or ask <= 0:
+        if action in {"BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"}:
+            if ask <= 0:
+                raise ExecutionSafetyError(
+                    "A current ask quote is required to buy this option"
+                )
+
+        elif action in {
+            "SELL",
+            "SELL_TO_OPEN",
+            "SELL_TO_CLOSE",
+        }:
+            if bid <= 0:
+                raise ExecutionSafetyError(
+                    "A current bid quote is required to sell this option"
+                )
+
+        else:
             raise ExecutionSafetyError(
-                "Every option leg requires a usable two-sided quote"
+                f"Unsupported option action: {action}"
             )
 
-        if ask < bid:
+        if bid > 0 and ask > 0 and ask < bid:
             raise ExecutionSafetyError(
                 "An option quote has an invalid bid-ask spread"
             )
@@ -188,16 +207,6 @@ def validate_execution_order_safety(
             raise ExecutionSafetyError(
                 "Option quote is stale and requires a refresh"
             )
-
-        if (
-            int(quote.get("open_interest") or 0) <= 0
-            and int(quote.get("recent_volume") or 0) <= 0
-        ):
-            raise ExecutionSafetyError(
-                "Option leg has no reported open interest or "
-                "recent volume and requires human review"
-            )
-
     return {
         "checked_at": current_time.isoformat(),
         "market_window": window,

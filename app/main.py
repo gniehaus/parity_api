@@ -18,7 +18,7 @@ choose_defined_floor_match,
 from .execution_plan import build_execution_plan
 
 from .advisory import router as advisory_router
-
+from .execution_preparation import prepare_option_order_draft
 
 
 from .db import (
@@ -174,6 +174,25 @@ class ExecutionWorkflowCreateRequest(BaseModel):
         "balanced",
         "complete_sooner",
     ] = "balanced"
+
+
+
+class ExecutionOptionContractRequest(BaseModel):
+    ticker: str
+    expiration: str
+    option_type: str
+    strike: float
+    action: str
+
+
+class ExecutionPrepareOptionOrderRequest(BaseModel):
+    lot_id: str
+    sequence: int
+    contracts: list[ExecutionOptionContractRequest]
+    limit_price: float = Field(gt=0)
+    price_effect: str
+    time_in_force: str = "Day"
+
 
 class ExpenseRatioRequest(BaseModel):
     symbols: List[str]
@@ -921,7 +940,39 @@ def execution_workflow_get(
         "orders": orders,
         "execution_plan": execution_plan
     }
+@app.post(
+    "/api/execution/workflows/{workflow_id}/option-orders/draft"
+)
+def execution_option_order_draft_create(
+    workflow_id: str,
+    req: ExecutionPrepareOptionOrderRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
 
+    try:
+        order = prepare_option_order_draft(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            lot_id=req.lot_id,
+            sequence=req.sequence,
+            contracts=[
+                contract.model_dump()
+                for contract in req.contracts
+            ],
+            limit_price=req.limit_price,
+            price_effect=req.price_effect,
+            time_in_force=req.time_in_force,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "order": order,
+    }
 
 
 @app.get("/api/dashboard/portfolio")

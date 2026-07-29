@@ -3894,3 +3894,82 @@ def get_execution_workflow_orders(
             )
 
             return cur.fetchall()
+
+def get_execution_order(
+    parity_user_id: str,
+    order_id: str,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_orders
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+def mark_execution_order_prepared(
+    parity_user_id: str,
+    order_id: str,
+) -> dict:
+    """
+    Atomically promote one validated DRAFT to PREPARED.
+
+    This does not call a broker or submit an order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET status = 'PREPARED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'DRAFT'
+                RETURNING *
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            prepared_order = cur.fetchone()
+
+            if prepared_order:
+                conn.commit()
+                return prepared_order
+
+            cur.execute(
+                """
+                SELECT status
+                FROM execution_orders
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            existing_order = cur.fetchone()
+
+            if not existing_order:
+                raise ValueError("Execution order was not found")
+
+            raise ValueError(
+                "Only DRAFT execution orders can be prepared; "
+                f"current status is {existing_order['status']}"
+            )

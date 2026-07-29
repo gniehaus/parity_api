@@ -182,7 +182,7 @@ def refresh_execution_order_status(
         if child.get("brokerage_order_id")
     }
 
-      if order["status"] == "CANCELING":
+    if order["status"] == "CANCELING":
         full_order_history = _full_account_orders(
             snaptrade_user=snaptrade_user,
             account_id=order["account_id"],

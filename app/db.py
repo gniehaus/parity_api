@@ -1151,6 +1151,7 @@ def init_db():
                         'SUBMITTED',
                         'WORKING',
                         'PARTIALLY_FILLED',
+                        'CANCELING',
                         'FILLED',
                         'CANCELED',
                         'EXPIRED',
@@ -4118,7 +4119,49 @@ def claim_execution_order_submission(
                 f"current status is {existing_order['status']}"
             )
 
+def claim_execution_order_cancellation(
+    parity_user_id: str,
+    order_id: str,
+) -> dict:
+    """
+    Atomically claim one working order for explicit cancellation.
+    """
 
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'CANCELING',
+                    last_checked_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'SUBMITTED',
+                      'WORKING',
+                      'PARTIALLY_FILLED',
+                      'ACTION_REQUIRED'
+                  )
+                RETURNING *
+                """,
+                (
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            order = cur.fetchone()
+
+            if not order:
+                raise ValueError(
+                    "Only working orders can be canceled"
+                )
+
+            conn.commit()
+
+    return order
 
 
             
@@ -4259,6 +4302,7 @@ def update_execution_order_broker_status(
         "PARTIALLY_FILLED",
         "FILLED",
         "CANCELED",
+        "CANCELING",
         "EXPIRED",
         "REJECTED",
         "REQUOTE_REQUIRED",
@@ -4300,6 +4344,7 @@ def update_execution_order_broker_status(
                   AND status IN (
                       'SUBMITTED',
                       'WORKING',
+                      'CANCELING',
                       'PARTIALLY_FILLED',
                       'ACTION_REQUIRED'
                   )

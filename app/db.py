@@ -3973,3 +3973,68 @@ def mark_execution_order_prepared(
                 "Only DRAFT execution orders can be prepared; "
                 f"current status is {existing_order['status']}"
             )
+def mark_execution_order_submitted(
+    parity_user_id: str,
+    order_id: str,
+    broker_response: dict,
+    broker_order_id: str | None = None,
+) -> dict:
+    """
+    Persist SnapTrade's acknowledgement only after a broker submission
+    has been accepted.
+
+    This function does not call SnapTrade.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'SUBMITTED',
+                    broker_order_id = %s,
+                    broker_response = %s::jsonb,
+                    submitted_at = NOW(),
+                    last_checked_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'PREPARED'
+                RETURNING *
+                """,
+                (
+                    broker_order_id,
+                    json.dumps(broker_response),
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            submitted_order = cur.fetchone()
+
+            if not submitted_order:
+                cur.execute(
+                    """
+                    SELECT status
+                    FROM execution_orders
+                    WHERE id = %s
+                      AND parity_user_id = %s
+                    """,
+                    (order_id, parity_user_id),
+                )
+
+                existing_order = cur.fetchone()
+
+                if not existing_order:
+                    raise ValueError(
+                        "Execution order was not found"
+                    )
+
+                raise ValueError(
+                    "Only PREPARED orders can be marked submitted"
+                )
+
+            conn.commit()
+
+    return submitted_order

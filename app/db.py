@@ -4163,7 +4163,54 @@ def claim_execution_order_cancellation(
 
     return order
 
+def record_execution_order_cancellation_request(
+    *,
+    parity_user_id: str,
+    order_id: str,
+    broker_response: dict,
+) -> dict:
+    """
+    Store the broker's acknowledgement of a cancellation request while
+    preserving the original submission response and child-order IDs.
+    """
 
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    broker_response = COALESCE(
+                        broker_response,
+                        '{}'::jsonb
+                    ) || jsonb_build_object(
+                        'cancellation',
+                        %s::jsonb
+                    ),
+                    last_checked_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'CANCELING'
+                RETURNING *
+                """,
+                (
+                    json.dumps(broker_response),
+                    order_id,
+                    parity_user_id,
+                ),
+            )
+
+            order = cur.fetchone()
+
+            if not order:
+                raise ValueError(
+                    "Only CANCELING orders can record cancellation"
+                )
+
+            conn.commit()
+
+    return order
             
 def mark_execution_order_submitted(
     parity_user_id: str,

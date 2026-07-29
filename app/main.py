@@ -81,7 +81,8 @@ from .snaptrade_service import (
     get_portfolio_summary,
     get_dashboard_holdings_for_metrics,
     get_account_level_portfolio_summary,
-    get_execution_account_context
+    get_execution_account_context,
+    get_all_account_position
 )
 from .plaid_service import (
     create_link_token,
@@ -1340,6 +1341,28 @@ def execution_order_status_refresh(
             detail=str(exc),
         ) from exc
 
+
+@app.get("/api/brokerage/accounts/{account_id}/positions")
+def brokerage_account_positions(
+    account_id: str,
+    request: Request,
+):
+    """
+    Return current broker positions, including options.
+    Read-only: never submits, cancels, or changes an order.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_view_existing_outcomes",
+    )
+
+    return get_all_account_positions(
+        parity_user_id=parity_user_id,
+        account_id=account_id,
+    )
 
 @app.get("/api/dashboard/portfolio")
 def dashboard_portfolio(request: Request):

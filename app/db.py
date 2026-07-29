@@ -1001,6 +1001,13 @@ def init_db():
                     )
                 );
             """)
+            cur.execute("""
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS execution_plan JSONB;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS execution_preference TEXT;
+            """)
             conn.commit()
 
 from typing import Any

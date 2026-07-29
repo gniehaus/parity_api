@@ -10,6 +10,7 @@ from .db import (
     refresh_execution_order_draft,
     get_execution_workflow,
     get_execution_workflow_lots,
+    get_execution_workflow_orders,
 )
 from .execution_plan import build_execution_plan
 from .execution_quotes import get_orats_option_quote
@@ -304,4 +305,127 @@ def prepare_option_order_draft(
         )
 
     return order
+
+def prepare_equity_order_draft(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    lot_id: str,
+    sequence: int,
+    time_in_force: str = "Day",
+) -> dict[str, Any]:
+    """
+    Build and persist the next equity child-order draft.
+
+    This does not call SnapTrade and cannot submit a trade.
+    """
+
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    if not workflow:
+        raise ValueError("Execution workflow was not found")
+
+    step = _get_workflow_step(
+        workflow=workflow,
+        sequence=sequence,
+    )
+
+    if step["order_scope"] != "EQUITY":
+        raise ValueError(
+            "This workflow step requires an option order, "
+            "not an equity order"
+        )
+
+    if step["order_role"] != "BUY_UNDERLYING":
+        raise ValueError("Unsupported equity workflow step")
+
+    lots = get_execution_workflow_lots(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    lot = next(
+        (
+            candidate
+            for candidate in lots
+            if str(candidate["id"]) == str(lot_id)
+        ),
+        None,
+    )
+
+    if not lot:
+        raise ValueError("Execution lot was not found")
+
+    if lot["status"] not in {
+        "UNSTARTED",
+        "WAITING_FOR_NEXT_STEP",
+    }:
+        raise ValueError(
+            "This lot is not available for a new equity draft"
+        )
+
+    orders = get_execution_workflow_orders(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    prior_steps = [
+        plan_step
+        for plan_step in workflow["execution_plan"]
+        if plan_step["sequence"] < sequence
+    ]
+
+    for prior_step in prior_steps:
+        prior_order_filled = any(
+            order["lot_id"] == lot_id
+            and order["sequence"] == prior_step["sequence"]
+            and order["status"] == "FILLED"
+            and float(order["filled_quantity"]) >= 1
+            for order in orders
+        )
+
+        if not prior_order_filled:
+            raise ValueError(
+                "The preceding workflow step must fill before "
+                "this equity order can be prepared"
+            )
+
+    share_quantity = int(lot["share_quantity"])
+
+    if share_quantity <= 0 or share_quantity % 100 != 0:
+        raise ValueError(
+            "Equity workflow lots must contain whole option lots"
+        )
+
+    order_payload = {
+        "action": "BUY",
+        "order_type": "Market",
+        "time_in_force": time_in_force,
+        "symbol": workflow["underlying_symbol"],
+        "units": share_quantity,
+        "trading_session": "REGULAR",
+    }
+
+    quote_snapshot = {
+        "source": "WORKFLOW",
+        "prepared_at": datetime.now(timezone.utc).isoformat(),
+        "underlying_symbol": workflow["underlying_symbol"],
+        "share_quantity": share_quantity,
+    }
+
+    return create_execution_order(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+        lot_id=lot_id,
+        sequence=step["sequence"],
+        order_role=step["order_role"],
+        order_scope=step["order_scope"],
+        requested_quantity=share_quantity,
+        order_payload=order_payload,
+        execution_phase="INITIAL",
+        quote_snapshot=quote_snapshot,
+    )
     

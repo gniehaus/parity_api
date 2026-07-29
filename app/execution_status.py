@@ -17,6 +17,29 @@ from .snaptrade_service import (
 class ExecutionStatusError(ValueError):
     pass
 
+def _full_account_orders(
+    *,
+    snaptrade_user: dict[str, Any],
+    account_id: str,
+) -> list[dict[str, Any]]:
+    response = snaptrade.account_information.get_user_account_orders(
+        user_id=snaptrade_user["snaptrade_user_id"],
+        user_secret=snaptrade_user["user_secret"],
+        account_id=account_id,
+        days=1,
+    )
+
+    body = _to_plain(response.body) or []
+
+    if isinstance(body, list):
+        return body
+
+    if isinstance(body, dict):
+        return body.get("orders") or []
+
+    raise ExecutionStatusError(
+        "SnapTrade returned an invalid account-orders response"
+    )
 
 def _as_float(value: Any) -> float:
     if value is None:
@@ -276,6 +299,22 @@ def refresh_execution_order_status(
             None,
         )
 
+    if not matched_broker_order and order["status"] == "CANCELING":
+        broker_orders = _full_account_orders(
+        snaptrade_user=snaptrade_user,
+        account_id=order["account_id"],
+    )
+
+    matched_broker_order = next(
+        (
+            broker_order
+            for broker_order in broker_orders
+            if str(
+                broker_order.get("brokerage_order_id")
+            ) == str(broker_order_id)
+        ),
+        None,
+    )
         if not matched_broker_order:
             return {
                 "found": False,

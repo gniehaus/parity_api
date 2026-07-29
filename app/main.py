@@ -15,7 +15,7 @@ from .defined_outcome_service import (
 choose_defined_floor_match,
  inspect_table,
 )
-
+from .execution_plan import build_execution_plan
 
 from .advisory import router as advisory_router
 
@@ -30,6 +30,7 @@ from .db import (
     persist_recommendation_run,
     get_current_recommendation_run,
     create_execution_workflow,
+    create_execution_workflow_lots,
 
 )
 
@@ -781,68 +782,73 @@ def execution_workflow_create(
     request: Request,
 ):
     """
-    Create an execution workflow.
+    Create a lot-aware execution workflow.
 
-    This endpoint does not prepare or submit an order.
+    This endpoint does not prepare or submit brokerage orders.
     """
     parity_user_id = get_parity_user_id(request)
 
     allowed_strategies = {
         "covered_call",
+        "married_put",
         "collar",
         "buffer",
-    }
-
-    allowed_sources = {
-        "existing",
-        "new",
     }
 
     if req.strategy_type not in allowed_strategies:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported execution strategy",
+            detail="Unsupported strategy type",
         )
 
-    if req.underlying_source not in allowed_sources:
+    if req.underlying_source not in {"existing", "new"}:
         raise HTTPException(
             status_code=400,
             detail=(
-                "underlying_source must be existing or new"
+                "underlying_source must be 'existing' or 'new'"
             ),
         )
 
     if req.underlying_shares < 100:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "At least 100 shares are required "
-                "for one standard option contract"
-            ),
+            detail="At least 100 shares are required",
         )
 
     if req.underlying_shares % 100 != 0:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Shares must be selected in increments of 100"
+                "Shares must be selected in 100-share increments"
             ),
         )
 
     try:
-        account = get_execution_account_context(
+        account_context = get_execution_account_context(
             parity_user_id=parity_user_id,
             account_id=req.account_id,
         )
 
+        execution_plan = build_execution_plan(
+            strategy_type=req.strategy_type,
+            underlying_source=req.underlying_source,
+        )
+
         workflow = create_execution_workflow(
             parity_user_id=parity_user_id,
-            account_id=account["account_id"],
-            brokerage_slug=account["brokerage_slug"],
+            account_id=req.account_id,
+            brokerage_slug=account_context["brokerage_slug"],
             strategy_type=req.strategy_type,
             underlying_source=req.underlying_source,
             underlying_symbol=req.underlying_symbol,
             underlying_shares=req.underlying_shares,
+        )
+
+        lots = create_execution_workflow_lots(
+            parity_user_id=parity_user_id,
+            workflow_id=str(workflow["id"]),
+            underlying_source=req.underlying_source,
+            option_contracts=workflow["option_contracts"],
         )
 
     except ValueError as exc:
@@ -851,17 +857,12 @@ def execution_workflow_create(
             detail=str(exc),
         ) from exc
 
-    next_action = (
-        "PREPARE_OPTIONS"
-        if req.underlying_source == "existing"
-        else "PREPARE_UNDERLYING"
-    )
-
     return {
         "workflow": workflow,
-        "next_action": next_action,
+        "lots": lots,
+        "execution_plan": execution_plan,
+        "next_step": execution_plan[0],
     }
-
 
 
 @app.get("/api/dashboard/portfolio")

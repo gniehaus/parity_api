@@ -3390,6 +3390,94 @@ def create_execution_workflow(
     return workflow
 
 
+
+def create_execution_workflow_lots(
+    parity_user_id: str,
+    workflow_id: str,
+    underlying_source: str,
+    option_contracts: int,
+) -> list[dict]:
+    """
+    Create one 100-share execution lot for each requested option contract.
+
+    Existing holdings reserve 100 shares per lot immediately.
+    New holdings reserve shares only after they actually fill.
+    """
+    if underlying_source not in {"existing", "new"}:
+        raise ValueError(
+            "underlying_source must be 'existing' or 'new'"
+        )
+
+    if option_contracts <= 0:
+        raise ValueError(
+            "option_contracts must be greater than zero"
+        )
+
+    reserved_share_quantity = (
+        100 if underlying_source == "existing" else 0
+    )
+
+    rows = [
+        (
+            workflow_id,
+            lot_number,
+            reserved_share_quantity,
+        )
+        for lot_number in range(1, option_contracts + 1)
+    ]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            if not cur.fetchone():
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            cur.executemany(
+                """
+                INSERT INTO execution_workflow_lots (
+                    workflow_id,
+                    lot_number,
+                    reserved_share_quantity
+                )
+                VALUES (%s, %s, %s)
+                ON CONFLICT (workflow_id, lot_number)
+                DO NOTHING
+                """,
+                rows,
+            )
+
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflow_lots
+                WHERE workflow_id = %s
+                ORDER BY lot_number
+                """,
+                (workflow_id,),
+            )
+            lots = cur.fetchall()
+
+            conn.commit()
+
+    return lots
+
+
+
+
 def get_execution_workflow(
     parity_user_id: str,
     workflow_id: str,

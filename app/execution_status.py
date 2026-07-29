@@ -169,7 +169,11 @@ def refresh_execution_order_status(
         order.get("broker_response") or {}
     )
     submitted_children = (
-        submitted_broker_response.get("orders") or []
+        submitted_broker_response.get("orders")
+        or (
+            submitted_broker_response.get("order") or {}
+        ).get("orders")
+        or []
     )
 
     expected_child_order_ids = {
@@ -178,6 +182,30 @@ def refresh_execution_order_status(
         if child.get("brokerage_order_id")
     }
 
+      if order["status"] == "CANCELING":
+        full_order_history = _full_account_orders(
+            snaptrade_user=snaptrade_user,
+            account_id=order["account_id"],
+        )
+
+        if order["order_scope"] == "OPTIONS_PACKAGE":
+            history_has_package_legs = any(
+                str(candidate.get("brokerage_order_id"))
+                in expected_child_order_ids
+                for candidate in full_order_history
+            )
+
+            if history_has_package_legs:
+                broker_orders = full_order_history
+        else:
+            history_has_order = any(
+                str(candidate.get("brokerage_order_id"))
+                == str(broker_order_id)
+                for candidate in full_order_history
+            )
+
+            if history_has_order:
+                broker_orders = full_order_history
     if (
         order["order_scope"] == "OPTIONS_PACKAGE"
         and expected_child_order_ids
@@ -299,22 +327,6 @@ def refresh_execution_order_status(
             None,
         )
 
-    if not matched_broker_order and order["status"] == "CANCELING":
-        broker_orders = _full_account_orders(
-        snaptrade_user=snaptrade_user,
-        account_id=order["account_id"],
-    )
-
-    matched_broker_order = next(
-        (
-            broker_order
-            for broker_order in broker_orders
-            if str(
-                broker_order.get("brokerage_order_id")
-            ) == str(broker_order_id)
-        ),
-        None,
-    )
         if not matched_broker_order:
             return {
                 "found": False,
@@ -343,7 +355,7 @@ def refresh_execution_order_status(
             broker_status=matched_broker_order.get("status"),
             filled_quantity=filled_quantity,
         )
-    
+  
     if order["status"] == "CANCELING":
         if local_status == "WORKING":
             local_status = "CANCELING"

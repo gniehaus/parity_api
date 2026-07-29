@@ -380,10 +380,10 @@ def prepare_equity_order_draft(
 
     for prior_step in prior_steps:
         prior_order_filled = any(
-            order["lot_id"] == lot_id
+            str(order["lot_id"]) == str(lot_id)
             and order["sequence"] == prior_step["sequence"]
             and order["status"] == "FILLED"
-            and float(order["filled_quantity"]) >= 1
+            and float(order["filled_quantity"] or 0) >= 1
             for order in orders
         )
 

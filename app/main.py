@@ -267,6 +267,26 @@ class ExecutionPrepareEquityOrderRequest(BaseModel):
     sequence: int
     time_in_force: str = "Day"
 
+class ExecutionWorkflowStartRequest(BaseModel):
+    """
+    One explicit approval for a new-position workflow.
+
+    The user approves the market equity purchase plus the exact
+    options overlay limit. The backend submits the overlay later only
+    after the equity fill is broker-confirmed.
+    """
+
+    confirm_plan: bool
+    lot_id: str
+    contracts: list[ExecutionOptionContractRequest]
+    option_limit_price: float = Field(gt=0)
+    option_price_effect: Literal[
+        "DEBIT",
+        "CREDIT",
+        "EVEN",
+    ]
+    option_time_in_force: Literal["Day"] = "Day"
+
 
 class ExpenseRatioRequest(BaseModel):
     symbols: List[str]

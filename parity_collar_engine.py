@@ -733,40 +733,40 @@ def build_zero_cost_dividend_floor_collar(
 
 
 
-        execution_legs = [
-        {
-            "ticker": str(g["ticker"].iloc[0]),
-            "expiration": g["expirDate"].iloc[0],
-            "option_type": "PUT",
-            "action": "BUY_TO_OPEN",
-            "strike": float(best_put["strike"]),
-            "bid_per_share": float(best_put["putBidPrice"]),
-            "ask_per_share": float(best_put["putAskPrice"]),
-            "mid_per_share": float(best_put["putMid"]),
-            "recent_volume": float(
-                best_put.get("putVolume", 0) or 0
-            ),
-            "open_interest": float(
-                best_put.get("putOpenInterest", 0) or 0
-            ),
-        },
-        {
-            "ticker": str(g["ticker"].iloc[0]),
-            "expiration": g["expirDate"].iloc[0],
-            "option_type": "CALL",
-            "action": "SELL_TO_OPEN",
-            "strike": float(best_call["strike"]),
-            "bid_per_share": float(best_call["callBidPrice"]),
-            "ask_per_share": float(best_call["callAskPrice"]),
-            "mid_per_share": float(best_call["callMid"]),
-            "recent_volume": float(
-                best_call.get("callVolume", 0) or 0
-            ),
-            "open_interest": float(
-                best_call.get("callOpenInterest", 0) or 0
-            ),
-        },
-    ]
+    execution_legs = [
+    {
+        "ticker": str(g["ticker"].iloc[0]),
+        "expiration": g["expirDate"].iloc[0],
+        "option_type": "PUT",
+        "action": "BUY_TO_OPEN",
+        "strike": float(best_put["strike"]),
+        "bid_per_share": float(best_put["putBidPrice"]),
+        "ask_per_share": float(best_put["putAskPrice"]),
+        "mid_per_share": float(best_put["putMid"]),
+        "recent_volume": float(
+            best_put.get("putVolume", 0) or 0
+        ),
+        "open_interest": float(
+            best_put.get("putOpenInterest", 0) or 0
+        ),
+    },
+    {
+        "ticker": str(g["ticker"].iloc[0]),
+        "expiration": g["expirDate"].iloc[0],
+        "option_type": "CALL",
+        "action": "SELL_TO_OPEN",
+        "strike": float(best_call["strike"]),
+        "bid_per_share": float(best_call["callBidPrice"]),
+        "ask_per_share": float(best_call["callAskPrice"]),
+        "mid_per_share": float(best_call["callMid"]),
+        "recent_volume": float(
+            best_call.get("callVolume", 0) or 0
+        ),
+        "open_interest": float(
+            best_call.get("callOpenInterest", 0) or 0
+        ),
+    },
+]
 
 
 
@@ -1818,6 +1818,35 @@ def build_zero_cost_target_cap_buffer(
             rows.append({
                 "call_strike": call_strike,
                 "call_credit": call_credit,
+                "long_put_bid_per_share": float(
+                    long_put["putBidPrice"]
+                ),
+                "long_put_ask_per_share": float(
+                    long_put["putAskPrice"]
+                ),
+                "long_put_mid_per_share": float(
+                    long_put["putMid"]
+                ),
+
+                "short_put_bid_per_share": float(
+                    short_put["putBidPrice"]
+                ),
+                "short_put_ask_per_share": float(
+                    short_put["putAskPrice"]
+                ),
+                "short_put_mid_per_share": float(
+                    short_put["putMid"]
+                ),
+
+                "call_bid_per_share": float(
+                    call["callBidPrice"]
+                ),
+                "call_ask_per_share": float(
+                    call["callAskPrice"]
+                ),
+                "call_mid_per_share": float(
+                    call["callMid"]
+                ),
                 "long_put_strike": long_put_strike,
                 "long_put_cost": long_put_cost,
                 "short_put_strike": short_put_strike,
@@ -1896,6 +1925,35 @@ def build_zero_cost_target_cap_buffer(
         "long_put_strike": float(best["long_put_strike"]),
         "short_put_strike": float(best["short_put_strike"]),
         "call_strike": float(best["call_strike"]),
+          "long_put_bid_per_share": float(
+            best["long_put_bid_per_share"]
+        ),
+        "long_put_ask_per_share": float(
+            best["long_put_ask_per_share"]
+        ),
+        "long_put_mid_per_share": float(
+            best["long_put_mid_per_share"]
+        ),
+
+        "short_put_bid_per_share": float(
+            best["short_put_bid_per_share"]
+        ),
+        "short_put_ask_per_share": float(
+            best["short_put_ask_per_share"]
+        ),
+        "short_put_mid_per_share": float(
+            best["short_put_mid_per_share"]
+        ),
+
+        "call_bid_per_share": float(
+            best["call_bid_per_share"]
+        ),
+        "call_ask_per_share": float(
+            best["call_ask_per_share"]
+        ),
+        "call_mid_per_share": float(
+            best["call_mid_per_share"]
+        ),
 
         "long_put_cost_dollars": float(best["long_put_cost"]),
         "short_put_credit_dollars": float(best["short_put_credit"]),
@@ -2415,11 +2473,17 @@ def build_covered_call(
     expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
     expected_dividend_per_share = expected_dividend_dollars / MULT
 
+
     calls = g[
         (g["strike"] > spot)
+        & (g["callBidPrice"] > 0)
+        & (g["callAskPrice"] > 0)
+        & np.isfinite(g["callMid"])
         & (g["callMid"] > 0)
     ].copy()
+    
 
+    
     if calls.empty:
         return None
 
@@ -2476,6 +2540,15 @@ def build_covered_call(
         "long_put_strike": None,
         "short_put_strike": None,
         "call_strike": float(best["strike"]),
+        "call_bid_per_share": float(
+            best["callBidPrice"]
+        ),
+        "call_ask_per_share": float(
+            best["callAskPrice"]
+        ),
+        "call_mid_per_share": float(
+            best["callMid"]
+        ),
 
         "put_cost_dollars": None,
         "call_credit_dollars": float(best["call_credit_dollars"]),

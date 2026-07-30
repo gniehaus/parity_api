@@ -48,6 +48,12 @@ from .execution_submission import (
     submit_prepared_option_order,
 )
 
+
+from .execution_workflow_start import (
+    ExecutionWorkflowStartError,
+    start_approved_new_position_workflow,
+)
+
 from .execution_cancellation import (
     ExecutionCancellationError,
     request_execution_order_cancellation,
@@ -1054,9 +1060,64 @@ def execution_workflow_get(
         "orders": orders,
         "execution_plan": execution_plan
     }
-@app.post(
-    "/api/execution/workflows/{workflow_id}/option-orders/draft"
-)
+
+
+
+@app.post("/api/execution/workflows/{workflow_id}/start")
+def execution_workflow_start(
+    workflow_id: str,
+    req: ExecutionWorkflowStartRequest,
+    request: Request,
+):
+    """
+    Accept one explicit approval for a new position.
+
+    The backend submits only the initial equity market order here. The
+    approved options package is stored and may be submitted later only
+    after broker-confirmed equity fill.
+    """
+
+    if req.confirm_plan is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_plan must be true before the position "
+                "can be started"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+
+    require_new_execution_enabled(parity_user_id)
+
+    try:
+        return start_approved_new_position_workflow(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            lot_id=req.lot_id,
+            option_contracts=[
+                contract.model_dump()
+                for contract in req.contracts
+            ],
+            option_limit_price=req.option_limit_price,
+            option_price_effect=req.option_price_effect,
+            option_time_in_force=req.option_time_in_force,
+        )
+    except ExecutionWorkflowStartError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+
+    
+@app.post("/api/execution/workflows/{workflow_id}/option-orders/draft")
 def execution_option_order_draft_create(
     workflow_id: str,
     req: ExecutionPrepareOptionOrderRequest,

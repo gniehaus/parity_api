@@ -1439,16 +1439,55 @@ def execution_order_status_refresh(
     """
     Refresh one submitted order from SnapTrade.
 
-    This reads broker status and updates Parity's local record only.
-    It never submits, cancels, replaces, or re-prices an order.
+    For a new-position workflow that was explicitly approved as a
+    whole, refreshing the confirmed equity fill may submit the stored
+    options package. It never changes the approved contracts or limit.
     """
 
     parity_user_id = get_parity_user_id(request)
 
-    require_subscription_feature(
-        request,
-        "can_view_existing_outcomes",
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
     )
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution order was not found",
+        )
+
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=order["workflow_id"],
+    )
+
+    if not workflow:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution workflow was not found",
+        )
+
+    can_trigger_preapproved_options = (
+        workflow["underlying_source"] == "new"
+        and workflow["status"]
+        == "APPROVED_PENDING_UNDERLYING_FILL"
+        and order["execution_phase"] == "INITIAL"
+        and order["sequence"] == 1
+        and order["order_scope"] == "EQUITY"
+    )
+
+    if can_trigger_preapproved_options:
+        require_subscription_feature(
+            request,
+            "can_execute_new_orders",
+        )
+        require_new_execution_enabled(parity_user_id)
+    else:
+        require_subscription_feature(
+            request,
+            "can_view_existing_outcomes",
+        )
 
     try:
         return refresh_execution_order_status(

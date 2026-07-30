@@ -3881,6 +3881,199 @@ def save_execution_workflow_plan(
 
     return workflow
 
+
+
+
+
+
+
+
+
+
+def record_new_position_workflow_approval(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    option_contracts: list[dict],
+    option_limit_price: float,
+    option_price_effect: str,
+    option_time_in_force: str,
+    option_quote_snapshot: dict,
+) -> dict:
+    """
+    Persist one explicit, immutable user approval for a new-position
+    workflow. This does not create or submit any brokerage order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    approved_option_contracts = %s::jsonb,
+                    approved_option_limit_price = %s,
+                    approved_option_price_effect = %s,
+                    approved_option_time_in_force = %s,
+                    approved_option_quote_snapshot = %s::jsonb,
+                    approved_at = NOW(),
+                    status = 'APPROVED_PENDING_UNDERLYING_FILL',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND underlying_source = 'new'
+                  AND status = 'DRAFT'
+                RETURNING *
+                """,
+                (
+                    json.dumps(option_contracts),
+                    option_limit_price,
+                    option_price_effect,
+                    option_time_in_force,
+                    json.dumps(option_quote_snapshot),
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+            conn.commit()
+
+    if not workflow:
+        raise ValueError(
+            "This workflow is not available for approval"
+        )
+
+    return workflow
+
+
+def claim_workflow_option_submission_after_underlying_fill(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict | None:
+    """
+    Atomically claim the stored overlay approval only after the
+    workflow's initial equity order is broker-confirmed FILLED.
+
+    A second refresh or browser retry returns None instead of creating
+    a duplicate option submission.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows w
+                SET
+                    status = 'OPTIONS_SUBMITTING',
+                    updated_at = NOW()
+                WHERE w.id = %s
+                  AND w.parity_user_id = %s
+                  AND w.status = (
+                      'APPROVED_PENDING_UNDERLYING_FILL'
+                  )
+                  AND EXISTS (
+                      SELECT 1
+                      FROM execution_orders o
+                      WHERE o.workflow_id = w.id
+                        AND o.sequence = 1
+                        AND o.status = 'FILLED'
+                  )
+                RETURNING w.*
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+            conn.commit()
+
+    return workflow
+
+
+def mark_workflow_options_submitted(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    status = 'OPTIONS_SUBMITTED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'OPTIONS_SUBMITTING'
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+            conn.commit()
+
+    if not workflow:
+        raise ValueError(
+            "Workflow option submission state could not be recorded"
+        )
+
+    return workflow
+
+
+def mark_workflow_action_required(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    status = 'ACTION_REQUIRED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'APPROVED_PENDING_UNDERLYING_FILL',
+                      'PENDING_OPTIONS_SUBMISSION',
+                      'OPTIONS_SUBMITTING'
+                  )
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+            workflow = cur.fetchone()
+            conn.commit()
+
+    if not workflow:
+        raise ValueError(
+            "Workflow is not available for action-required handling"
+        )
+
+    return workflow
+
+
+
+
+
+
+
+
+
+
+
+
 def create_execution_order(
     parity_user_id: str,
     workflow_id: str,

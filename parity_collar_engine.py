@@ -2300,9 +2300,11 @@ def build_married_put(
 
     puts = g[
         (g["strike"] < spot)
+        & (g["putBidPrice"] > 0)
+        & (g["putAskPrice"] > 0)
+        & np.isfinite(g["putMid"])
         & (g["putMid"] > 0)
     ].copy()
-
     if puts.empty:
         return None
 
@@ -2379,6 +2381,7 @@ def build_married_put(
         "put_cost_per_share": float(best["putMid"]),
         "put_bid_per_share": float(best.get("putBidPrice", best["putMid"])),
         "put_ask_per_share": float(best.get("putAskPrice", best["putMid"])),
+        "put_mid_per_share": float(best["putMid"]),
 
         "call_credit_dollars": None,
         "net_cost_dollars": put_cost_dollars,

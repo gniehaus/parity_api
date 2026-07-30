@@ -105,6 +105,11 @@ def start_approved_new_position_workflow(
             parity_user_id=parity_user_id,
             workflow_id=workflow_id,
         )
+        if len(lots) != 1:
+            raise ExecutionWorkflowStartError(
+                "New-position execution currently supports one "
+                "100-share lot per approved workflow"
+            )
 
         lot = next(
             (

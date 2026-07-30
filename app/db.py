@@ -1009,6 +1009,79 @@ def init_db():
                 ADD COLUMN IF NOT EXISTS execution_preference TEXT;
             """)
 
+
+
+
+            cur.execute("""
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_option_contracts JSONB;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_option_limit_price NUMERIC;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_option_price_effect TEXT;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_option_time_in_force TEXT;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_option_quote_snapshot JSONB;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    approved_at TIMESTAMPTZ;
+
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_status_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_status_check
+                CHECK (
+                    status IN (
+                        'DRAFT',
+                        'UNDERLYING_ORDER_PREPARED',
+                        'UNDERLYING_SUBMITTED',
+                        'AWAITING_UNDERLYING_FILL',
+                        'OPTIONS_ORDER_PREPARED',
+                        'OPTIONS_SUBMITTED',
+                        'APPROVED_PENDING_UNDERLYING_FILL',
+                        'PENDING_OPTIONS_SUBMISSION',
+                        'OPTIONS_SUBMITTING',
+                        'ACTION_REQUIRED',
+                        'COMPLETE',
+                        'FAILED',
+                        'CANCELED'
+                    )
+                );
+
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_approved_option_price_effect_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_approved_option_price_effect_check
+                CHECK (
+                    approved_option_price_effect IS NULL
+                    OR approved_option_price_effect IN (
+                        'DEBIT',
+                        'CREDIT',
+                        'EVEN'
+                    )
+                );
+            """)
+
+
+
+            
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS execution_orders (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

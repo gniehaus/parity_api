@@ -7,6 +7,15 @@ from .db import (
     get_execution_workflow,
     mark_execution_workflow_complete_if_all_lots_complete,
 )
+
+
+from .execution_workflow_continuation import (
+    ExecutionWorkflowContinuationError,
+    submit_preapproved_option_overlay_after_underlying_fill,
+)
+
+
+
 from .snaptrade_service import (
     _to_plain,
     get_or_create_snaptrade_user,
@@ -106,7 +115,10 @@ def refresh_execution_order_status(
     """
     Read the latest SnapTrade order data and reconcile one local order.
 
-    This function never submits, cancels, replaces, or re-prices an order.
+    For a previously and explicitly approved new-position workflow,
+    this may submit its stored option overlay after the corresponding
+    equity order is broker-confirmed FILLED. It never changes the
+    approved contracts or limit.
     """
 
     order = get_execution_order(
@@ -430,10 +442,45 @@ def refresh_execution_order_status(
                 )
             )
 
+        continuation = None
+
+        if (
+            workflow["underlying_source"] == "new"
+            and updated_order["sequence"] == 1
+            and updated_order["order_scope"] == "EQUITY"
+            and updated_lot["status"] == "WAITING_FOR_NEXT_STEP"
+        ):
+            try:
+                continuation = (
+                    submit_preapproved_option_overlay_after_underlying_fill(
+                        parity_user_id=parity_user_id,
+                        workflow_id=updated_order["workflow_id"],
+                        lot_id=updated_order["lot_id"],
+                    )
+                )
+
+                if continuation:
+                    updated_workflow = continuation["workflow"]
+
+            except ExecutionWorkflowContinuationError:
+                updated_workflow = get_execution_workflow(
+                    parity_user_id=parity_user_id,
+                    workflow_id=updated_order["workflow_id"],
+                )
+
+                continuation = {
+                    "status": "ACTION_REQUIRED",
+                    "message": (
+                        "The approved protection package requires "
+                        "review before submission."
+                    ),
+                }   
+
     return {
         "found": True,
         "order": updated_order,
         "lot": updated_lot,
         "workflow": updated_workflow,
+        "continuation": continuation,
         "broker_order": matched_broker_order,
     }

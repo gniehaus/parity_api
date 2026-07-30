@@ -213,32 +213,31 @@ def prepare_option_order_draft(
 
 
     orders = get_execution_workflow_orders(
-            parity_user_id=parity_user_id,
-            workflow_id=workflow_id,
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    prior_steps = [
+        plan_step
+        for plan_step in workflow["execution_plan"]
+        if plan_step["sequence"] < sequence
+        and plan_step["requires_previous_fill"]
+    ]
+
+    for prior_step in prior_steps:
+        prior_order_filled = any(
+            str(order["lot_id"]) == str(lot_id)
+            and order["sequence"] == prior_step["sequence"]
+            and order["status"] == "FILLED"
+            and float(order["filled_quantity"] or 0) >= 1
+            for order in orders
         )
-    
-        prior_steps = [
-            plan_step
-            for plan_step in workflow["execution_plan"]
-            if plan_step["sequence"] < sequence
-            and plan_step["requires_previous_fill"]
-        ]
-    
-        for prior_step in prior_steps:
-            prior_order_filled = any(
-                str(order["lot_id"]) == str(lot_id)
-                and order["sequence"] == prior_step["sequence"]
-                and order["status"] == "FILLED"
-                and float(order["filled_quantity"] or 0) >= 1
-                for order in orders
+
+        if not prior_order_filled:
+            raise ValueError(
+                "The preceding workflow step must fill before "
+                "this option order can be prepared"
             )
-    
-            if not prior_order_filled:
-                raise ValueError(
-                    "The preceding workflow step must fill before "
-                    "this option order can be prepared"
-                )
-    
 
     
     _validate_contracts_for_step(

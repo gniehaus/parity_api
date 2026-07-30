@@ -128,14 +128,9 @@ def start_approved_new_position_workflow(
     except ExecutionWorkflowStartError:
         raise
 
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
         raise ExecutionWorkflowStartError(str(exc)) from exc
-
-    if lot["status"] != "UNSTARTED":
-        raise ExecutionWorkflowStartError(
-            "This execution lot is not available to start"
-        )
-
+        
     approval_recorded = False
 
     try:

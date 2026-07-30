@@ -150,6 +150,89 @@ def _validate_contracts_for_step(
             )
 
 
+
+
+
+def validate_and_quote_option_workflow_step(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    sequence: int,
+    contracts: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """
+    Validate the user-selected option legs against a workflow step and
+    collect a fresh server-side ORATS snapshot.
+
+    This never creates, prepares, or submits an execution order.
+    """
+
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    if not workflow:
+        raise ValueError("Execution workflow was not found")
+
+    step = _get_workflow_step(
+        workflow=workflow,
+        sequence=sequence,
+    )
+
+    if step["order_scope"] not in {"OPTIONS", "OPTIONS_PACKAGE"}:
+        raise ValueError(
+            "This workflow step requires an equity order, "
+            "not an option order"
+        )
+
+    _validate_contracts_for_step(
+        step=step,
+        contracts=contracts,
+        underlying_symbol=workflow["underlying_symbol"].upper(),
+    )
+
+    chain = fetch_orats_chain(
+        ticker=workflow["underlying_symbol"],
+        token=_get_orats_token(),
+    )
+
+    quoted_contracts = []
+
+    for contract in contracts:
+        normalized_type = _normalized_option_type(
+            contract["option_type"]
+        )
+        normalized_action = _normalized_action(
+            contract["action"]
+        )
+
+        quote = get_orats_option_quote(
+            chain,
+            ticker=workflow["underlying_symbol"],
+            expiration=contract["expiration"],
+            option_type=normalized_type,
+            strike=contract["strike"],
+        )
+
+        quoted_contracts.append(
+            {
+                "action": normalized_action,
+                "quote": quote,
+            }
+        )
+
+    quote_snapshot = {
+        "source": "ORATS",
+        "prepared_at": datetime.now(timezone.utc).isoformat(),
+        "contracts": quoted_contracts,
+    }
+
+    return workflow, step, quote_snapshot
+
+
+
+
 def prepare_option_order_draft(
     *,
     parity_user_id: str,

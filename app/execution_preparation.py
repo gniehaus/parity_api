@@ -221,7 +221,6 @@ def prepare_option_order_draft(
         plan_step
         for plan_step in workflow["execution_plan"]
         if plan_step["sequence"] < sequence
-        and plan_step["requires_previous_fill"]
     ]
 
     for prior_step in prior_steps:

@@ -84,40 +84,52 @@ def start_approved_new_position_workflow(
             "Option orders must use Day time in force"
         )
 
-    workflow, option_step, option_quote_snapshot = (
-        validate_and_quote_option_workflow_step(
+    try:
+        workflow, option_step, option_quote_snapshot = (
+            validate_and_quote_option_workflow_step(
+                parity_user_id=parity_user_id,
+                workflow_id=workflow_id,
+                sequence=2,
+                contracts=option_contracts,
+            )
+        )
+
+        if workflow["underlying_source"] != "new":
+            raise ExecutionWorkflowStartError(
+                "This endpoint is only for new-position workflows"
+            )
+
+        _get_new_position_steps(workflow)
+
+        lots = get_execution_workflow_lots(
             parity_user_id=parity_user_id,
             workflow_id=workflow_id,
-            sequence=2,
-            contracts=option_contracts,
-        )
-    )
-
-    if workflow["underlying_source"] != "new":
-        raise ExecutionWorkflowStartError(
-            "This endpoint is only for new-position workflows"
         )
 
-    _get_new_position_steps(workflow)
-
-    lots = get_execution_workflow_lots(
-        parity_user_id=parity_user_id,
-        workflow_id=workflow_id,
-    )
-
-    lot = next(
-        (
-            candidate
-            for candidate in lots
-            if str(candidate["id"]) == str(lot_id)
-        ),
-        None,
-    )
-
-    if not lot:
-        raise ExecutionWorkflowStartError(
-            "Execution lot was not found"
+        lot = next(
+            (
+                candidate
+                for candidate in lots
+                if str(candidate["id"]) == str(lot_id)
+            ),
+            None,
         )
+
+        if not lot:
+            raise ExecutionWorkflowStartError(
+                "Execution lot was not found"
+            )
+
+        if lot["status"] != "UNSTARTED":
+            raise ExecutionWorkflowStartError(
+                "This execution lot is not available to start"
+            )
+
+    except ExecutionWorkflowStartError:
+        raise
+
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ExecutionWorkflowStartError(str(exc)) from exc
 
     if lot["status"] != "UNSTARTED":
         raise ExecutionWorkflowStartError(

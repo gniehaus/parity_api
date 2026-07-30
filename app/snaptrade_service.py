@@ -1267,3 +1267,56 @@ def get_portfolio_summary(parity_user_id: str):
             for h in holdings
         ],
     }
+
+def list_brokerage_connections(
+    parity_user_id: str,
+) -> dict:
+    snaptrade_user = get_or_create_snaptrade_user(
+        parity_user_id
+    )
+
+    response = (
+        snaptrade.connections
+        .list_brokerage_authorizations(
+            user_id=snaptrade_user["snaptrade_user_id"],
+            user_secret=snaptrade_user["user_secret"],
+        )
+    )
+
+    authorizations = _to_plain(response.body) or []
+    connections = []
+
+    for authorization in authorizations:
+        authorization_id = authorization.get("id")
+
+        if not authorization_id:
+            continue
+
+        accounts_response = (
+            snaptrade.connections
+            .list_brokerage_authorization_accounts(
+                authorization_id=str(authorization_id),
+                user_id=snaptrade_user["snaptrade_user_id"],
+                user_secret=snaptrade_user["user_secret"],
+            )
+        )
+
+        accounts = _to_plain(accounts_response.body) or []
+
+        connections.append(
+            {
+                "authorization_id": str(authorization_id),
+                "brokerage_slug": (
+                    authorization.get("brokerage") or {}
+                ).get("slug"),
+                "type": authorization.get("type"),
+                "disabled": bool(authorization.get("disabled")),
+                "account_ids": [
+                    str(account["id"])
+                    for account in accounts
+                    if account.get("id")
+                ],
+            }
+        )
+
+    return {"connections": connections}

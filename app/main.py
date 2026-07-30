@@ -84,6 +84,7 @@ from .snaptrade_service import (
     get_execution_account_context,
     get_all_account_positions,
     create_connection_url,
+    list_brokerage_connections
 )
 from .plaid_service import (
     create_link_token,
@@ -775,7 +776,10 @@ def dashboard_accounts(request: Request):
 
     return get_account_level_portfolio_summary(parity_user_id)
 
-
+@app.get("/api/brokerage/connections")
+def brokerage_connections(request: Request):
+    parity_user_id = get_parity_user_id(request)
+    return list_brokerage_connections(parity_user_id)
     
 @app.post("/api/plaid/link-token")
 def plaid_link_token(request: Request, connection_type: str = "bank"):

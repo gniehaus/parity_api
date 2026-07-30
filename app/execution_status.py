@@ -398,6 +398,7 @@ def refresh_execution_order_status(
 
     updated_lot = None
     updated_workflow = None
+    continuation = None
 
     if (
         local_status == "FILLED"
@@ -442,7 +443,7 @@ def refresh_execution_order_status(
                 )
             )
 
-        continuation = None
+        
 
         if (
             workflow["underlying_source"] == "new"

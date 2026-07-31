@@ -861,7 +861,6 @@ def refresh_execution_order_status(
                     updated_order["requested_quantity"]
                 ),
                 "contracts": entry_contracts,
-                ),
                 "option_entry_net_price": (
                     option_entry_net_price
                 ),

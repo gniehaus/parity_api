@@ -91,6 +91,7 @@ from .db import (
     create_protected_position_exit,
     get_protected_position_lot,
     update_protected_position_exit_status,
+    list_protected_positions_with_latest_mark,
 )
 
 from .snaptrade_service import (
@@ -1100,14 +1101,23 @@ def execution_protected_lots_get(
 ):
     parity_user_id = get_parity_user_id(request)
 
-    lots = list_active_protected_position_lots(
+    positions = list_protected_positions_with_latest_mark(
         parity_user_id=parity_user_id,
     )
 
-    return {
-        "lots": lots,
-    }
+    active_lots = [
+        position
+        for position in positions
+        if position["status"] == "ACTIVE"
+    ]
 
+    return {
+        # Preserve the existing Base44 response contract.
+        "lots": active_lots,
+
+        # New complete history for the dashboard activity page.
+        "positions": positions,
+    }
 
 
 @app.post("/api/execution/workflows/{workflow_id}/start")

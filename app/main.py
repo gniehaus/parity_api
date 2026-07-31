@@ -14,6 +14,12 @@ from .subscriptions import (
     require_subscription_feature,
 )
 
+
+from .execution_replacement import (
+    ExecutionReplacementError,
+    request_execution_order_replacement,
+)
+
 from .execution_status import (
     ExecutionStatusError,
     refresh_execution_order_status,
@@ -200,6 +206,18 @@ class ExecutionOrderSubmitRequest(BaseModel):
 
 class ExecutionOrderCancelRequest(BaseModel):
     confirm_cancellation: bool
+
+class ExecutionOrderReplaceRequest(BaseModel):
+    confirm_replacement: bool
+    option_limit_price: float = Field(gt=0)
+    option_price_effect: Literal[
+        "DEBIT",
+        "CREDIT",
+        "EVEN",
+    ]
+    option_time_in_force: str = "Day"
+
+
 
 class ExecutionCloseOptionsOverlayRequest(BaseModel):
     lot_id: str
@@ -1571,6 +1589,71 @@ def execution_order_cancel(
             detail=str(exc),
         ) from exc
 
+
+@app.post("/api/execution/orders/{order_id}/replace")
+def execution_order_replace(
+    order_id: str,
+    req: ExecutionOrderReplaceRequest,
+    request: Request,
+):
+    """
+    Prepare a new option limit and request cancellation of the
+    currently working order.
+
+    The replacement is not submitted until status reconciliation
+    confirms that the original order was canceled with zero fills.
+    """
+
+    if req.confirm_replacement is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_replacement must be true before an order "
+                "can be replaced"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+    )
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution order was not found",
+        )
+
+    required_feature = (
+        "can_close_existing_outcomes"
+        if order["execution_phase"] == "CLOSE_OPTIONS"
+        else "can_execute_new_orders"
+    )
+
+    require_subscription_feature(
+        request,
+        required_feature,
+    )
+
+    if order["execution_phase"] != "CLOSE_OPTIONS":
+        require_new_execution_enabled(parity_user_id)
+
+    try:
+        return request_execution_order_replacement(
+            parity_user_id=parity_user_id,
+            order_id=order_id,
+            option_limit_price=req.option_limit_price,
+            option_price_effect=req.option_price_effect,
+            option_time_in_force=req.option_time_in_force,
+        )
+
+    except ExecutionReplacementError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
 
 @app.post(

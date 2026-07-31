@@ -1279,6 +1279,16 @@ def protected_position_exit_start(
         if not protected_lot:
             raise ValueError("Protected position was not found")
 
+
+        if protected_lot["status"] not in {
+            "ACTIVE",
+            "EXITING",
+        }:
+            raise ValueError(
+                "This protected position requires review before "
+                "it can be closed or sold"
+            )
+
         protected_exit = create_protected_position_exit(
             parity_user_id=parity_user_id,
             protected_lot_id=protected_lot_id,

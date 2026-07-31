@@ -1604,8 +1604,11 @@ def init_db():
                     AND approved_share_quantity % 100 = 0
                 );
             """)
-
-
+            cur.execute("""
+                ALTER TABLE execution_orders
+                ADD COLUMN IF NOT EXISTS
+                broker_status_checked_at TIMESTAMPTZ;
+                """)
             cur.execute("""
                 ALTER TABLE execution_orders
                 ADD COLUMN IF NOT EXISTS
@@ -5402,7 +5405,9 @@ def list_reconcilable_execution_orders(
                       'PARTIALLY_FILLED',
                       'CANCELING'
                   )
-                ORDER BY updated_at ASC
+                ORDER BY
+                broker_status_checked_at ASC NULLS FIRST,
+                created_at ASC
                 LIMIT %s
                 """,
                 (limit,),
@@ -5411,7 +5416,27 @@ def list_reconcilable_execution_orders(
             return cur.fetchall()
 
 
+def mark_execution_order_status_checked(
+    *,
+    order_id: str,
+) -> None:
+    """
+    Record when the reconciler last checked an order at the broker.
+    """
 
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET broker_status_checked_at = NOW()
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+            conn.commit()
+
+            
 def get_execution_order(
     parity_user_id: str,
     order_id: str,

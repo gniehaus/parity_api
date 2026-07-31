@@ -4889,6 +4889,103 @@ def list_protected_positions_with_latest_mark(
             return cur.fetchall()
 
 
+
+
+def list_execution_activity(
+    *,
+    parity_user_id: str,
+    limit: int = 100,
+) -> list[dict]:
+    """
+    Return broker execution activity for one user.
+
+    Unsubmitted drafts and merely prepared orders are excluded.
+    This is database-only and does not contact the broker.
+    """
+
+    if limit <= 0 or limit > 500:
+        raise ValueError("limit must be between 1 and 500")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    execution_order.id AS order_id,
+                    execution_order.workflow_id,
+                    execution_order.lot_id,
+                    execution_order.replaces_order_id,
+
+                    workflow.underlying_symbol,
+                    workflow.underlying_source,
+                    workflow.underlying_shares,
+                    workflow.strategy_type,
+                    workflow.status AS workflow_status,
+
+                    workflow_lot.lot_number,
+                    workflow_lot.share_quantity,
+
+                    execution_order.account_id,
+                    execution_order.brokerage_slug,
+                    execution_order.sequence,
+                    execution_order.order_role,
+                    execution_order.order_scope,
+                    execution_order.execution_phase,
+                    execution_order.status AS order_status,
+
+                    execution_order.requested_quantity,
+                    execution_order.filled_quantity,
+                    execution_order.limit_price,
+                    execution_order.price_effect,
+                    execution_order.average_fill_price,
+
+                    execution_order.order_payload,
+                    execution_order.quote_snapshot,
+                    execution_order.rejection_reason,
+
+                    execution_order.submitted_at,
+                    execution_order.filled_at,
+                    execution_order.canceled_at,
+                    execution_order.created_at,
+                    execution_order.updated_at,
+
+                    COALESCE(
+                        execution_order.filled_at,
+                        execution_order.canceled_at,
+                        execution_order.submitted_at,
+                        execution_order.created_at
+                    ) AS activity_at
+
+                FROM execution_orders execution_order
+
+                JOIN execution_workflows workflow
+                  ON workflow.id = execution_order.workflow_id
+
+                JOIN execution_workflow_lots workflow_lot
+                  ON workflow_lot.id = execution_order.lot_id
+
+                WHERE execution_order.parity_user_id = %s
+                  AND execution_order.status NOT IN (
+                      'DRAFT',
+                      'PREPARED'
+                  )
+
+                ORDER BY
+                    activity_at DESC,
+                    execution_order.created_at DESC
+
+                LIMIT %s
+                """,
+                (
+                    parity_user_id,
+                    limit,
+                ),
+            )
+
+            return cur.fetchall()
+
+
+
 def list_protected_position_marks(
     *,
     parity_user_id: str,

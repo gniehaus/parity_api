@@ -15,6 +15,7 @@ from .db import (
     update_execution_order_broker_status,
     update_protected_position_exit_status,
     update_protected_position_lot_status,
+    get_execution_order_replacement,
 )
 
 
@@ -27,7 +28,10 @@ from .execution_closing import (
     prepare_protected_position_equity_sale_draft,
 )
 from .execution_safety import validate_execution_order_safety
-from .execution_submission import submit_prepared_option_order
+from .execution_submission import (
+    ExecutionSubmissionError,
+    submit_prepared_option_order,
+)
 
 from .snaptrade_service import (
     _to_plain,
@@ -409,7 +413,42 @@ def refresh_execution_order_status(
         },
         rejection_reason=rejection_reason,
     )
-    
+
+
+
+    replacement_order = None
+    replacement_error = None
+
+    if (
+        updated_order["status"] == "CANCELED"
+        and float(updated_order.get("filled_quantity") or 0) == 0
+    ):
+        replacement_order = get_execution_order_replacement(
+            parity_user_id=parity_user_id,
+            original_order_id=str(updated_order["id"]),
+        )
+
+        if (
+            replacement_order
+            and replacement_order["status"] == "PREPARED"
+        ):
+            try:
+                replacement_submission = (
+                    submit_prepared_option_order(
+                        parity_user_id=parity_user_id,
+                        order_id=str(replacement_order["id"]),
+                        allow_preapproved_quote_age=True,
+                    )
+                )
+
+                replacement_order = replacement_submission["order"]
+
+            except ExecutionSubmissionError as exc:
+                replacement_order = get_execution_order(
+                    parity_user_id=parity_user_id,
+                    order_id=str(replacement_order["id"]),
+                )
+                replacement_error = str(exc)
     if (
         updated_order["execution_phase"] == "CLOSE_OPTIONS"
         and updated_order["order_role"] == "CLOSE_OPTIONS_OVERLAY"
@@ -718,5 +757,7 @@ def refresh_execution_order_status(
         "lot": updated_lot,
         "workflow": updated_workflow,
         "continuation": continuation,
+        "replacement_order": replacement_order,
+        "replacement_error": replacement_error,
         "broker_order": matched_broker_order,
     }

@@ -186,3 +186,74 @@ def build_execution_plan(
     }
 
     return plans[strategy_type]
+
+
+    
+
+ExitMode = Literal[
+    "REMOVE_PROTECTION",
+    "SELL_PROTECTED_POSITION",
+]
+
+
+def build_protected_position_exit_plan(
+    strategy_type: StrategyType,
+    exit_mode: ExitMode,
+) -> list[dict]:
+    """
+    Return the safe execution sequence for one active protected lot.
+
+    REMOVE_PROTECTION closes only the options overlay.
+    SELL_PROTECTED_POSITION closes the overlay first, then sells the
+    associated 100 shares only after the close package fills.
+    """
+
+    if strategy_type not in {
+        "covered_call",
+        "married_put",
+        "collar",
+        "buffer",
+    }:
+        raise ValueError(f"Unsupported strategy type: {strategy_type}")
+
+    if exit_mode not in {
+        "REMOVE_PROTECTION",
+        "SELL_PROTECTED_POSITION",
+    }:
+        raise ValueError(f"Unsupported exit mode: {exit_mode}")
+
+    close_scope = (
+        "OPTIONS"
+        if strategy_type in {
+            "covered_call",
+            "married_put",
+        }
+        else "OPTIONS_PACKAGE"
+    )
+
+    close_step = _step(
+        1,
+        "CLOSE_OPTIONS_OVERLAY",
+        "CLOSE_OPTIONS_OVERLAY",
+        close_scope,
+        "Close the complete protection overlay first.",
+        False,
+    )
+
+    if exit_mode == "REMOVE_PROTECTION":
+        return [close_step]
+
+    return [
+        close_step,
+        _step(
+            2,
+            "SELL_UNDERLYING",
+            "SELL_UNDERLYING",
+            "EQUITY",
+            (
+                "After the protection overlay is fully closed, "
+                "sell the associated 100 shares."
+            ),
+            True,
+        ),
+    ]

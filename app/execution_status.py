@@ -6,6 +6,8 @@ from .db import (
     advance_execution_lot_after_fill,
     get_execution_workflow,
     mark_execution_workflow_complete_if_all_lots_complete,
+    get_execution_workflow_orders,
+    create_protected_position_lot,
 )
 
 
@@ -442,7 +444,64 @@ def refresh_execution_order_status(
                     workflow_id=updated_order["workflow_id"],
                 )
             )
+        if (
+            updated_lot["status"] == "COMPLETE"
+            and updated_order["order_scope"]
+            in {"OPTIONS", "OPTIONS_PACKAGE"}
+        ):
+            option_contracts = (
+                (updated_order.get("order_payload") or {})
+                .get("legs")
+                or []
+            )
 
+            if not option_contracts:
+                raise ExecutionStatusError(
+                    "Filled protection order is missing option legs"
+                )
+
+            workflow_orders = get_execution_workflow_orders(
+                parity_user_id=parity_user_id,
+                workflow_id=updated_order["workflow_id"],
+            )
+
+            underlying_order = next(
+                (
+                    candidate
+                    for candidate in workflow_orders
+                    if candidate["order_role"] == "BUY_UNDERLYING"
+                    and candidate["status"] == "FILLED"
+                ),
+                None,
+            )
+
+            create_protected_position_lot(
+                parity_user_id=parity_user_id,
+                account_id=workflow["account_id"],
+                brokerage_slug=workflow["brokerage_slug"],
+                opening_workflow_id=updated_order["workflow_id"],
+                opening_workflow_lot_id=updated_order["lot_id"],
+                underlying_symbol=workflow["underlying_symbol"],
+                share_source=(
+                    "PARITY_NEW_POSITION"
+                    if workflow["underlying_source"] == "new"
+                    else "EXISTING_HOLDING"
+                ),
+                share_entry_fill_price=(
+                    underlying_order["average_fill_price"]
+                    if underlying_order
+                    else None
+                ),
+                share_entry_filled_at=(
+                    underlying_order["filled_at"]
+                    if underlying_order
+                    else None
+                ),
+                strategy_type=workflow["strategy_type"],
+                option_contracts=option_contracts,
+                options_open_order_id=updated_order["id"],
+                protection_opened_at=updated_order["filled_at"],
+            )
         
 
         if (

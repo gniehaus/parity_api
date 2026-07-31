@@ -1396,6 +1396,49 @@ def init_db():
                 );
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS protected_position_marks (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+                    protected_lot_id UUID NOT NULL
+                        REFERENCES protected_position_lots(id)
+                        ON DELETE CASCADE,
+
+                    parity_user_id TEXT NOT NULL,
+
+                    marked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                    underlying_price NUMERIC NOT NULL,
+                    underlying_market_value NUMERIC NOT NULL,
+
+                    option_market_value NUMERIC NOT NULL,
+                    strategy_market_value NUMERIC NOT NULL,
+
+                    pnl_dollars NUMERIC NOT NULL,
+                    pnl_percent NUMERIC NOT NULL,
+
+                    quote_source TEXT NOT NULL,
+
+                    quote_snapshot JSONB
+                        NOT NULL DEFAULT '{}'::jsonb,
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_protected_position_marks_lot_time
+                ON protected_position_marks (
+                    protected_lot_id,
+                    marked_at DESC
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_protected_position_marks_user_time
+                ON protected_position_marks (
+                    parity_user_id,
+                    marked_at DESC
+                );
+            """)
+            cur.execute("""
                 ALTER TABLE execution_orders
                 DROP CONSTRAINT IF EXISTS
                     execution_orders_order_role_check;

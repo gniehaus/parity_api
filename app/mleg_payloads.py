@@ -22,13 +22,31 @@ def _format_price(value: str | float | Decimal) -> str:
     try:
         price = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError("limit_price must be a valid number") from exc
+        raise ValueError(
+            "limit_price must be a valid number"
+        ) from exc
+
+    if not price.is_finite():
+        raise ValueError(
+            "limit_price must be a finite number"
+        )
 
     if price <= 0:
-        raise ValueError("limit_price must be greater than zero")
+        raise ValueError(
+            "limit_price must be greater than zero"
+        )
 
-    return format(price.normalize(), "f")
+    normalized_price = price.normalize()
 
+    if normalized_price.as_tuple().exponent < -2:
+        raise ValueError(
+            "limit_price must be limited to 2 decimal places"
+        )
+
+    return format(
+        price.quantize(Decimal("0.01")),
+        "f",
+    )
 
 def build_option_leg(
     *,

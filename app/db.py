@@ -1353,6 +1353,123 @@ def init_db():
                     created_at DESC
                 );
             """)
+            cur.execute("""
+                ALTER TABLE execution_orders
+                DROP CONSTRAINT IF EXISTS
+                    execution_orders_order_role_check;
+
+                ALTER TABLE execution_orders
+                ADD CONSTRAINT
+                    execution_orders_order_role_check
+                CHECK (
+                    order_role IN (
+                        'BUY_UNDERLYING',
+                        'SELL_UNDERLYING',
+                        'BUY_PROTECTIVE_PUT',
+                        'BUY_HIGHER_STRIKE_PUT',
+                        'SELL_LOWER_STRIKE_PUT',
+                        'SELL_COVERED_CALL',
+                        'COLLAR_OPTIONS_PACKAGE',
+                        'BUFFER_OPTIONS_PACKAGE',
+                        'BUY_PUT_SPREAD_PACKAGE',
+                        'CLOSE_OPTIONS_OVERLAY'
+                    )
+                );
+
+                ALTER TABLE execution_orders
+                DROP CONSTRAINT IF EXISTS
+                    execution_orders_execution_phase_check;
+
+                ALTER TABLE execution_orders
+                ADD CONSTRAINT
+                    execution_orders_execution_phase_check
+                CHECK (
+                    execution_phase IN (
+                        'INITIAL',
+                        'CONTINUATION',
+                        'RECONCILIATION',
+                        'REQUOTE',
+                        'CLOSE_OPTIONS',
+                        'CLOSE_EQUITY'
+                    )
+                );
+
+                ALTER TABLE protected_position_lots
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_lots_status_check;
+
+                ALTER TABLE protected_position_lots
+                ADD CONSTRAINT
+                    protected_position_lots_status_check
+                CHECK (
+                    status IN (
+                        'ACTIVE',
+                        'EXITING',
+                        'RECONCILIATION_REQUIRED',
+                        'CLOSED'
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS protected_position_exits (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+                    protected_lot_id UUID NOT NULL
+                        REFERENCES protected_position_lots(id)
+                        ON DELETE RESTRICT,
+
+                    parity_user_id TEXT NOT NULL,
+
+                    exit_mode TEXT NOT NULL
+                        CHECK (
+                            exit_mode IN (
+                                'REMOVE_PROTECTION',
+                                'SELL_PROTECTED_POSITION'
+                            )
+                        ),
+
+                    status TEXT NOT NULL DEFAULT 'APPROVED'
+                        CHECK (
+                            status IN (
+                                'APPROVED',
+                                'OPTIONS_CLOSE_SUBMITTED',
+                                'AWAITING_OPTIONS_FILL',
+                                'EQUITY_SALE_SUBMITTED',
+                                'COMPLETE',
+                                'ACTION_REQUIRED',
+                                'CANCELED'
+                            )
+                        ),
+
+                    approved_share_quantity INTEGER NOT NULL DEFAULT 100
+                        CHECK (approved_share_quantity = 100),
+
+                    options_close_order_id UUID
+                        REFERENCES execution_orders(id)
+                        ON DELETE SET NULL,
+
+                    equity_sale_order_id UUID
+                        REFERENCES execution_orders(id)
+                        ON DELETE SET NULL,
+
+                    approved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_protected_position_exits_one_active_exit
+                ON protected_position_exits (protected_lot_id)
+                WHERE status NOT IN ('COMPLETE', 'CANCELED');
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_protected_position_exits_user_status
+                ON protected_position_exits (
+                    parity_user_id,
+                    status,
+                    created_at DESC
+                );
+            """)
             conn.commit()
 
 from typing import Any

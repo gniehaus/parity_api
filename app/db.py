@@ -5366,7 +5366,49 @@ def update_protected_position_lot_status(
 
 
 
+def list_reconcilable_execution_orders(
+    *,
+    limit: int = 100,
+) -> list[dict]:
+    """
+    Return broker-acknowledged orders whose local state may still
+    require reconciliation.
 
+    This does not claim, submit, cancel, or modify any order.
+    """
+
+    if limit <= 0 or limit > 500:
+        raise ValueError("limit must be between 1 and 500")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    parity_user_id,
+                    workflow_id,
+                    lot_id,
+                    order_scope,
+                    execution_phase,
+                    status,
+                    broker_order_id,
+                    updated_at
+                FROM execution_orders
+                WHERE broker_order_id IS NOT NULL
+                  AND status IN (
+                      'SUBMITTED',
+                      'WORKING',
+                      'PARTIALLY_FILLED',
+                      'CANCELING'
+                  )
+                ORDER BY updated_at ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+
+            return cur.fetchall()
 
 
 

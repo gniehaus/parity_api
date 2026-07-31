@@ -5164,13 +5164,6 @@ def update_protected_position_lot_status(
 
 
 
-
-
-
-
-
-
-
 def get_execution_order(
     parity_user_id: str,
     order_id: str,
@@ -5192,6 +5185,42 @@ def get_execution_order(
 
             return cur.fetchone()
 
+
+
+
+
+
+
+def get_execution_order_replacement(
+    parity_user_id: str,
+    original_order_id: str,
+) -> dict | None:
+    """
+    Return the replacement created for an original execution order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_orders
+                WHERE parity_user_id = %s
+                  AND replaces_order_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (
+                    parity_user_id,
+                    original_order_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+
+            
 
 def mark_execution_order_prepared(
     parity_user_id: str,

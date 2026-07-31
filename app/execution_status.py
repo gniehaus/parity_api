@@ -1,14 +1,20 @@
 from typing import Any
 
 from .db import (
-    get_execution_order,
-    update_execution_order_broker_status,
     advance_execution_lot_after_fill,
-    get_execution_workflow,
-    mark_execution_workflow_complete_if_all_lots_complete,
-    get_execution_workflow_orders,
+    attach_equity_sale_order_to_protected_position_exit,
     create_protected_position_lot,
+    get_execution_order,
+    get_execution_workflow,
+    get_execution_workflow_orders,
+    get_protected_position_exit_for_equity_sale_order,
+    get_protected_position_exit_for_options_close_order,
+    mark_execution_order_prepared,
+    mark_execution_workflow_complete_if_all_lots_complete,
     mark_protected_position_lot_closed,
+    update_execution_order_broker_status,
+    update_protected_position_exit_status,
+    update_protected_position_lot_status,
 )
 
 
@@ -17,7 +23,11 @@ from .execution_workflow_continuation import (
     submit_preapproved_option_overlay_after_underlying_fill,
 )
 
-
+from .execution_closing import (
+    prepare_protected_position_equity_sale_draft,
+)
+from .execution_safety import validate_execution_order_safety
+from .execution_submission import submit_prepared_option_order
 
 from .snaptrade_service import (
     _to_plain,
@@ -400,14 +410,165 @@ def refresh_execution_order_status(
     )
     
     if (
-        local_status == "FILLED"
-        and updated_order["execution_phase"] == "CLOSE_OPTIONS"
+        updated_order["execution_phase"] == "CLOSE_OPTIONS"
         and updated_order["order_role"] == "CLOSE_OPTIONS_OVERLAY"
     ):
-        mark_protected_position_lot_closed(
-            parity_user_id=parity_user_id,
-            opening_workflow_lot_id=updated_order["lot_id"],
+        protected_exit = (
+            get_protected_position_exit_for_options_close_order(
+                parity_user_id=parity_user_id,
+                options_close_order_id=str(updated_order["id"]),
+            )
         )
+
+        if local_status == "FILLED":
+            if not protected_exit:
+                # Legacy/direct “remove protection” close.
+                mark_protected_position_lot_closed(
+                    parity_user_id=parity_user_id,
+                    opening_workflow_lot_id=updated_order["lot_id"],
+                )
+
+            elif protected_exit["exit_mode"] == "REMOVE_PROTECTION":
+                update_protected_position_exit_status(
+                    parity_user_id=parity_user_id,
+                    exit_id=str(protected_exit["id"]),
+                    status="COMPLETE",
+                )
+                update_protected_position_lot_status(
+                    parity_user_id=parity_user_id,
+                    protected_lot_id=str(
+                        protected_exit["protected_lot_id"]
+                    ),
+                    status="CLOSED",
+                )
+
+            elif (
+                protected_exit["exit_mode"]
+                == "SELL_PROTECTED_POSITION"
+                and protected_exit["status"]
+                == "OPTIONS_CLOSE_SUBMITTED"
+            ):
+                try:
+                    update_protected_position_exit_status(
+                        parity_user_id=parity_user_id,
+                        exit_id=str(protected_exit["id"]),
+                        status="AWAITING_OPTIONS_FILL",
+                    )
+
+                    equity_draft = (
+                        prepare_protected_position_equity_sale_draft(
+                            parity_user_id=parity_user_id,
+                            exit_id=str(protected_exit["id"]),
+                        )
+                    )
+
+                    validate_execution_order_safety(
+                        equity_draft,
+                        allowed_statuses={"DRAFT"},
+                    )
+
+                    prepared_equity_order = (
+                        mark_execution_order_prepared(
+                            parity_user_id=parity_user_id,
+                            order_id=str(equity_draft["id"]),
+                        )
+                    )
+
+                    equity_submission = (
+                        submit_prepared_option_order(
+                            parity_user_id=parity_user_id,
+                            order_id=str(
+                                prepared_equity_order["id"]
+                            ),
+                        )
+                    )
+
+                    attach_equity_sale_order_to_protected_position_exit(
+                        parity_user_id=parity_user_id,
+                        exit_id=str(protected_exit["id"]),
+                        equity_sale_order_id=str(
+                            equity_submission["order"]["id"]
+                        ),
+                    )
+
+                except Exception:
+                    update_protected_position_exit_status(
+                        parity_user_id=parity_user_id,
+                        exit_id=str(protected_exit["id"]),
+                        status="ACTION_REQUIRED",
+                    )
+                    update_protected_position_lot_status(
+                        parity_user_id=parity_user_id,
+                        protected_lot_id=str(
+                            protected_exit["protected_lot_id"]
+                        ),
+                        status="RECONCILIATION_REQUIRED",
+                    )
+
+        elif local_status in {
+            "ACTION_REQUIRED",
+            "CANCELED",
+            "EXPIRED",
+            "FAILED",
+            "REJECTED",
+        } and protected_exit:
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="ACTION_REQUIRED",
+            )
+            update_protected_position_lot_status(
+                parity_user_id=parity_user_id,
+                protected_lot_id=str(
+                    protected_exit["protected_lot_id"]
+                ),
+                status="RECONCILIATION_REQUIRED",
+            )
+
+    if (
+        updated_order["execution_phase"] == "CLOSE_EQUITY"
+        and updated_order["order_role"] == "SELL_UNDERLYING"
+    ):
+        protected_exit = (
+            get_protected_position_exit_for_equity_sale_order(
+                parity_user_id=parity_user_id,
+                equity_sale_order_id=str(updated_order["id"]),
+            )
+        )
+
+        if protected_exit and local_status == "FILLED":
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="COMPLETE",
+            )
+            update_protected_position_lot_status(
+                parity_user_id=parity_user_id,
+                protected_lot_id=str(
+                    protected_exit["protected_lot_id"]
+                ),
+                status="CLOSED",
+            )
+
+        elif protected_exit and local_status in {
+            "ACTION_REQUIRED",
+            "CANCELED",
+            "EXPIRED",
+            "FAILED",
+            "REJECTED",
+        }:
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="ACTION_REQUIRED",
+            )
+            update_protected_position_lot_status(
+                parity_user_id=parity_user_id,
+                protected_lot_id=str(
+                    protected_exit["protected_lot_id"]
+                ),
+                status="RECONCILIATION_REQUIRED",
+            )
         
     updated_lot = None
     updated_workflow = None

@@ -115,6 +115,7 @@ def validate_execution_order_safety(
     order: dict[str, Any],
     now: datetime | None = None,
     allowed_statuses: set[str] | None = None,
+    enforce_quote_freshness: bool = True,
 ) -> dict[str, Any]:
     """
     Validate a stored order immediately before it is prepared or submitted.
@@ -137,14 +138,22 @@ def validate_execution_order_safety(
     order_scope = order.get("order_scope")
 
     if order_scope == "EQUITY":
-        if order.get("order_role") != "BUY_UNDERLYING":
+        order_role = order.get("order_role")
+        execution_phase = order.get("execution_phase")
+        action = payload.get("action")
+    
+        allowed_equity_orders = {
+            ("BUY_UNDERLYING", "INITIAL", "BUY"),
+            ("SELL_UNDERLYING", "CLOSE_EQUITY", "SELL"),
+        }
+    
+        if (
+            order_role,
+            execution_phase,
+            action,
+        ) not in allowed_equity_orders:
             raise ExecutionSafetyError(
                 "Unsupported equity execution order"
-            )
-
-        if payload.get("action") != "BUY":
-            raise ExecutionSafetyError(
-                "New-holding equity orders must buy shares"
             )
 
         if payload.get("order_type") != "Market":
@@ -274,7 +283,7 @@ def validate_execution_order_safety(
             current_time - quote_timestamp
         ).total_seconds()
 
-        if quote_age_seconds > MAX_QUOTE_AGE_SECONDS:
+        if (enforce_quote_freshness and quote_age_seconds > MAX_QUOTE_AGE_SECONDS):
             raise ExecutionSafetyError(
                 "Option quote is stale and requires a refresh"
             )

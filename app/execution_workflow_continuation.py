@@ -104,6 +104,7 @@ def submit_preapproved_option_overlay_after_underlying_fill(
         option_submission = submit_prepared_option_order(
             parity_user_id=parity_user_id,
             order_id=option_prepared_order["id"],
+            allow_preapproved_quote_age=True,
         )
 
         updated_workflow = mark_workflow_options_submitted(

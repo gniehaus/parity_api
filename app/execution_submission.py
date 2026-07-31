@@ -52,6 +52,7 @@ def _extract_broker_order_id(
 def submit_prepared_option_order(
     parity_user_id: str,
     order_id: str,
+    allow_preapproved_quote_age: bool = False,
 ) -> dict[str, Any]:
     """
     Submit one explicitly approved, PREPARED execution order to SnapTrade.
@@ -88,6 +89,9 @@ def submit_prepared_option_order(
         validate_execution_order_safety(
             order,
             allowed_statuses={"PREPARED"},
+            enforce_quote_freshness=(
+                not allow_preapproved_quote_age
+            ),
         )
     except ExecutionSafetyError as exc:
         raise ExecutionSubmissionError(str(exc)) from exc

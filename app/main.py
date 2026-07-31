@@ -14,6 +14,11 @@ from .subscriptions import (
     require_subscription_feature,
 )
 
+from .protected_position_analytics import (
+    ProtectedPositionAnalyticsError,
+    calculate_protected_position_mark,
+)
+
 
 from .execution_replacement import (
     ExecutionReplacementError,
@@ -92,6 +97,7 @@ from .db import (
     get_protected_position_lot,
     update_protected_position_exit_status,
     list_protected_positions_with_latest_mark,
+    list_protected_position_marks,
 )
 
 from .snaptrade_service import (
@@ -1118,6 +1124,70 @@ def execution_protected_lots_get(
         # New complete history for the dashboard activity page.
         "positions": positions,
     }
+
+
+@app.get(
+    "/api/execution/protected-lots/{protected_lot_id}/analytics"
+)
+def execution_protected_lot_analytics_get(
+    protected_lot_id: str,
+    request: Request,
+):
+    """
+    Return one protected position and its stored P&L history.
+
+    This does not call the broker or market-data provider.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    position = get_protected_position_lot(
+        parity_user_id=parity_user_id,
+        protected_lot_id=protected_lot_id,
+    )
+
+    if not position:
+        raise HTTPException(
+            status_code=404,
+            detail="Protected position was not found",
+        )
+
+    marks = list_protected_position_marks(
+        parity_user_id=parity_user_id,
+        protected_lot_id=protected_lot_id,
+    )
+
+    return {
+        "position": position,
+        "marks": marks,
+    }
+
+
+@app.post(
+    "/api/execution/protected-lots/{protected_lot_id}/analytics/refresh"
+)
+def execution_protected_lot_analytics_refresh(
+    protected_lot_id: str,
+    request: Request,
+):
+    """
+    Fetch current broker and option quotes, calculate P&L, and store
+    one new analytics mark.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        return calculate_protected_position_mark(
+            parity_user_id=parity_user_id,
+            protected_lot_id=protected_lot_id,
+        )
+
+    except ProtectedPositionAnalyticsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
 
 @app.post("/api/execution/workflows/{workflow_id}/start")

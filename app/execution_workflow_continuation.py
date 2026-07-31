@@ -2,13 +2,11 @@ from typing import Any
 
 from .db import (
     claim_workflow_option_submission_after_underlying_fill,
+    get_execution_workflow_orders,
     mark_workflow_action_required,
     mark_workflow_options_submitted,
 )
-from .execution_preparation import prepare_option_order_draft
-from .execution_safety import validate_execution_order_safety
 from .execution_submission import submit_prepared_option_order
-from .db import mark_execution_order_prepared
 
 
 class ExecutionWorkflowContinuationError(ValueError):
@@ -22,11 +20,11 @@ def submit_preapproved_option_overlay_after_underlying_fill(
     lot_id: str,
 ) -> dict[str, Any] | None:
     """
-    Submit the stored, pre-approved overlay once and only once after
-    the corresponding equity order is broker-confirmed FILLED.
+    Submit the already-prepared, pre-approved protection order once
+    and only once after the corresponding equity order is confirmed
+    FILLED.
 
-    Returns None when another refresh already handled the continuation
-    or when the workflow is not awaiting it.
+    This function never builds or reprices an option order.
     """
 
     workflow = (
@@ -40,30 +38,44 @@ def submit_preapproved_option_overlay_after_underlying_fill(
         return None
 
     try:
-        option_contracts = (
-            workflow.get("approved_option_contracts") or []
-        )
-        option_limit_price = (
-            workflow.get("approved_option_limit_price")
-        )
-        option_price_effect = (
-            workflow.get("approved_option_price_effect")
-        )
-        option_time_in_force = (
-            workflow.get("approved_option_time_in_force") or "Day"
+        orders = get_execution_workflow_orders(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
         )
 
-        if not option_contracts:
+        prepared_option_orders = [
+            order
+            for order in orders
+            if (
+                str(order["lot_id"]) == str(lot_id)
+                and order["sequence"] == 2
+                and order["order_scope"]
+                in {"OPTIONS", "OPTIONS_PACKAGE"}
+                and order["status"] == "PREPARED"
+            )
+        ]
+
+        if len(prepared_option_orders) != 1:
             raise ExecutionWorkflowContinuationError(
-                "Workflow is missing its approved option contracts"
+                "Workflow must contain exactly one prepared "
+                "protection order"
             )
 
-        if option_limit_price is None:
+        option_prepared_order = prepared_option_orders[0]
+
+        approved_limit = workflow.get(
+            "approved_option_limit_price"
+        )
+        approved_effect = workflow.get(
+            "approved_option_price_effect"
+        )
+
+        if approved_limit is None:
             raise ExecutionWorkflowContinuationError(
                 "Workflow is missing its approved option limit"
             )
 
-        if option_price_effect not in {
+        if approved_effect not in {
             "DEBIT",
             "CREDIT",
             "EVEN",
@@ -72,26 +84,22 @@ def submit_preapproved_option_overlay_after_underlying_fill(
                 "Workflow has an invalid approved option price effect"
             )
 
-        option_draft = prepare_option_order_draft(
-            parity_user_id=parity_user_id,
-            workflow_id=workflow_id,
-            lot_id=lot_id,
-            sequence=2,
-            contracts=option_contracts,
-            limit_price=float(option_limit_price),
-            price_effect=option_price_effect,
-            time_in_force=option_time_in_force,
-        )
+        if (
+            float(option_prepared_order["limit_price"])
+            != float(approved_limit)
+        ):
+            raise ExecutionWorkflowContinuationError(
+                "Prepared protection limit does not match approval"
+            )
 
-        validate_execution_order_safety(
-            option_draft,
-            allowed_statuses={"DRAFT"},
-        )
-
-        option_prepared_order = mark_execution_order_prepared(
-            parity_user_id=parity_user_id,
-            order_id=option_draft["id"],
-        )
+        if (
+            option_prepared_order["price_effect"]
+            != approved_effect
+        ):
+            raise ExecutionWorkflowContinuationError(
+                "Prepared protection price effect does not match "
+                "approval"
+            )
 
         option_submission = submit_prepared_option_order(
             parity_user_id=parity_user_id,
@@ -113,7 +121,7 @@ def submit_preapproved_option_overlay_after_underlying_fill(
             pass
 
         raise ExecutionWorkflowContinuationError(
-            "The approved protection package requires review"
+            "The prepared protection package requires review"
         ) from exc
 
     return {

@@ -4888,6 +4888,56 @@ def list_protected_positions_with_latest_mark(
 
             return cur.fetchall()
 
+
+def list_protected_position_marks(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Return the most recent stored valuation marks for one owned
+    protected position, ordered oldest to newest for charting.
+
+    This is database-only and does not refresh market data.
+    """
+
+    if limit <= 0 or limit > 5000:
+        raise ValueError("limit must be between 1 and 5000")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT
+                        mark.*
+                    FROM protected_position_marks mark
+                    JOIN protected_position_lots position
+                      ON position.id = mark.protected_lot_id
+                    WHERE mark.protected_lot_id = %s
+                      AND position.parity_user_id = %s
+                    ORDER BY
+                        mark.marked_at DESC,
+                        mark.created_at DESC
+                    LIMIT %s
+                ) recent_marks
+                ORDER BY
+                    marked_at ASC,
+                    created_at ASC
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                    limit,
+                ),
+            )
+
+            return cur.fetchall()
+
+
+
 def create_protected_position_mark(
     *,
     parity_user_id: str,

@@ -4467,7 +4467,30 @@ def create_protected_position_lot(
     return protected_lot
 
 
+def list_active_protected_position_lots(
+    *,
+    parity_user_id: str,
+) -> list[dict]:
+    """
+    Return active Parity-tracked protection lots for one user.
 
+    This does not call the brokerage or infer outside option positions.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_lots
+                WHERE parity_user_id = %s
+                  AND status = 'ACTIVE'
+                ORDER BY protection_opened_at DESC
+                """,
+                (parity_user_id,),
+            )
+
+            return cur.fetchall()
 
 
 

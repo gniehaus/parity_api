@@ -11,6 +11,7 @@ from .db import (
     get_execution_workflow,
     get_execution_workflow_lots,
     get_execution_workflow_orders,
+    get_execution_order,
 )
 from .execution_plan import build_execution_plan
 from .execution_quotes import get_orats_option_quote
@@ -245,6 +246,9 @@ def prepare_option_order_draft(
     refresh_draft: bool = False,
     time_in_force: str = "Day",
     allow_before_previous_fill: bool = False,
+    execution_phase: str = "INITIAL",
+    replaces_order_id: str | None = None,
+    allow_replacement: bool = False,
 ) -> dict[str, Any]:
     """
     Build and persist one ORATS-quoted option-order draft.
@@ -287,14 +291,76 @@ def prepare_option_order_draft(
     if not lot:
         raise ValueError("Execution lot was not found")
 
-    if lot["status"] not in {
+    allowed_lot_statuses = {
         "UNSTARTED",
         "WAITING_FOR_NEXT_STEP",
-    }:
+    }
+
+    if allow_replacement:
+        allowed_lot_statuses.add("NEXT_STEP_WORKING")
+
+    if lot["status"] not in allowed_lot_statuses:
         raise ValueError(
-            "This lot is not available for a new draft order"
+            "This lot is not available for a new option order"
         )
 
+
+            if allow_replacement:
+        if (
+            execution_phase != "REQUOTE"
+            or not replaces_order_id
+        ):
+            raise ValueError(
+                "Replacement orders require a REQUOTE phase and "
+                "an original order ID"
+            )
+
+        original_order = get_execution_order(
+            parity_user_id=parity_user_id,
+            order_id=replaces_order_id,
+        )
+
+        if not original_order:
+            raise ValueError(
+                "Original protection order was not found"
+            )
+
+        if (
+            str(original_order["workflow_id"])
+            != str(workflow_id)
+            or str(original_order["lot_id"]) != str(lot_id)
+            or original_order["sequence"] != sequence
+            or original_order["order_scope"]
+            not in {"OPTIONS", "OPTIONS_PACKAGE"}
+        ):
+            raise ValueError(
+                "Replacement does not match the original "
+                "protection order"
+            )
+
+        if original_order["status"] not in {
+            "SUBMITTED",
+            "WORKING",
+        }:
+            raise ValueError(
+                "Only an unfilled working protection order "
+                "can be replaced"
+            )
+
+        if float(original_order["filled_quantity"] or 0) != 0:
+            raise ValueError(
+                "A partially filled protection order cannot "
+                "be replaced automatically"
+            )
+
+    elif (
+        execution_phase != "INITIAL"
+        or replaces_order_id is not None
+    ):
+        raise ValueError(
+            "Only replacement orders may use a replacement link "
+            "or non-initial execution phase"
+        )
 
     orders = get_execution_workflow_orders(
         parity_user_id=parity_user_id,
@@ -549,7 +615,8 @@ def prepare_equity_order_draft(
         order_scope=step["order_scope"],
         requested_quantity=share_quantity,
         order_payload=order_payload,
-        execution_phase="INITIAL",
+        execution_phase=execution_phase,
+        replaces_order_id=replaces_order_id,
         quote_snapshot=quote_snapshot,
     )
     

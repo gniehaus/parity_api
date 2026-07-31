@@ -969,15 +969,6 @@ def execution_workflow_create(
             ),
         )
 
-    if req.underlying_source == "new":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Building a new protected position is not available "
-                "yet. Parity currently protects investments you "
-                "already own."
-            ),
-        )
 
     if req.underlying_shares < 100:
         raise HTTPException(

@@ -1519,6 +1519,29 @@ def init_db():
                     AND approved_share_quantity % 100 = 0
                 );
             """)
+
+
+            cur.execute("""
+                ALTER TABLE execution_orders
+                ADD COLUMN IF NOT EXISTS
+                    replaces_order_id UUID
+                    REFERENCES execution_orders(id)
+                    ON DELETE RESTRICT;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_execution_orders_one_replacement
+                ON execution_orders (replaces_order_id)
+                WHERE replaces_order_id IS NOT NULL;
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_execution_orders_replacement_lookup
+                ON execution_orders (
+                    parity_user_id,
+                    replaces_order_id,
+                    status
+                )
+                WHERE replaces_order_id IS NOT NULL;
+            """)
             conn.commit()
 
 from typing import Any

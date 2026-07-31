@@ -4664,6 +4664,12 @@ def create_protected_position_lot(
     protection_opened_at: datetime,
     share_entry_fill_price: float | None = None,
     share_entry_filled_at: datetime | None = None,
+    underlying_reference_price: float | None = None,
+    underlying_reference_at: datetime | None = None,
+    option_entry_net_price: float | None = None,
+    option_entry_price_effect: str | None = None,
+    entry_strategy_value: float | None = None,
+    entry_outcome_snapshot: dict | None = None,
 ) -> dict:
     """
      Persist one active Parity protected position after its
@@ -4685,7 +4691,16 @@ def create_protected_position_lot(
         "buffer",
     }:
         raise ValueError("Invalid protected-lot strategy type")
-
+        
+    if option_entry_price_effect not in {
+        None,
+        "DEBIT",
+        "CREDIT",
+        "EVEN",
+    }:
+        raise ValueError(
+            "Invalid option entry price effect"
+        )
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -4701,14 +4716,22 @@ def create_protected_position_lot(
                     share_source,
                     share_entry_fill_price,
                     share_entry_filled_at,
+                    underlying_reference_price,
+                    underlying_reference_at,
                     strategy_type,
                     option_contracts,
+                    option_entry_net_price,
+                    option_entry_price_effect,
+                    entry_strategy_value,
+                    entry_outcome_snapshot,
                     options_open_order_id,
                     protection_opened_at
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s::jsonb, %s, %s
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s::jsonb, %s,
+                    %s, %s, %s::jsonb, %s, %s
                 )
                 ON CONFLICT (opening_workflow_lot_id)
                 DO NOTHING
@@ -4725,8 +4748,14 @@ def create_protected_position_lot(
                     share_source,
                     share_entry_fill_price,
                     share_entry_filled_at,
+                    underlying_reference_price,
+                    underlying_reference_at,
                     strategy_type,
                     json.dumps(option_contracts),
+                    option_entry_net_price,
+                    option_entry_price_effect,
+                    entry_strategy_value,
+                    json.dumps(entry_outcome_snapshot or {}),
                     options_open_order_id,
                     protection_opened_at,
                 ),

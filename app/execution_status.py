@@ -289,6 +289,7 @@ def refresh_execution_order_status(
             "EXPIRED",
             "FAILED",
             "REJECTED",
+            "REQUOTE_REQUIRED",
             "REPLACED",
         }
 
@@ -511,6 +512,7 @@ def refresh_execution_order_status(
             "EXPIRED",
             "FAILED",
             "REJECTED",
+            "REQUOTE_REQUIRED",
         } and protected_exit:
             update_protected_position_exit_status(
                 parity_user_id=parity_user_id,
@@ -556,6 +558,7 @@ def refresh_execution_order_status(
             "EXPIRED",
             "FAILED",
             "REJECTED",
+            "REQUOTE_REQUIRED",
         }:
             update_protected_position_exit_status(
                 parity_user_id=parity_user_id,

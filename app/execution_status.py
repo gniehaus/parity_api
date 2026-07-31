@@ -8,6 +8,7 @@ from .db import (
     mark_execution_workflow_complete_if_all_lots_complete,
     get_execution_workflow_orders,
     create_protected_position_lot,
+    mark_protected_position_lot_closed,
 )
 
 
@@ -397,7 +398,17 @@ def refresh_execution_order_status(
         },
         rejection_reason=rejection_reason,
     )
-
+    
+    if (
+        local_status == "FILLED"
+        and updated_order["execution_phase"] == "CLOSE_OPTIONS"
+        and updated_order["order_role"] == "CLOSE_OPTIONS_OVERLAY"
+    ):
+        mark_protected_position_lot_closed(
+            parity_user_id=parity_user_id,
+            opening_workflow_lot_id=updated_order["lot_id"],
+        )
+        
     updated_lot = None
     updated_workflow = None
     continuation = None

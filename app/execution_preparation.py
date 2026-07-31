@@ -305,7 +305,7 @@ def prepare_option_order_draft(
         )
 
 
-            if allow_replacement:
+    if allow_replacement:
         if (
             execution_phase != "REQUOTE"
             or not replaces_order_id
@@ -478,7 +478,8 @@ def prepare_option_order_draft(
         order_scope=step["order_scope"],
         requested_quantity=contracts_for_position,
         order_payload=order_payload,
-        execution_phase="INITIAL",
+        execution_phase=execution_phase,
+        replaces_order_id=replaces_order_id,
         limit_price=float(order_payload["limit_price"]),
         price_effect=order_payload["price_effect"],
         quote_snapshot=quote_snapshot,
@@ -615,8 +616,7 @@ def prepare_equity_order_draft(
         order_scope=step["order_scope"],
         requested_quantity=share_quantity,
         order_payload=order_payload,
-        execution_phase=execution_phase,
-        replaces_order_id=replaces_order_id,
-        quote_snapshot=quote_snapshot,
+        quote_snapshot=quote_snapshot,       
+        execution_phase="INITIAL",
     )
     

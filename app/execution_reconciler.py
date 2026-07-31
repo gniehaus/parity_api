@@ -1,6 +1,9 @@
 from typing import Any
 
-from .db import list_reconcilable_execution_orders
+from .db import (
+    list_reconcilable_execution_orders,
+    mark_execution_order_status_checked,
+)
 from .execution_status import refresh_execution_order_status
 
 
@@ -66,6 +69,11 @@ def reconcile_active_execution_orders(
                     "error_type": type(exc).__name__,
                     "message": str(exc),
                 }
+            )
+
+        finally:
+            mark_execution_order_status_checked(
+                order_id=order_id,
             )
 
     return {

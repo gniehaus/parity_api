@@ -4665,6 +4665,424 @@ def mark_protected_position_lot_closed(
 
     return protected_lot
 
+
+
+
+def get_protected_position_lot(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_lots
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+def create_protected_position_exit(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+    exit_mode: str,
+) -> dict:
+    """
+    Create one approved exit intent for a protected lot.
+
+    This is idempotent while an exit remains active.
+    """
+
+    if exit_mode not in {
+        "REMOVE_PROTECTION",
+        "SELL_PROTECTED_POSITION",
+    }:
+        raise ValueError("Invalid protected-position exit mode")
+
+    active_statuses = {
+        "APPROVED",
+        "OPTIONS_CLOSE_SUBMITTED",
+        "AWAITING_OPTIONS_FILL",
+        "EQUITY_SALE_SUBMITTED",
+        "ACTION_REQUIRED",
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_lots
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+            protected_lot = cur.fetchone()
+
+            if not protected_lot:
+                raise ValueError("Protected position lot was not found")
+
+            if protected_lot["status"] == "CLOSED":
+                raise ValueError(
+                    "This protected position lot is already closed"
+                )
+
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_exits
+                WHERE protected_lot_id = %s
+                  AND parity_user_id = %s
+                ORDER BY created_at DESC
+                FOR UPDATE
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+            exits = cur.fetchall()
+
+            existing_exit = next(
+                (
+                    exit_record
+                    for exit_record in exits
+                    if exit_record["status"] in active_statuses
+                ),
+                None,
+            )
+
+            if existing_exit:
+                if existing_exit["exit_mode"] != exit_mode:
+                    raise ValueError(
+                        "A different exit is already active for this "
+                        "protected lot"
+                    )
+
+                conn.commit()
+                return existing_exit
+
+            if exit_mode == "SELL_PROTECTED_POSITION":
+                cur.execute(
+                    """
+                    UPDATE protected_position_lots
+                    SET
+                        status = 'EXITING',
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND parity_user_id = %s
+                    """,
+                    (
+                        protected_lot_id,
+                        parity_user_id,
+                    ),
+                )
+
+            cur.execute(
+                """
+                INSERT INTO protected_position_exits (
+                    protected_lot_id,
+                    parity_user_id,
+                    exit_mode
+                )
+                VALUES (%s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                    exit_mode,
+                ),
+            )
+            exit_record = cur.fetchone()
+            conn.commit()
+
+    return exit_record
+
+
+def get_protected_position_exit(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_exits
+                WHERE id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    exit_id,
+                    parity_user_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+def get_protected_position_exit_for_options_close_order(
+    *,
+    parity_user_id: str,
+    options_close_order_id: str,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_exits
+                WHERE options_close_order_id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    options_close_order_id,
+                    parity_user_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+def get_protected_position_exit_for_equity_sale_order(
+    *,
+    parity_user_id: str,
+    equity_sale_order_id: str,
+) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM protected_position_exits
+                WHERE equity_sale_order_id = %s
+                  AND parity_user_id = %s
+                """,
+                (
+                    equity_sale_order_id,
+                    parity_user_id,
+                ),
+            )
+
+            return cur.fetchone()
+
+
+def attach_options_close_order_to_protected_position_exit(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+    options_close_order_id: str,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_exits
+                SET
+                    options_close_order_id = %s,
+                    status = 'OPTIONS_CLOSE_SUBMITTED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'APPROVED',
+                      'OPTIONS_CLOSE_SUBMITTED'
+                  )
+                RETURNING *
+                """,
+                (
+                    options_close_order_id,
+                    exit_id,
+                    parity_user_id,
+                ),
+            )
+            exit_record = cur.fetchone()
+
+            if not exit_record:
+                raise ValueError(
+                    "Protected-position exit is not available for "
+                    "an options-close order"
+                )
+
+            conn.commit()
+
+    return exit_record
+
+
+def attach_equity_sale_order_to_protected_position_exit(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+    equity_sale_order_id: str,
+) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_exits
+                SET
+                    equity_sale_order_id = %s,
+                    status = 'EQUITY_SALE_SUBMITTED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status IN (
+                      'AWAITING_OPTIONS_FILL',
+                      'EQUITY_SALE_SUBMITTED'
+                  )
+                RETURNING *
+                """,
+                (
+                    equity_sale_order_id,
+                    exit_id,
+                    parity_user_id,
+                ),
+            )
+            exit_record = cur.fetchone()
+
+            if not exit_record:
+                raise ValueError(
+                    "Protected-position exit is not available for "
+                    "an equity-sale order"
+                )
+
+            conn.commit()
+
+    return exit_record
+
+
+def update_protected_position_exit_status(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+    status: str,
+) -> dict:
+    allowed_statuses = {
+        "APPROVED",
+        "OPTIONS_CLOSE_SUBMITTED",
+        "AWAITING_OPTIONS_FILL",
+        "EQUITY_SALE_SUBMITTED",
+        "COMPLETE",
+        "ACTION_REQUIRED",
+        "CANCELED",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError("Invalid protected-position exit status")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_exits
+                SET
+                    status = %s,
+                    completed_at = CASE
+                        WHEN %s = 'COMPLETE'
+                        THEN COALESCE(completed_at, NOW())
+                        ELSE completed_at
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    status,
+                    status,
+                    exit_id,
+                    parity_user_id,
+                ),
+            )
+            exit_record = cur.fetchone()
+
+            if not exit_record:
+                raise ValueError("Protected-position exit was not found")
+
+            conn.commit()
+
+    return exit_record
+
+
+def update_protected_position_lot_status(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+    status: str,
+) -> dict:
+    allowed_statuses = {
+        "ACTIVE",
+        "EXITING",
+        "RECONCILIATION_REQUIRED",
+        "CLOSED",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError("Invalid protected-position lot status")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_lots
+                SET
+                    status = %s,
+                    closed_at = CASE
+                        WHEN %s = 'CLOSED'
+                        THEN COALESCE(closed_at, NOW())
+                        ELSE closed_at
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    status,
+                    status,
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+            protected_lot = cur.fetchone()
+
+            if not protected_lot:
+                raise ValueError("Protected position lot was not found")
+
+            conn.commit()
+
+    return protected_lot
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def get_execution_order(
     parity_user_id: str,
     order_id: str,

@@ -244,6 +244,7 @@ def prepare_option_order_draft(
     price_effect: str,
     refresh_draft: bool = False,
     time_in_force: str = "Day",
+    allow_before_previous_fill: bool = False,
 ) -> dict[str, Any]:
     """
     Build and persist one ORATS-quoted option-order draft.
@@ -300,26 +301,38 @@ def prepare_option_order_draft(
         workflow_id=workflow_id,
     )
 
-    prior_steps = [
-        plan_step
-        for plan_step in workflow["execution_plan"]
-        if plan_step["sequence"] < sequence
-    ]
-
-    for prior_step in prior_steps:
-        prior_order_filled = any(
-            str(order["lot_id"]) == str(lot_id)
-            and order["sequence"] == prior_step["sequence"]
-            and order["status"] == "FILLED"
-            and float(order["filled_quantity"] or 0) >= 1
-            for order in orders
-        )
-
-        if not prior_order_filled:
+    if allow_before_previous_fill:
+        if (
+            workflow["underlying_source"] != "new"
+            or sequence != 2
+            or lot["status"] != "UNSTARTED"
+        ):
             raise ValueError(
-                "The preceding workflow step must fill before "
-                "this option order can be prepared"
+                "Early option preparation is only allowed for the "
+                "protection step of an unstarted new-position workflow"
             )
+    else:
+        prior_steps = [
+            plan_step
+            for plan_step in workflow["execution_plan"]
+            if plan_step["sequence"] < sequence
+        ]
+
+        for prior_step in prior_steps:
+            prior_order_filled = any(
+                str(order["lot_id"]) == str(lot_id)
+                and order["sequence"] == prior_step["sequence"]
+                and order["status"] == "FILLED"
+                and float(order["filled_quantity"] or 0)
+                >= float(order["requested_quantity"] or 0)
+                for order in orders
+            )
+
+            if not prior_order_filled:
+                raise ValueError(
+                    "The preceding workflow step must fill before "
+                    "this option order can be prepared"
+                )
 
     
     _validate_contracts_for_step(

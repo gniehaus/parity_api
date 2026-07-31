@@ -6204,6 +6204,59 @@ def update_execution_order_broker_status(
 
     return updated_order
 
+
+
+
+
+
+
+
+def close_reconciliation_required_position(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+) -> dict:
+    """
+    Close a reconciliation-required position after the user explicitly
+    confirms it is no longer held.
+
+    This never calls the broker and never submits or cancels an order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_lots
+                SET
+                    status = 'CLOSED',
+                    closed_at = COALESCE(closed_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'RECONCILIATION_REQUIRED'
+                RETURNING *
+                """,
+                (
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+
+            position = cur.fetchone()
+
+            if not position:
+                raise ValueError(
+                    "Only a reconciliation-required position "
+                    "can be marked as no longer held"
+                )
+
+            conn.commit()
+
+    return position
+
+
+    
 def advance_execution_lot_after_fill(
     *,
     parity_user_id: str,

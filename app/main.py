@@ -99,6 +99,7 @@ from .db import (
     list_protected_positions_with_latest_mark,
     list_protected_position_marks,
     list_execution_activity,
+    close_reconciliation_required_position,
 )
 
 from .snaptrade_service import (
@@ -877,8 +878,46 @@ def brokerage_connect_url(request: Request):
 
 
 @app.post(
-    "/api/brokerage/connections/{authorization_id}/enable-trading"
+    "/api/execution/protected-lots/"
+    "{protected_lot_id}/reconciliation/close"
 )
+def execution_protected_lot_reconciliation_close(
+    protected_lot_id: str,
+    req: ResolveProtectedPositionRequest,
+    request: Request,
+):
+    """
+    Mark a reconciliation-required protected position as no longer held.
+
+    This never submits, cancels, or modifies a brokerage order.
+    """
+
+    if req.confirm_no_longer_held is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_no_longer_held must be true",
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        position = close_reconciliation_required_position(
+            parity_user_id=parity_user_id,
+            protected_lot_id=protected_lot_id,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "position": position,
+    }
+
+
+@app.post("/api/brokerage/connections/{authorization_id}/enable-trading")
 def brokerage_connection_enable_trading(
     authorization_id: str,
     request: Request,

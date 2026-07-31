@@ -3916,10 +3916,11 @@ def create_execution_workflow_lots(
     option_contracts: int,
 ) -> list[dict]:
     """
-    Create one 100-share execution lot for each requested option contract.
+    Create execution lots for one workflow.
 
-    Existing holdings reserve 100 shares per lot immediately.
-    New holdings reserve shares only after they actually fill.
+    Existing holdings retain one separate 100-share row per option
+    contract. New positions use one aggregate row so Parity can submit
+    one equity order and one scaled options package.
     """
     if underlying_source not in {"existing", "new"}:
         raise ValueError(
@@ -3931,18 +3932,25 @@ def create_execution_workflow_lots(
             "option_contracts must be greater than zero"
         )
 
-    reserved_share_quantity = (
-        100 if underlying_source == "existing" else 0
-    )
-
-    rows = [
-        (
-            workflow_id,
-            lot_number,
-            reserved_share_quantity,
-        )
-        for lot_number in range(1, option_contracts + 1)
-    ]
+    if underlying_source == "new":
+        rows = [
+            (
+                workflow_id,
+                1,
+                option_contracts * 100,
+                0,
+            )
+        ]
+    else:
+        rows = [
+            (
+                workflow_id,
+                lot_number,
+                100,
+                100,
+            )
+            for lot_number in range(1, option_contracts + 1)
+        ]
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -3969,9 +3977,10 @@ def create_execution_workflow_lots(
                 INSERT INTO execution_workflow_lots (
                     workflow_id,
                     lot_number,
+                    share_quantity,
                     reserved_share_quantity
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (workflow_id, lot_number)
                 DO NOTHING
                 """,

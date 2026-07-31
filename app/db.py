@@ -4814,6 +4814,98 @@ def list_active_protected_position_lots(
             return cur.fetchall()
 
 
+
+def create_protected_position_mark(
+    *,
+    parity_user_id: str,
+    protected_lot_id: str,
+    underlying_price: float,
+    underlying_market_value: float,
+    option_market_value: float,
+    strategy_market_value: float,
+    pnl_dollars: float,
+    pnl_percent: float,
+    quote_source: str,
+    quote_snapshot: dict,
+    marked_at: datetime | None = None,
+) -> dict:
+    """
+    Persist one point-in-time valuation for an active protected
+    position.
+    """
+
+    if not quote_source.strip():
+        raise ValueError(
+            "Protected-position mark requires a quote source"
+        )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO protected_position_marks (
+                    protected_lot_id,
+                    parity_user_id,
+                    marked_at,
+                    underlying_price,
+                    underlying_market_value,
+                    option_market_value,
+                    strategy_market_value,
+                    pnl_dollars,
+                    pnl_percent,
+                    quote_source,
+                    quote_snapshot
+                )
+                SELECT
+                    p.id,
+                    p.parity_user_id,
+                    COALESCE(%s, NOW()),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb
+                FROM protected_position_lots p
+                WHERE p.id = %s
+                  AND p.parity_user_id = %s
+                  AND p.status = 'ACTIVE'
+                RETURNING *
+                """,
+                (
+                    marked_at,
+                    underlying_price,
+                    underlying_market_value,
+                    option_market_value,
+                    strategy_market_value,
+                    pnl_dollars,
+                    pnl_percent,
+                    quote_source.strip().upper(),
+                    json.dumps(quote_snapshot),
+                    protected_lot_id,
+                    parity_user_id,
+                ),
+            )
+
+            mark = cur.fetchone()
+
+            if not mark:
+                raise ValueError(
+                    "Active protected position was not found"
+                )
+
+            conn.commit()
+
+    return mark
+
+
+
+
+
+
+
 def mark_protected_position_lot_closed(
     *,
     parity_user_id: str,

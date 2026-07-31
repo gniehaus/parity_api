@@ -805,6 +805,52 @@ def refresh_execution_order_status(
                     + option_cash_amount
                 )
 
+
+
+            entry_contracts = []
+
+            quoted_contracts = (
+                (
+                    updated_order.get("quote_snapshot")
+                    or {}
+                ).get("contracts")
+                or []
+            )
+
+            for quoted_contract in quoted_contracts:
+                quote = quoted_contract.get("quote") or {}
+
+                if (
+                    quote.get("ticker")
+                    and quote.get("expiration")
+                    and quote.get("option_type")
+                    and quote.get("strike") is not None
+                ):
+                    entry_contracts.append(
+                        {
+                            "ticker": quote["ticker"],
+                            "expiration": quote["expiration"],
+                            "option_type": (
+                                quote["option_type"]
+                            ),
+                            "strike": float(quote["strike"]),
+                            "action": quoted_contract["action"],
+                        }
+                    )
+
+            if not entry_contracts:
+                entry_contracts = (
+                    workflow.get(
+                        "approved_option_contracts"
+                    )
+                    or []
+                )
+
+
+
+
+
+            
             entry_outcome_snapshot = {
                 "strategy_type": workflow["strategy_type"],
                 "underlying_symbol": (
@@ -814,11 +860,7 @@ def refresh_execution_order_status(
                 "option_contract_quantity": float(
                     updated_order["requested_quantity"]
                 ),
-                "contracts": (
-                    workflow.get(
-                        "approved_option_contracts"
-                    )
-                    or option_contracts
+                "contracts": entry_contracts,
                 ),
                 "option_entry_net_price": (
                     option_entry_net_price

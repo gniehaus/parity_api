@@ -4544,6 +4544,7 @@ def create_protected_position_lot(
     opening_workflow_id: str,
     opening_workflow_lot_id: str,
     underlying_symbol: str,
+    share_quantity: int,
     share_source: str,
     strategy_type: str,
     option_contracts: list[dict[str, Any]],
@@ -4553,7 +4554,7 @@ def create_protected_position_lot(
     share_entry_filled_at: datetime | None = None,
 ) -> dict:
     """
-    Persist one active 100-share Parity protection lot after its
+     Persist one active Parity protected position after its
     complete opening options package is broker-confirmed FILLED.
 
     This is idempotent: repeated fill polling returns the same lot.
@@ -4584,6 +4585,7 @@ def create_protected_position_lot(
                     opening_workflow_id,
                     opening_workflow_lot_id,
                     underlying_symbol,
+                    share_quantity,
                     share_source,
                     share_entry_fill_price,
                     share_entry_filled_at,
@@ -4594,7 +4596,7 @@ def create_protected_position_lot(
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s::jsonb, %s, %s
+                    %s, %s, %s, %s, %s::jsonb, %s, %s
                 )
                 ON CONFLICT (opening_workflow_lot_id)
                 DO NOTHING
@@ -4607,6 +4609,7 @@ def create_protected_position_lot(
                     opening_workflow_id,
                     opening_workflow_lot_id,
                     underlying_symbol.strip().upper(),
+                    share_quantity,
                     share_source,
                     share_entry_fill_price,
                     share_entry_filled_at,

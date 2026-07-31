@@ -16,7 +16,6 @@ from .db import (
     get_execution_order,
 )
 from .execution_plan import build_execution_plan
-from .execution_quotes import get_orats_option_quote
 from .mleg_payloads import (
     build_limit_mleg_payload,
     build_option_leg,
@@ -157,7 +156,7 @@ def validate_and_quote_option_workflow_step(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """
     Validate the user-selected option legs against a workflow step and
-    collect a fresh server-side ORATS snapshot.
+    collect a fresh server-side ThetaData OPRA snapshot..
 
     This never creates, prepares, or submits an execution order.
     """

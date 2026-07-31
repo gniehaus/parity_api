@@ -1354,6 +1354,48 @@ def init_db():
                 );
             """)
             cur.execute("""
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    underlying_reference_price NUMERIC;
+
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    underlying_reference_at TIMESTAMPTZ;
+
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    option_entry_net_price NUMERIC;
+
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    option_entry_price_effect TEXT;
+
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    entry_strategy_value NUMERIC;
+
+                ALTER TABLE protected_position_lots
+                ADD COLUMN IF NOT EXISTS
+                    entry_outcome_snapshot JSONB
+                    NOT NULL DEFAULT '{}'::jsonb;
+
+                ALTER TABLE protected_position_lots
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_lots_entry_price_effect_check;
+
+                ALTER TABLE protected_position_lots
+                ADD CONSTRAINT
+                    protected_position_lots_entry_price_effect_check
+                CHECK (
+                    option_entry_price_effect IS NULL
+                    OR option_entry_price_effect IN (
+                        'DEBIT',
+                        'CREDIT',
+                        'EVEN'
+                    )
+                );
+            """)
+            cur.execute("""
                 ALTER TABLE execution_orders
                 DROP CONSTRAINT IF EXISTS
                     execution_orders_order_role_check;

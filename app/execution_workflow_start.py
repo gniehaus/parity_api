@@ -7,10 +7,14 @@ from .db import (
     record_new_position_workflow_approval,
 )
 from .execution_plan import build_execution_plan
+
 from .execution_preparation import (
     prepare_equity_order_draft,
+    prepare_option_order_draft,
     validate_and_quote_option_workflow_step,
 )
+
+
 from .execution_safety import validate_execution_order_safety
 from .execution_submission import submit_prepared_option_order
 
@@ -150,12 +154,29 @@ def start_approved_new_position_workflow(
         )
         approval_recorded = True
 
-        equity_draft = prepare_equity_order_draft(
+        option_draft = prepare_option_order_draft(
             parity_user_id=parity_user_id,
             workflow_id=workflow_id,
             lot_id=lot_id,
-            sequence=1,
-            time_in_force="Day",
+            sequence=2,
+            contracts=option_contracts,
+            limit_price=option_limit_price,
+            price_effect=option_price_effect,
+            time_in_force=option_time_in_force,
+            allow_before_previous_fill=True,
+        )
+
+        option_safety = validate_execution_order_safety(
+            option_draft,
+            allowed_statuses={"DRAFT"},
+        )
+
+        option_prepared_order = mark_execution_order_prepared(
+            parity_user_id=parity_user_id,
+            order_id=option_draft["id"],
+        )
+
+        equity_draft = prepare_equity_order_draft(ce="Day",
         )
 
         equity_safety = validate_execution_order_safety(
@@ -195,5 +216,7 @@ def start_approved_new_position_workflow(
         ),
         "underlying_safety": equity_safety,
         "approved_option_step": option_step,
+        "prepared_option_order": option_prepared_order,
+        "prepared_option_safety": option_safety,
         "approved_option_quote_snapshot": option_quote_snapshot,
     }

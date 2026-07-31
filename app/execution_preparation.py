@@ -3,7 +3,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from parity_collar_engine import fetch_orats_chain
+
+from .thetadata_quotes import get_thetadata_option_quote
+
 
 from .db import (
     create_execution_order,
@@ -43,14 +45,6 @@ _STEP_LEG_RULES = {
     }),
 }
 
-
-def _get_orats_token() -> str:
-    token = os.getenv("ORATS_TOKEN")
-
-    if not token:
-        raise RuntimeError("Missing ORATS_TOKEN environment variable")
-
-    return token
 
 
 def _normalized_option_type(value: str) -> str:
@@ -193,10 +187,6 @@ def validate_and_quote_option_workflow_step(
         underlying_symbol=workflow["underlying_symbol"].upper(),
     )
 
-    chain = fetch_orats_chain(
-        ticker=workflow["underlying_symbol"],
-        token=_get_orats_token(),
-    )
 
     quoted_contracts = []
 
@@ -208,14 +198,12 @@ def validate_and_quote_option_workflow_step(
             contract["action"]
         )
 
-        quote = get_orats_option_quote(
-            chain,
+        quote = get_thetadata_option_quote(
             ticker=workflow["underlying_symbol"],
             expiration=contract["expiration"],
             option_type=normalized_type,
             strike=contract["strike"],
         )
-
         quoted_contracts.append(
             {
                 "action": normalized_action,
@@ -224,7 +212,7 @@ def validate_and_quote_option_workflow_step(
         )
 
     quote_snapshot = {
-        "source": "ORATS",
+        "source": "THETADATA_OPRA",
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "contracts": quoted_contracts,
     }
@@ -414,10 +402,7 @@ def prepare_option_order_draft(
             "Execution lot must contain at least 100 shares"
         )
 
-    chain = fetch_orats_chain(
-        ticker=workflow["underlying_symbol"],
-        token=_get_orats_token(),
-    )
+
 
     option_legs = []
     quoted_contracts = []
@@ -430,8 +415,7 @@ def prepare_option_order_draft(
             contract["action"]
         )
 
-        quote = get_orats_option_quote(
-            chain,
+        quote = get_thetadata_option_quote(
             ticker=workflow["underlying_symbol"],
             expiration=contract["expiration"],
             option_type=normalized_type,
@@ -464,7 +448,7 @@ def prepare_option_order_draft(
     )
 
     quote_snapshot = {
-        "source": "ORATS",
+        "source": "THETADATA_OPRA",
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "contracts": quoted_contracts,
     }

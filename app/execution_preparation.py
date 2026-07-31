@@ -328,11 +328,11 @@ def prepare_option_order_draft(
         underlying_symbol=workflow["underlying_symbol"].upper(),
     )
 
-    contracts_per_lot = int(lot["share_quantity"]) // 100
+    contracts_for_position = int(lot["share_quantity"]) // 100
 
-    if contracts_per_lot != 1:
+    if contracts_for_position <= 0:
         raise ValueError(
-            "Each execution lot must represent exactly one contract"
+            "Execution lot must contain at least 100 shares"
         )
 
     chain = fetch_orats_chain(
@@ -366,7 +366,7 @@ def prepare_option_order_draft(
                 option_type=normalized_type,
                 strike=contract["strike"],
                 action=normalized_action,
-                contracts=contracts_per_lot,
+                contracts=contracts_for_position,
             )
         )
 
@@ -397,7 +397,7 @@ def prepare_option_order_draft(
         sequence=step["sequence"],
         order_role=step["order_role"],
         order_scope=step["order_scope"],
-        requested_quantity=contracts_per_lot,
+        requested_quantity=contracts_for_position,
         order_payload=order_payload,
         execution_phase="INITIAL",
         limit_price=float(order_payload["limit_price"]),

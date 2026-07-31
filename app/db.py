@@ -6112,6 +6112,7 @@ def update_execution_order_broker_status(
     average_fill_price: float | None,
     broker_response: dict,
     rejection_reason: str | None = None,
+    broker_executed_at: datetime | str | None = None,
 ) -> dict:
     """
     Save the latest broker-reported state for one submitted order.
@@ -6151,7 +6152,11 @@ def update_execution_order_broker_status(
                     rejection_reason = %s,
                     last_checked_at = NOW(),
                     filled_at = CASE
-                        WHEN %s = 'FILLED' THEN NOW()
+                        WHEN %s = 'FILLED' THEN COALESCE(
+                            filled_at,
+                            %s::timestamptz,
+                            NOW()
+                        )
                         ELSE filled_at
                     END,
                     canceled_at = CASE
@@ -6180,6 +6185,7 @@ def update_execution_order_broker_status(
                     average_fill_price,
                     json.dumps(broker_response),
                     rejection_reason,
+                    broker_executed_at,
                     status,
                     status,
                     order_id,

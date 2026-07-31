@@ -4493,7 +4493,58 @@ def list_active_protected_position_lots(
             return cur.fetchall()
 
 
+def mark_protected_position_lot_closed(
+    *,
+    parity_user_id: str,
+    opening_workflow_lot_id: str,
+) -> dict | None:
+    """
+    Mark one Parity-tracked protection lot closed after its complete
+    options-close order is broker-confirmed FILLED.
 
+    This is idempotent.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_lots
+                SET
+                    status = 'CLOSED',
+                    closed_at = COALESCE(closed_at, NOW()),
+                    updated_at = NOW()
+                WHERE opening_workflow_lot_id = %s
+                  AND parity_user_id = %s
+                  AND status <> 'CLOSED'
+                RETURNING *
+                """,
+                (
+                    opening_workflow_lot_id,
+                    parity_user_id,
+                ),
+            )
+
+            protected_lot = cur.fetchone()
+
+            if protected_lot is None:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM protected_position_lots
+                    WHERE opening_workflow_lot_id = %s
+                      AND parity_user_id = %s
+                    """,
+                    (
+                        opening_workflow_lot_id,
+                        parity_user_id,
+                    ),
+                )
+                protected_lot = cur.fetchone()
+
+            conn.commit()
+
+    return protected_lot
 
 def get_execution_order(
     parity_user_id: str,

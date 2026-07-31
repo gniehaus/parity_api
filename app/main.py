@@ -30,7 +30,10 @@ from .defined_outcome_service import (
 choose_defined_floor_match,
  inspect_table,
 )
-from .execution_plan import build_execution_plan
+from .execution_plan import (
+    build_execution_plan,
+    build_protected_position_exit_plan,
+)
 
 from .execution_safety import (
     ExecutionSafetyError,
@@ -78,6 +81,10 @@ from .db import (
     mark_execution_order_prepared,
     abandon_execution_workflow,
     list_active_protected_position_lots,
+    attach_options_close_order_to_protected_position_exit,
+    create_protected_position_exit,
+    get_protected_position_lot,
+    update_protected_position_exit_status,
 )
 
 from .snaptrade_service import (
@@ -200,7 +207,12 @@ class ExecutionCloseOptionsOverlayRequest(BaseModel):
     price_effect: str
     time_in_force: str = "Day"
 
-
+class ProtectedPositionExitStartRequest(BaseModel):
+    confirm_exit: bool
+    exit_mode: str
+    option_limit_price: float = Field(gt=0)
+    option_price_effect: str
+    option_time_in_force: str = "Day"
 class ExecutionWorkflowAbandonRequest(BaseModel):
     confirm_abandonment: bool
 
@@ -1206,7 +1218,156 @@ def execution_equity_order_draft_create(
     }
 
 
+@app.post(
+    "/api/execution/protected-lots/{protected_lot_id}/exit"
+)
+def protected_position_exit_start(
+    protected_lot_id: str,
+    req: ProtectedPositionExitStartRequest,
+    request: Request,
+):
+    """
+    One approval for either:
+    - removing the option protection while keeping shares, or
+    - closing the protection, then selling its associated 100 shares.
 
+    The equity sale is never submitted here. It is submitted only by
+    status reconciliation after the broker confirms every options leg
+    has filled.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_close_existing_outcomes",
+    )
+
+    if not req.confirm_exit:
+        raise HTTPException(
+            status_code=400,
+            detail="Exit approval is required",
+        )
+
+    if req.exit_mode not in {
+        "REMOVE_PROTECTION",
+        "SELL_PROTECTED_POSITION",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid protected-position exit mode",
+        )
+
+    if req.option_price_effect not in {
+        "DEBIT",
+        "CREDIT",
+        "EVEN",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid protection-package price effect",
+        )
+
+    protected_exit = None
+
+    try:
+        protected_lot = get_protected_position_lot(
+            parity_user_id=parity_user_id,
+            protected_lot_id=protected_lot_id,
+        )
+
+        if not protected_lot:
+            raise ValueError("Protected position was not found")
+
+        protected_exit = create_protected_position_exit(
+            parity_user_id=parity_user_id,
+            protected_lot_id=protected_lot_id,
+            exit_mode=req.exit_mode,
+        )
+
+        exit_plan = build_protected_position_exit_plan(
+            strategy_type=protected_lot["strategy_type"],
+            exit_mode=req.exit_mode,
+        )
+
+        existing_close_order_id = (
+            protected_exit.get("options_close_order_id")
+        )
+
+        if existing_close_order_id:
+            existing_close_order = get_execution_order(
+                parity_user_id=parity_user_id,
+                order_id=str(existing_close_order_id),
+            )
+
+            return {
+                "protected_exit": protected_exit,
+                "exit_plan": exit_plan,
+                "options_close_order": existing_close_order,
+            }
+
+        options_close_draft = (
+            prepare_close_options_overlay_draft(
+                parity_user_id=parity_user_id,
+                workflow_id=str(
+                    protected_lot["opening_workflow_id"]
+                ),
+                lot_id=str(
+                    protected_lot["opening_workflow_lot_id"]
+                ),
+                limit_price=req.option_limit_price,
+                price_effect=req.option_price_effect,
+                time_in_force=req.option_time_in_force,
+            )
+        )
+
+        validate_execution_order_safety(
+            options_close_draft,
+            allowed_statuses={"DRAFT"},
+        )
+
+        prepared_close_order = mark_execution_order_prepared(
+            parity_user_id=parity_user_id,
+            order_id=str(options_close_draft["id"]),
+        )
+
+        close_submission = submit_prepared_option_order(
+            parity_user_id=parity_user_id,
+            order_id=str(prepared_close_order["id"]),
+        )
+
+        protected_exit = (
+            attach_options_close_order_to_protected_position_exit(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                options_close_order_id=str(
+                    close_submission["order"]["id"]
+                ),
+            )
+        )
+
+    except (
+        ExecutionSafetyError,
+        ExecutionSubmissionError,
+        ValueError,
+    ) as exc:
+        if protected_exit:
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="ACTION_REQUIRED",
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "protected_exit": protected_exit,
+        "exit_plan": exit_plan,
+        "options_close_order": close_submission["order"],
+    }
 
 
 @app.post("/api/execution/workflows/{workflow_id}/options-close/draft")

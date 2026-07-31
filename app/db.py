@@ -1470,6 +1470,55 @@ def init_db():
                     created_at DESC
                 );
             """)
+            cur.execute("""
+                ALTER TABLE execution_workflow_lots
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflow_lots_share_quantity_check;
+
+                ALTER TABLE execution_workflow_lots
+                ADD CONSTRAINT
+                    execution_workflow_lots_share_quantity_check
+                CHECK (
+                    share_quantity > 0
+                    AND share_quantity % 100 = 0
+                );
+
+                ALTER TABLE execution_workflow_lots
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflow_lots_reserved_share_quantity_check;
+
+                ALTER TABLE execution_workflow_lots
+                ADD CONSTRAINT
+                    execution_workflow_lots_reserved_share_quantity_check
+                CHECK (
+                    reserved_share_quantity >= 0
+                    AND reserved_share_quantity <= share_quantity
+                );
+
+                ALTER TABLE protected_position_lots
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_lots_share_quantity_check;
+
+                ALTER TABLE protected_position_lots
+                ADD CONSTRAINT
+                    protected_position_lots_share_quantity_check
+                CHECK (
+                    share_quantity > 0
+                    AND share_quantity % 100 = 0
+                );
+
+                ALTER TABLE protected_position_exits
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_exits_approved_share_quantity_check;
+
+                ALTER TABLE protected_position_exits
+                ADD CONSTRAINT
+                    protected_position_exits_approved_share_quantity_check
+                CHECK (
+                    approved_share_quantity > 0
+                    AND approved_share_quantity % 100 = 0
+                );
+            """)
             conn.commit()
 
 from typing import Any

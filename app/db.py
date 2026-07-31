@@ -1112,7 +1112,8 @@ def init_db():
                                 'COLLAR_OPTIONS_PACKAGE',
                                 'BUFFER_OPTIONS_PACKAGE',
                                 'BUY_PUT_SPREAD_PACKAGE',
-                                'CLOSE_OPTIONS_OVERLAY'
+                                'CLOSE_OPTIONS_OVERLAY',
+                                'SELL_UNDERLYING'
                                 
                                 
                             )
@@ -1255,7 +1256,8 @@ def init_db():
                         'COLLAR_OPTIONS_PACKAGE',
                         'BUFFER_OPTIONS_PACKAGE',
                         'BUY_PUT_SPREAD_PACKAGE',
-                        'CLOSE_OPTIONS_OVERLAY'
+                        'CLOSE_OPTIONS_OVERLAY',
+                        'SELL_UNDERLYING'
                     )
                 );
 

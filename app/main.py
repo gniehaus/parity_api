@@ -1572,10 +1572,30 @@ def execution_order_cancel(
 
     parity_user_id = get_parity_user_id(request)
 
+    order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=order_id,
+    )
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution order was not found",
+        )
+
+    required_feature = (
+        "can_close_existing_outcomes"
+        if order["execution_phase"] == "CLOSE_OPTIONS"
+        else "can_execute_new_orders"
+    )
+
     require_subscription_feature(
         request,
-        "can_close_existing_outcomes",
+        required_feature,
     )
+
+    if order["execution_phase"] != "CLOSE_OPTIONS":
+        require_new_execution_enabled(parity_user_id)
 
     try:
         return request_execution_order_cancellation(

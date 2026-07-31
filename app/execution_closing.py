@@ -6,9 +6,12 @@ from parity_collar_engine import fetch_orats_chain
 
 from .db import (
     create_execution_order,
+    get_execution_order,
     get_execution_workflow,
     get_execution_workflow_lots,
     get_execution_workflow_orders,
+    get_protected_position_exit,
+    get_protected_position_lot,
     refresh_execution_order_draft,
 )
 from .execution_quotes import get_orats_option_quote
@@ -300,5 +303,164 @@ def prepare_close_options_overlay_draft(
         order_payload=order_payload,
         limit_price=float(order_payload["limit_price"]),
         price_effect=order_payload["price_effect"],
+        quote_snapshot=quote_snapshot,
+    )
+
+def prepare_protected_position_equity_sale_draft(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+) -> dict[str, Any]:
+    """
+    Create the 100-share market-sale draft for an approved full exit.
+
+    This is intentionally narrow: it is available only after the
+    linked options-close order is broker-confirmed FILLED. It does not
+    submit the sale.
+    """
+
+    protected_exit = get_protected_position_exit(
+        parity_user_id=parity_user_id,
+        exit_id=exit_id,
+    )
+
+    if not protected_exit:
+        raise ValueError("Protected-position exit was not found")
+
+    if protected_exit["exit_mode"] != "SELL_PROTECTED_POSITION":
+        raise ValueError(
+            "This exit keeps the shares and has no equity sale"
+        )
+
+    if protected_exit["status"] != "AWAITING_OPTIONS_FILL":
+        raise ValueError(
+            "The options overlay must fill before shares can be sold"
+        )
+
+    existing_equity_sale_id = (
+        protected_exit.get("equity_sale_order_id")
+    )
+
+    if existing_equity_sale_id:
+        existing_equity_sale = get_execution_order(
+            parity_user_id=parity_user_id,
+            order_id=str(existing_equity_sale_id),
+        )
+
+        if existing_equity_sale:
+            return existing_equity_sale
+
+    protected_lot = get_protected_position_lot(
+        parity_user_id=parity_user_id,
+        protected_lot_id=str(protected_exit["protected_lot_id"]),
+    )
+
+    if not protected_lot:
+        raise ValueError("Protected position was not found")
+
+    options_close_order_id = (
+        protected_exit.get("options_close_order_id")
+    )
+
+    if not options_close_order_id:
+        raise ValueError(
+            "The exit is missing its options-close order"
+        )
+
+    options_close_order = get_execution_order(
+        parity_user_id=parity_user_id,
+        order_id=str(options_close_order_id),
+    )
+
+    if not options_close_order or (
+        options_close_order["status"] != "FILLED"
+    ):
+        raise ValueError(
+            "The options overlay must be fully filled before shares "
+            "can be sold"
+        )
+
+    share_quantity = int(
+        protected_exit["approved_share_quantity"]
+    )
+
+    if share_quantity != 100:
+        raise ValueError(
+            "Protected-position exits must sell exactly 100 shares"
+        )
+
+    positions_response = get_all_account_positions(
+        parity_user_id=parity_user_id,
+        account_id=protected_lot["account_id"],
+    )
+
+    matching_share_position = next(
+        (
+            position
+            for position in positions_response["positions"]
+            if (
+                str(
+                    (position.get("instrument") or {}).get(
+                        "symbol"
+                    ) or ""
+                ).upper()
+                == protected_lot["underlying_symbol"].upper()
+                and str(
+                    (position.get("instrument") or {}).get(
+                        "kind"
+                    ) or ""
+                ).lower()
+                != "option"
+            )
+        ),
+        None,
+    )
+
+    if not matching_share_position:
+        raise ValueError(
+            "Broker does not show the shares for this protected lot"
+        )
+
+    broker_share_quantity = _as_float(
+        matching_share_position.get("units")
+    )
+
+    if broker_share_quantity < share_quantity:
+        raise ValueError(
+            "Broker no longer shows the 100 shares required for "
+            "this protected-position exit"
+        )
+
+    order_payload = {
+        "action": "SELL",
+        "order_type": "Market",
+        "time_in_force": "Day",
+        "symbol": protected_lot["underlying_symbol"].upper(),
+        "units": share_quantity,
+        "trading_session": "REGULAR",
+    }
+
+    quote_snapshot = {
+        "source": "WORKFLOW",
+        "prepared_at": datetime.now(timezone.utc).isoformat(),
+        "exit_type": "SELL_PROTECTED_POSITION",
+        "protected_lot_id": str(protected_lot["id"]),
+        "options_close_order_id": str(options_close_order["id"]),
+        "share_quantity": share_quantity,
+        "broker_positions_as_of": (
+            positions_response.get("data_freshness") or {}
+        ).get("as_of"),
+    }
+
+    return create_execution_order(
+        parity_user_id=parity_user_id,
+        workflow_id=str(protected_lot["opening_workflow_id"]),
+        lot_id=str(protected_lot["opening_workflow_lot_id"]),
+        sequence=int(options_close_order["sequence"]) + 1,
+        order_role="SELL_UNDERLYING",
+        order_scope="EQUITY",
+        requested_quantity=share_quantity,
+        order_payload=order_payload,
+        execution_phase="CLOSE_EQUITY",
         quote_snapshot=quote_snapshot,
     )

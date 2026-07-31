@@ -345,6 +345,10 @@ class RecommendRequest(BaseModel):
     risk_preference: Optional[str] = "balanced"
 
 
+class ResolveProtectedPositionRequest(BaseModel):
+    confirm_no_longer_held: bool
+
+    
 class UserUpsertRequest(BaseModel):
     user_id: str
     email: str | None = None

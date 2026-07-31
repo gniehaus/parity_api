@@ -4818,6 +4818,76 @@ def list_active_protected_position_lots(
 
 
 
+def list_protected_positions_with_latest_mark(
+    *,
+    parity_user_id: str,
+) -> list[dict]:
+    """
+    Return all protected positions for one user together with each
+    position's most recent analytics mark.
+
+    This is database-only and does not refresh brokerage or market data.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    position.*,
+
+                    latest_mark.id
+                        AS latest_mark_id,
+                    latest_mark.marked_at
+                        AS latest_marked_at,
+                    latest_mark.underlying_price
+                        AS latest_underlying_price,
+                    latest_mark.underlying_market_value
+                        AS latest_underlying_market_value,
+                    latest_mark.option_market_value
+                        AS latest_option_market_value,
+                    latest_mark.strategy_market_value
+                        AS latest_strategy_market_value,
+                    latest_mark.pnl_dollars
+                        AS latest_pnl_dollars,
+                    latest_mark.pnl_percent
+                        AS latest_pnl_percent,
+                    latest_mark.quote_source
+                        AS latest_quote_source
+
+                FROM protected_position_lots position
+
+                LEFT JOIN LATERAL (
+                    SELECT
+                        mark.id,
+                        mark.marked_at,
+                        mark.underlying_price,
+                        mark.underlying_market_value,
+                        mark.option_market_value,
+                        mark.strategy_market_value,
+                        mark.pnl_dollars,
+                        mark.pnl_percent,
+                        mark.quote_source
+                    FROM protected_position_marks mark
+                    WHERE mark.protected_lot_id = position.id
+                    ORDER BY
+                        mark.marked_at DESC,
+                        mark.created_at DESC
+                    LIMIT 1
+                ) latest_mark
+                    ON TRUE
+
+                WHERE position.parity_user_id = %s
+
+                ORDER BY
+                    position.protection_opened_at DESC,
+                    position.created_at DESC
+                """,
+                (parity_user_id,),
+            )
+
+            return cur.fetchall()
+
 def create_protected_position_mark(
     *,
     parity_user_id: str,

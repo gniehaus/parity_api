@@ -98,6 +98,7 @@ from .db import (
     update_protected_position_exit_status,
     list_protected_positions_with_latest_mark,
     list_protected_position_marks,
+    list_execution_activity,
 )
 
 from .snaptrade_service import (
@@ -1098,6 +1099,36 @@ def execution_workflow_get(
         "lots": lots,
         "orders": orders,
         "execution_plan": execution_plan
+    }
+
+
+@app.get("/api/execution/activity")
+def execution_activity_get(
+    request: Request,
+    limit: int = 100,
+):
+    """
+    Return the authenticated user's execution activity.
+
+    This is database-only and does not contact the broker.
+    """
+
+    if limit <= 0 or limit > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be between 1 and 500",
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    activity = list_execution_activity(
+        parity_user_id=parity_user_id,
+        limit=limit,
+    )
+
+    return {
+        "activity": activity,
+        "count": len(activity),
     }
 
 

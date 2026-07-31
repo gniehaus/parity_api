@@ -1276,6 +1276,81 @@ def init_db():
                     )
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS protected_position_lots (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+                    parity_user_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    brokerage_slug TEXT NOT NULL,
+
+                    opening_workflow_id UUID NOT NULL
+                        REFERENCES execution_workflows(id)
+                        ON DELETE RESTRICT,
+
+                    opening_workflow_lot_id UUID NOT NULL UNIQUE
+                        REFERENCES execution_workflow_lots(id)
+                        ON DELETE RESTRICT,
+
+                    underlying_symbol TEXT NOT NULL,
+
+                    share_quantity INTEGER NOT NULL DEFAULT 100
+                        CHECK (share_quantity = 100),
+
+                    share_source TEXT NOT NULL
+                        CHECK (
+                            share_source IN (
+                                'EXISTING_HOLDING',
+                                'PARITY_NEW_POSITION'
+                            )
+                        ),
+
+                    share_entry_fill_price NUMERIC,
+                    share_entry_filled_at TIMESTAMPTZ,
+
+                    strategy_type TEXT NOT NULL
+                        CHECK (
+                            strategy_type IN (
+                                'covered_call',
+                                'married_put',
+                                'collar',
+                                'buffer'
+                            )
+                        ),
+
+                    option_contracts JSONB NOT NULL,
+
+                    options_open_order_id UUID
+                        REFERENCES execution_orders(id)
+                        ON DELETE SET NULL,
+
+                    protection_opened_at TIMESTAMPTZ NOT NULL,
+
+                    status TEXT NOT NULL DEFAULT 'ACTIVE'
+                        CHECK (
+                            status IN (
+                                'ACTIVE',
+                                'RECONCILIATION_REQUIRED',
+                                'CLOSED'
+                            )
+                        ),
+
+                    latest_reconciled_at TIMESTAMPTZ,
+                    closed_at TIMESTAMPTZ,
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_protected_position_lots_user_account_status
+                ON protected_position_lots (
+                    parity_user_id,
+                    account_id,
+                    status,
+                    created_at DESC
+                );
+            """)
             conn.commit()
 
 from typing import Any

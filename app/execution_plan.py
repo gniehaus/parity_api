@@ -126,73 +126,134 @@ def build_execution_plan(
         "married_put": [
             _step(
                 1,
-                "BUY_PROTECTIVE_PUT",
-                "BUY_PROTECTIVE_PUT",
-                "OPTIONS",
-                "Buy one protective put first.",
+                "BUY_UNDERLYING",
+                "BUY_UNDERLYING",
+                "EQUITY",
+                "Buy 100 shares.",
                 False,
             ),
             _step(
                 2,
-                "BUY_UNDERLYING",
-                "BUY_UNDERLYING",
-                "EQUITY",
-                "After the put fills, buy 100 shares.",
+                "BUY_PROTECTIVE_PUT",
+                "BUY_PROTECTIVE_PUT",
+                "OPTIONS",
+                "After 100 shares fill, buy one protective put.",
                 True,
             ),
         ],
         "collar": [
             _step(
                 1,
-                "BUY_PROTECTIVE_PUT",
-                "BUY_PROTECTIVE_PUT",
-                "OPTIONS",
-                "Buy one protective put first.",
+                "BUY_UNDERLYING",
+                "BUY_UNDERLYING",
+                "EQUITY",
+                "Buy 100 shares.",
                 False,
             ),
             _step(
                 2,
-                "BUY_UNDERLYING",
-                "BUY_UNDERLYING",
-                "EQUITY",
-                "After the put fills, buy 100 shares.",
-                True,
-            ),
-            _step(
-                3,
-                "SELL_COVERED_CALL",
-                "SELL_COVERED_CALL",
-                "OPTIONS",
-                "After 100 shares fill, sell one covered call.",
+                "COLLAR_OPTIONS_PACKAGE",
+                "COLLAR_OPTIONS_PACKAGE",
+                "OPTIONS_PACKAGE",
+                (
+                    "After 100 shares fill, submit one protective "
+                    "put and one covered call together."
+                ),
                 True,
             ),
         ],
         "buffer": [
             _step(
                 1,
-                "BUY_PUT_SPREAD_PACKAGE",
-                "BUY_PUT_SPREAD_PACKAGE",
-                "OPTIONS_PACKAGE",
-                "Buy the defined-risk put spread first.",
+                "BUY_UNDERLYING",
+                "BUY_UNDERLYING",
+                "EQUITY",
+                "Buy 100 shares.",
                 False,
             ),
             _step(
                 2,
-                "BUY_UNDERLYING",
-                "BUY_UNDERLYING",
-                "EQUITY",
-                "After the put spread fills, buy 100 shares.",
-                True,
-            ),
-            _step(
-                3,
-                "SELL_COVERED_CALL",
-                "SELL_COVERED_CALL",
-                "OPTIONS",
-                "After 100 shares fill, sell one covered call.",
+                "BUFFER_OPTIONS_PACKAGE",
+                "BUFFER_OPTIONS_PACKAGE",
+                "OPTIONS_PACKAGE",
+                (
+                    "After 100 shares fill, submit the higher-strike "
+                    "put, lower-strike put, and covered call together."
+                ),
                 True,
             ),
         ],
     }
 
     return plans[strategy_type]
+
+
+    
+
+ExitMode = Literal[
+    "REMOVE_PROTECTION",
+    "SELL_PROTECTED_POSITION",
+]
+
+
+def build_protected_position_exit_plan(
+    strategy_type: StrategyType,
+    exit_mode: ExitMode,
+) -> list[dict]:
+    """
+    Return the safe execution sequence for one active protected lot.
+
+    REMOVE_PROTECTION closes only the options overlay.
+    SELL_PROTECTED_POSITION closes the overlay first, then sells the
+    associated 100 shares only after the close package fills.
+    """
+
+    if strategy_type not in {
+        "covered_call",
+        "married_put",
+        "collar",
+        "buffer",
+    }:
+        raise ValueError(f"Unsupported strategy type: {strategy_type}")
+
+    if exit_mode not in {
+        "REMOVE_PROTECTION",
+        "SELL_PROTECTED_POSITION",
+    }:
+        raise ValueError(f"Unsupported exit mode: {exit_mode}")
+
+    close_scope = (
+        "OPTIONS"
+        if strategy_type in {
+            "covered_call",
+            "married_put",
+        }
+        else "OPTIONS_PACKAGE"
+    )
+
+    close_step = _step(
+        1,
+        "CLOSE_OPTIONS_OVERLAY",
+        "CLOSE_OPTIONS_OVERLAY",
+        close_scope,
+        "Close the complete protection overlay first.",
+        False,
+    )
+
+    if exit_mode == "REMOVE_PROTECTION":
+        return [close_step]
+
+    return [
+        close_step,
+        _step(
+            2,
+            "SELL_UNDERLYING",
+            "SELL_UNDERLYING",
+            "EQUITY",
+            (
+                "After the protection overlay is fully closed, "
+                "sell the associated 100 shares."
+            ),
+            True,
+        ),
+    ]

@@ -212,30 +212,7 @@ def refresh_execution_order_status(
         if child.get("brokerage_order_id")
     }
 
-    broker_executed_at = None
-
-    if local_status == "FILLED":
-        if order["order_scope"] == "OPTIONS_PACKAGE":
-            child_execution_times = [
-                child_order.get("time_executed")
-                for child_order in (
-                    matched_broker_order.get("orders") or []
-                )
-                if child_order.get("time_executed")
-            ]
-
-            if child_execution_times:
-                # The package becomes complete when its final leg fills.
-                broker_executed_at = max(
-                    child_execution_times
-                )
-
-        else:
-            broker_executed_at = (
-                matched_broker_order.get("time_executed")
-            )
-
-    
+      
     if order["status"] == "CANCELING":
         full_order_history = _full_account_orders(
             snaptrade_user=snaptrade_user,
@@ -410,7 +387,55 @@ def refresh_execution_order_status(
             broker_status=matched_broker_order.get("status"),
             filled_quantity=filled_quantity,
         )
-  
+
+
+    broker_executed_at = None
+
+    if local_status == "FILLED":
+        if order["order_scope"] == "OPTIONS_PACKAGE":
+            child_execution_times = [
+                child_order.get("time_executed")
+                for child_order in (
+                    matched_broker_order.get("orders") or []
+                )
+                if child_order.get("time_executed")
+            ]
+
+            if child_execution_times:
+                # The package becomes complete when its final leg fills.
+                broker_executed_at = max(
+                    child_execution_times
+                )
+
+        else:
+            broker_executed_at = (
+                matched_broker_order.get("time_executed")
+            )
+
+
+    broker_executed_at = None
+
+    if local_status == "FILLED":
+        if order["order_scope"] == "OPTIONS_PACKAGE":
+            child_execution_times = [
+                child_order.get("time_executed")
+                for child_order in (
+                    matched_broker_order.get("orders") or []
+                )
+                if child_order.get("time_executed")
+            ]
+
+            if child_execution_times:
+                # The package becomes complete when its final leg fills.
+                broker_executed_at = max(
+                    child_execution_times
+                )
+
+        else:
+            broker_executed_at = (
+                matched_broker_order.get("time_executed")
+            )
+    
     if order["status"] == "CANCELING":
         if local_status == "WORKING":
             local_status = "CANCELING"

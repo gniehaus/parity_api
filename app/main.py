@@ -77,6 +77,7 @@ from .db import (
     get_execution_order,
     mark_execution_order_prepared,
     abandon_execution_workflow,
+    list_active_protected_position_lots,
 )
 
 from .snaptrade_service import (
@@ -1059,6 +1060,21 @@ def execution_workflow_get(
         "lots": lots,
         "orders": orders,
         "execution_plan": execution_plan
+    }
+
+
+@app.get("/api/execution/protected-lots")
+def execution_protected_lots_get(
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    lots = list_active_protected_position_lots(
+        parity_user_id=parity_user_id,
+    )
+
+    return {
+        "lots": lots,
     }
 
 

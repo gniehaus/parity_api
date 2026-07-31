@@ -111,8 +111,8 @@ def start_approved_new_position_workflow(
         )
         if len(lots) != 1:
             raise ExecutionWorkflowStartError(
-                "New-position execution currently supports one "
-                "100-share lot per approved workflow"
+                "New-position execution requires one aggregate "
+                "workflow lot"
             )
 
         lot = next(
@@ -176,7 +176,12 @@ def start_approved_new_position_workflow(
             order_id=option_draft["id"],
         )
 
-        equity_draft = prepare_equity_order_draft(ce="Day",
+        equity_draft = prepare_equity_order_draft(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            lot_id=lot_id,
+            sequence=1,
+            time_in_force="Day",
         )
 
         equity_safety = validate_execution_order_safety(

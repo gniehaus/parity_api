@@ -657,6 +657,7 @@ def refresh_execution_order_status(
                 opening_workflow_id=updated_order["workflow_id"],
                 opening_workflow_lot_id=updated_order["lot_id"],
                 underlying_symbol=workflow["underlying_symbol"],
+                share_quantity=int(updated_lot["share_quantity"]),
                 share_source=(
                     "PARITY_NEW_POSITION"
                     if workflow["underlying_source"] == "new"

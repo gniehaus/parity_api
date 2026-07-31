@@ -37,6 +37,7 @@ from .snaptrade_service import (
     _to_plain,
     get_or_create_snaptrade_user,
     snaptrade,
+    get_all_account_positions,
 )
 
 
@@ -689,6 +690,63 @@ def refresh_execution_order_status(
                 None,
             )
 
+            existing_share_reference_price = None
+
+            if (
+                underlying_order is None
+                and workflow["underlying_source"] == "existing"
+            ):
+                try:
+                    positions_response = (
+                        get_all_account_positions(
+                            parity_user_id=parity_user_id,
+                            account_id=workflow["account_id"],
+                        )
+                    )
+
+                    matching_position = next(
+                        (
+                            position
+                            for position
+                            in positions_response["positions"]
+                            if (
+                                str(
+                                    (
+                                        position.get("instrument")
+                                        or {}
+                                    ).get("symbol")
+                                    or ""
+                                ).upper()
+                                == workflow[
+                                    "underlying_symbol"
+                                ].upper()
+                                and str(
+                                    (
+                                        position.get("instrument")
+                                        or {}
+                                    ).get("kind")
+                                    or ""
+                                ).lower()
+                                != "option"
+                            )
+                        ),
+                        None,
+                    )
+
+                    if (
+                        matching_position
+                        and matching_position.get("price")
+                        is not None
+                    ):
+                        existing_share_reference_price = float(
+                            matching_position["price"]
+                        )
+
+                except Exception:
+                    existing_share_reference_price = None
+
+
+            
             share_quantity = int(
                 updated_lot["share_quantity"]
             )
@@ -701,7 +759,7 @@ def refresh_execution_order_status(
                         "average_fill_price"
                     ) is not None
                 )
-                else None
+                else existing_share_reference_price
             )
 
             underlying_reference_at = (

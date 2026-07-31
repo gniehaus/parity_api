@@ -4355,6 +4355,123 @@ def get_execution_workflow_orders(
 
             return cur.fetchall()
 
+
+
+
+
+def create_protected_position_lot(
+    *,
+    parity_user_id: str,
+    account_id: str,
+    brokerage_slug: str,
+    opening_workflow_id: str,
+    opening_workflow_lot_id: str,
+    underlying_symbol: str,
+    share_source: str,
+    strategy_type: str,
+    option_contracts: list[dict[str, Any]],
+    options_open_order_id: str,
+    protection_opened_at: datetime,
+    share_entry_fill_price: float | None = None,
+    share_entry_filled_at: datetime | None = None,
+) -> dict:
+    """
+    Persist one active 100-share Parity protection lot after its
+    complete opening options package is broker-confirmed FILLED.
+
+    This is idempotent: repeated fill polling returns the same lot.
+    """
+
+    if share_source not in {
+        "EXISTING_HOLDING",
+        "PARITY_NEW_POSITION",
+    }:
+        raise ValueError("Invalid protected-lot share source")
+
+    if strategy_type not in {
+        "covered_call",
+        "married_put",
+        "collar",
+        "buffer",
+    }:
+        raise ValueError("Invalid protected-lot strategy type")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO protected_position_lots (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    opening_workflow_id,
+                    opening_workflow_lot_id,
+                    underlying_symbol,
+                    share_source,
+                    share_entry_fill_price,
+                    share_entry_filled_at,
+                    strategy_type,
+                    option_contracts,
+                    options_open_order_id,
+                    protection_opened_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s::jsonb, %s, %s
+                )
+                ON CONFLICT (opening_workflow_lot_id)
+                DO NOTHING
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    account_id,
+                    brokerage_slug,
+                    opening_workflow_id,
+                    opening_workflow_lot_id,
+                    underlying_symbol.strip().upper(),
+                    share_source,
+                    share_entry_fill_price,
+                    share_entry_filled_at,
+                    strategy_type,
+                    json.dumps(option_contracts),
+                    options_open_order_id,
+                    protection_opened_at,
+                ),
+            )
+
+            protected_lot = cur.fetchone()
+
+            if protected_lot is None:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM protected_position_lots
+                    WHERE opening_workflow_lot_id = %s
+                      AND parity_user_id = %s
+                    """,
+                    (
+                        opening_workflow_lot_id,
+                        parity_user_id,
+                    ),
+                )
+                protected_lot = cur.fetchone()
+
+            if protected_lot is None:
+                raise ValueError(
+                    "Protected position lot could not be created"
+                )
+
+            conn.commit()
+
+    return protected_lot
+
+
+
+
+
+
+
 def get_execution_order(
     parity_user_id: str,
     order_id: str,

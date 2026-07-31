@@ -689,6 +689,87 @@ def refresh_execution_order_status(
                 None,
             )
 
+            share_quantity = int(
+                updated_lot["share_quantity"]
+            )
+
+            underlying_reference_price = (
+                float(underlying_order["average_fill_price"])
+                if (
+                    underlying_order
+                    and underlying_order.get(
+                        "average_fill_price"
+                    ) is not None
+                )
+                else None
+            )
+
+            underlying_reference_at = (
+                underlying_order.get("filled_at")
+                if underlying_order
+                else updated_order.get("filled_at")
+            )
+
+            option_entry_net_price = (
+                float(updated_order["average_fill_price"])
+                if updated_order.get(
+                    "average_fill_price"
+                ) is not None
+                else None
+            )
+
+            option_entry_price_effect = (
+                updated_order.get("price_effect")
+            )
+
+            entry_strategy_value = None
+
+            if (
+                underlying_reference_price is not None
+                and option_entry_net_price is not None
+            ):
+                option_cash_amount = (
+                    option_entry_net_price
+                    * 100
+                    * float(
+                        updated_order["requested_quantity"]
+                    )
+                )
+
+                if option_entry_price_effect == "CREDIT":
+                    option_cash_amount = -option_cash_amount
+                elif option_entry_price_effect == "EVEN":
+                    option_cash_amount = 0.0
+
+                entry_strategy_value = (
+                    underlying_reference_price
+                    * share_quantity
+                    + option_cash_amount
+                )
+
+            entry_outcome_snapshot = {
+                "strategy_type": workflow["strategy_type"],
+                "underlying_symbol": (
+                    workflow["underlying_symbol"]
+                ),
+                "share_quantity": share_quantity,
+                "option_contract_quantity": float(
+                    updated_order["requested_quantity"]
+                ),
+                "contracts": (
+                    workflow.get(
+                        "approved_option_contracts"
+                    )
+                    or option_contracts
+                ),
+                "option_entry_net_price": (
+                    option_entry_net_price
+                ),
+                "option_entry_price_effect": (
+                    option_entry_price_effect
+                ),
+            }
+
             create_protected_position_lot(
                 parity_user_id=parity_user_id,
                 account_id=workflow["account_id"],
@@ -696,7 +777,7 @@ def refresh_execution_order_status(
                 opening_workflow_id=updated_order["workflow_id"],
                 opening_workflow_lot_id=updated_order["lot_id"],
                 underlying_symbol=workflow["underlying_symbol"],
-                share_quantity=int(updated_lot["share_quantity"]),
+                share_quantity=share_quantity,
                 share_source=(
                     "PARITY_NEW_POSITION"
                     if workflow["underlying_source"] == "new"
@@ -711,6 +792,22 @@ def refresh_execution_order_status(
                     underlying_order["filled_at"]
                     if underlying_order
                     else None
+                ),
+                underlying_reference_price=(
+                    underlying_reference_price
+                ),
+                underlying_reference_at=(
+                    underlying_reference_at
+                ),
+                option_entry_net_price=(
+                    option_entry_net_price
+                ),
+                option_entry_price_effect=(
+                    option_entry_price_effect
+                ),
+                entry_strategy_value=entry_strategy_value,
+                entry_outcome_snapshot=(
+                    entry_outcome_snapshot
                 ),
                 strategy_type=workflow["strategy_type"],
                 option_contracts=option_contracts,

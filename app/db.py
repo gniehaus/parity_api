@@ -4954,16 +4954,7 @@ def list_active_option_execution_orders(
                       'OPTIONS',
                       'OPTIONS_PACKAGE'
                   )
-                  AND execution_order.status IN (
-                      'DRAFT',
-                      'PREPARED',
-                      'SUBMITTING',
-                      'SUBMITTED',
-                      'WORKING',
-                      'PARTIALLY_FILLED',
-                      'CANCELING',
-                      'ACTION_REQUIRED'
-                  )
+
                 ORDER BY execution_order.created_at DESC
                 """,
                 (

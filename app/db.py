@@ -4915,6 +4915,70 @@ def list_managed_protected_position_lots(
 
             return cur.fetchall()
 
+
+def list_active_option_execution_orders(
+    *,
+    parity_user_id: str,
+    account_id: str,
+    underlying_symbol: str,
+) -> list[dict]:
+    """
+    Return nonterminal Parity option orders for one account and
+    underlying.
+
+    This is database-only and does not call the brokerage.
+    """
+
+    normalized_symbol = (
+        underlying_symbol.strip().upper()
+    )
+
+    if not normalized_symbol:
+        raise ValueError(
+            "underlying_symbol is required"
+        )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT execution_order.*
+                FROM execution_orders execution_order
+                JOIN execution_workflows workflow
+                  ON workflow.id =
+                     execution_order.workflow_id
+                WHERE execution_order.parity_user_id = %s
+                  AND execution_order.account_id = %s
+                  AND workflow.underlying_symbol = %s
+                  AND execution_order.order_scope IN (
+                      'OPTIONS',
+                      'OPTIONS_PACKAGE'
+                  )
+                  AND execution_order.status IN (
+                      'DRAFT',
+                      'PREPARED',
+                      'SUBMITTING',
+                      'SUBMITTED',
+                      'WORKING',
+                      'PARTIALLY_FILLED',
+                      'CANCELING',
+                      'ACTION_REQUIRED'
+                  )
+                ORDER BY execution_order.created_at DESC
+                """,
+                (
+                    parity_user_id,
+                    account_id,
+                    normalized_symbol,
+                ),
+            )
+
+            return cur.fetchall()
+
+
+
+
+
 def list_protected_positions_with_latest_mark(
     *,
     parity_user_id: str,

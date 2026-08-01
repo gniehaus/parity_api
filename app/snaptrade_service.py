@@ -642,6 +642,120 @@ def get_all_account_positions(
     }
 
 
+
+
+render@srv-d95ihhkvikkc73doukvg-66f694b5b9-jc9qz:~/project/src$ sed -n '145,245p' app/execution_status.py
+    )
+
+    if not order:
+        raise ExecutionStatusError(
+            "Execution order was not found"
+        )
+
+    if order["status"] not in {
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "CANCELING",
+        "ACTION_REQUIRED",
+    }:
+        raise ExecutionStatusError(
+            "Only submitted execution orders can be refreshed"
+        )
+
+    broker_order_id = order.get("broker_order_id")
+
+    if not broker_order_id:
+        raise ExecutionStatusError(
+            "Execution order is missing its brokerage order ID"
+        )
+
+    snaptrade_user = get_or_create_snaptrade_user(
+        parity_user_id
+    )
+
+    response = (
+        snaptrade.account_information
+        .get_user_account_recent_orders(
+            user_id=snaptrade_user["snaptrade_user_id"],
+            user_secret=snaptrade_user["user_secret"],
+            account_id=order["account_id"],
+            only_executed=False,
+        )
+    )
+
+    recent_orders_response = _to_plain(response.body)
+
+    if not isinstance(recent_orders_response, dict):
+        raise ExecutionStatusError(
+            "SnapTrade returned an unexpected recent-orders response"
+        )
+
+    broker_orders = recent_orders_response.get("orders") or []
+
+    if not isinstance(broker_orders, list):
+        raise ExecutionStatusError(
+            "SnapTrade returned an invalid recent-orders list"
+        )
+
+    submitted_broker_response = (
+        order.get("broker_response") or {}
+    )
+    submitted_children = (
+        submitted_broker_response.get("orders")
+        or (
+            submitted_broker_response.get("order") or {}
+        ).get("orders")
+        or []
+    )
+
+    expected_child_order_ids = {
+        str(child.get("brokerage_order_id"))
+        for child in submitted_children
+        if child.get("brokerage_order_id")
+    }
+
+      
+    if order["status"] == "CANCELING":
+        full_order_history = _full_account_orders(
+            snaptrade_user=snaptrade_user,
+            account_id=order["account_id"],
+        )
+
+        if order["order_scope"] == "OPTIONS_PACKAGE":
+            history_has_package_legs = any(
+                str(candidate.get("brokerage_order_id"))
+                in expected_child_order_ids
+                for candidate in full_order_history
+            )
+
+            if history_has_package_legs:
+                broker_orders = full_order_history
+        else:
+            history_has_order = any(
+                str(candidate.get("brokerage_order_id"))
+                == str(broker_order_id)
+                for candidate in full_order_history
+            )
+
+            if history_has_order:
+                broker_orders = full_order_history
+    if (
+        order["order_scope"] == "OPTIONS_PACKAGE"
+        and expected_child_order_ids
+    ):
+        matched_child_orders = [
+            broker_order
+
+
+
+
+
+
+
+
+
+
 def sync_brokerage_accounts_and_holdings(parity_user_id: str):
     accounts = list_accounts(parity_user_id)
 

@@ -37,6 +37,7 @@ from .execution_closing import (
 from .execution_conflicts import (
     ExecutionConflictError,
     require_no_option_execution_conflicts,
+    inspect_option_execution_conflicts,
 )
 
 
@@ -119,7 +120,8 @@ from .snaptrade_service import (
     get_all_account_positions,
     create_connection_url,
     list_brokerage_connections,
-     create_trading_reconnect_url,
+    create_trading_reconnect_url,
+    inspect_option_execution_conflicts,
 )
 from .plaid_service import (
     create_link_token,
@@ -398,6 +400,123 @@ class GuestClaimRequest(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     raw: dict | None = None
+
+
+@app.get("/api/execution/accounts/{account_id}/symbols/""{underlying_symbol}/option-conflicts")
+def execution_option_conflicts_get(
+    account_id: str,
+    underlying_symbol: str,
+    request: Request,
+):
+    """
+    Return whether existing same-underlying options prevent a new
+    Parity protection workflow.
+
+    This endpoint is read-only and never submits, changes, cancels,
+    or replaces an order.
+    """
+
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        account = get_execution_account_context(
+            parity_user_id=parity_user_id,
+            account_id=account_id,
+        )
+
+        result = inspect_option_execution_conflicts(
+            parity_user_id=parity_user_id,
+            account_id=account_id,
+            underlying_symbol=underlying_symbol,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Brokerage positions or orders could not be "
+                "verified"
+            ),
+        ) from exc
+
+    return {
+        "option_execution_eligible": result[
+            "eligible"
+        ],
+        "reason_code": result["reason_code"],
+        "message": result["message"],
+        "underlying_symbol": result[
+            "underlying_symbol"
+        ],
+        "account": {
+            "account_id": str(
+                account["account_id"]
+            ),
+            "institution_name": account[
+                "institution_name"
+            ],
+            "account_name": account[
+                "account_name"
+            ],
+            "account_number_mask": account[
+                "account_number_mask"
+            ],
+            "brokerage_slug": account[
+                "brokerage_slug"
+            ],
+        },
+        "managed_protected_lots": [
+            {
+                "id": str(lot["id"]),
+                "status": lot["status"],
+                "strategy_type": lot[
+                    "strategy_type"
+                ],
+                "share_quantity": lot[
+                    "share_quantity"
+                ],
+                "protection_opened_at": lot[
+                    "protection_opened_at"
+                ],
+            }
+            for lot in result[
+                "managed_protected_lots"
+            ]
+        ],
+        "managed_option_positions": result[
+            "managed_option_positions"
+        ],
+        "external_option_positions": result[
+            "external_option_positions"
+        ],
+        "active_parity_orders": [
+            {
+                "id": str(order["id"]),
+                "workflow_id": str(
+                    order["workflow_id"]
+                ),
+                "status": order["status"],
+                "broker_order_id": order[
+                    "broker_order_id"
+                ],
+            }
+            for order in result[
+                "active_parity_execution_orders"
+            ]
+        ],
+        "external_option_orders": result[
+            "external_option_orders"
+        ],
+        "broker_data_freshness": result[
+            "broker_data_freshness"
+        ],
+    }
 
 
 @app.post("/api/guest/claim")

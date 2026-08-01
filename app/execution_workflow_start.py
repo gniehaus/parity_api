@@ -15,6 +15,11 @@ from .execution_preparation import (
 )
 
 
+from .execution_conflicts import (
+    ExecutionConflictError,
+    require_no_option_execution_conflicts,
+)
+
 from .execution_safety import validate_execution_order_safety
 from .execution_submission import submit_prepared_option_order
 
@@ -102,6 +107,16 @@ def start_approved_new_position_workflow(
             raise ExecutionWorkflowStartError(
                 "This endpoint is only for new-position workflows"
             )
+
+        initial_option_conflict_check = (
+            require_no_option_execution_conflicts(
+                parity_user_id=parity_user_id,
+                account_id=workflow["account_id"],
+                underlying_symbol=workflow[
+                    "underlying_symbol"
+                ],
+            )
+        )
 
         _get_new_position_steps(workflow)
 
@@ -194,11 +209,39 @@ def start_approved_new_position_workflow(
             order_id=equity_draft["id"],
         )
 
+        final_option_conflict_check = (
+            require_no_option_execution_conflicts(
+                parity_user_id=parity_user_id,
+                account_id=workflow["account_id"],
+                underlying_symbol=workflow[
+                    "underlying_symbol"
+                ],
+            )
+        )
+
+
+        
         equity_submission = submit_prepared_option_order(
             parity_user_id=parity_user_id,
             order_id=equity_prepared_order["id"],
         )
 
+    except ExecutionConflictError as exc:
+        if approval_recorded:
+            try:
+                mark_workflow_action_required(
+                    parity_user_id=parity_user_id,
+                    workflow_id=workflow_id,
+                )
+            except Exception:
+                pass
+
+        raise ExecutionWorkflowStartError(
+            str(exc)
+        ) from exc
+
+
+    
     except Exception as exc:
         if approval_recorded:
             try:
@@ -224,4 +267,5 @@ def start_approved_new_position_workflow(
         "prepared_option_order": option_prepared_order,
         "prepared_option_safety": option_safety,
         "approved_option_quote_snapshot": option_quote_snapshot,
+        "option_conflict_check": (final_option_conflict_check),
     }

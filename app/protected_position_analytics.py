@@ -271,6 +271,8 @@ def calculate_protected_position_mark(
         quote_source="THETADATA_OPRA_MIDPOINT",
         quote_snapshot=quote_snapshot,
         marked_at=marked_at,
+        mark_type=mark_type,
+        market_date=market_date,
     )
 
     return {

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-
+import re
 
 def format_occ_option_symbol(
     ticker: str,
@@ -73,3 +73,59 @@ def format_occ_option_symbol(
         f"{option_side}"
         f"{strike_code:08d}"
     )
+
+def parse_occ_option_symbol(
+    symbol: str,
+) -> dict:
+    """
+    Parse an OCC option symbol returned by a brokerage.
+
+    Example:
+    "IWM   261016C00307000"
+    ->
+    {
+        "ticker": "IWM",
+        "expiration": "2026-10-16",
+        "option_type": "CALL",
+        "strike": 307.0,
+    }
+    """
+
+    normalized_symbol = str(symbol or "").strip().upper()
+
+    match = re.fullmatch(
+        r"([A-Z0-9.]{1,6})\s*(\d{6})([CP])(\d{8})",
+        normalized_symbol,
+    )
+
+    if not match:
+        raise ValueError("Invalid OCC option symbol")
+
+    root, expiration_code, option_side, strike_code = (
+        match.groups()
+    )
+
+    try:
+        expiration_date = datetime.strptime(
+            expiration_code,
+            "%y%m%d",
+        ).date()
+    except ValueError as exc:
+        raise ValueError(
+            "OCC option symbol has an invalid expiration"
+        ) from exc
+
+    strike = (
+        Decimal(strike_code) / Decimal("1000")
+    )
+
+    return {
+        "ticker": root.strip().upper(),
+        "expiration": expiration_date.isoformat(),
+        "option_type": (
+            "CALL"
+            if option_side == "C"
+            else "PUT"
+        ),
+        "strike": float(strike),
+    }

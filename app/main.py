@@ -121,7 +121,6 @@ from .snaptrade_service import (
     create_connection_url,
     list_brokerage_connections,
     create_trading_reconnect_url,
-    inspect_option_execution_conflicts,
 )
 from .plaid_service import (
     create_link_token,

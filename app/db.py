@@ -2,7 +2,7 @@ import os
 import json
 import psycopg
 from psycopg.rows import dict_row
-from datetime import datetime
+from datetime import date, datetime
 from .orats_summary_service import fetch_all_orats_summaries
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -5099,15 +5099,37 @@ def create_protected_position_mark(
     quote_source: str,
     quote_snapshot: dict,
     marked_at: datetime | None = None,
+    mark_type: str = "MANUAL",
+    market_date: date | None = None,
 ) -> dict:
     """
     Persist one point-in-time valuation for an active protected
     position.
+
+    Daily closing marks are idempotent by position and market date.
     """
 
     if not quote_source.strip():
         raise ValueError(
             "Protected-position mark requires a quote source"
+        )
+
+    normalized_mark_type = mark_type.strip().upper()
+
+    if normalized_mark_type not in {
+        "MANUAL",
+        "DAILY_CLOSE",
+    }:
+        raise ValueError(
+            "mark_type must be MANUAL or DAILY_CLOSE"
+        )
+
+    if (
+        normalized_mark_type == "DAILY_CLOSE"
+        and market_date is None
+    ):
+        raise ValueError(
+            "Daily closing marks require a market date"
         )
 
     with get_conn() as conn:
@@ -5118,6 +5140,8 @@ def create_protected_position_mark(
                     protected_lot_id,
                     parity_user_id,
                     marked_at,
+                    mark_type,
+                    market_date,
                     underlying_price,
                     underlying_market_value,
                     option_market_value,
@@ -5128,8 +5152,8 @@ def create_protected_position_mark(
                     quote_snapshot
                 )
                 SELECT
-                    p.id,
-                    p.parity_user_id,
+                    position.id,
+                    position.parity_user_id,
                     COALESCE(%s, NOW()),
                     %s,
                     %s,
@@ -5138,15 +5162,27 @@ def create_protected_position_mark(
                     %s,
                     %s,
                     %s,
+                    %s,
+                    %s,
                     %s::jsonb
-                FROM protected_position_lots p
-                WHERE p.id = %s
-                  AND p.parity_user_id = %s
-                  AND p.status = 'ACTIVE'
+                FROM protected_position_lots position
+                WHERE position.id = %s
+                  AND position.parity_user_id = %s
+                  AND position.status = 'ACTIVE'
+
+                ON CONFLICT (
+                    protected_lot_id,
+                    market_date
+                )
+                WHERE mark_type = 'DAILY_CLOSE'
+                DO NOTHING
+
                 RETURNING *
                 """,
                 (
                     marked_at,
+                    normalized_mark_type,
+                    market_date,
                     underlying_price,
                     underlying_market_value,
                     option_market_value,
@@ -5161,6 +5197,31 @@ def create_protected_position_mark(
             )
 
             mark = cur.fetchone()
+
+            if (
+                mark is None
+                and normalized_mark_type == "DAILY_CLOSE"
+            ):
+                cur.execute(
+                    """
+                    SELECT mark.*
+                    FROM protected_position_marks mark
+                    JOIN protected_position_lots position
+                      ON position.id = mark.protected_lot_id
+                    WHERE mark.protected_lot_id = %s
+                      AND position.parity_user_id = %s
+                      AND mark.mark_type = 'DAILY_CLOSE'
+                      AND mark.market_date = %s
+                    LIMIT 1
+                    """,
+                    (
+                        protected_lot_id,
+                        parity_user_id,
+                        market_date,
+                    ),
+                )
+
+                mark = cur.fetchone()
 
             if not mark:
                 raise ValueError(

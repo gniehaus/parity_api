@@ -1604,6 +1604,57 @@ def init_db():
                     AND approved_share_quantity % 100 = 0
                 );
             """)
+
+
+
+
+            cur.execute("""
+                ALTER TABLE protected_position_marks
+                ADD COLUMN IF NOT EXISTS
+                    mark_type TEXT NOT NULL DEFAULT 'MANUAL';
+            
+                ALTER TABLE protected_position_marks
+                ADD COLUMN IF NOT EXISTS
+                    market_date DATE;
+            
+                ALTER TABLE protected_position_marks
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_marks_mark_type_check;
+            
+                ALTER TABLE protected_position_marks
+                ADD CONSTRAINT
+                    protected_position_marks_mark_type_check
+                CHECK (
+                    mark_type IN (
+                        'MANUAL',
+                        'DAILY_CLOSE'
+                    )
+                );
+            
+                ALTER TABLE protected_position_marks
+                DROP CONSTRAINT IF EXISTS
+                    protected_position_marks_daily_date_check;
+            
+                ALTER TABLE protected_position_marks
+                ADD CONSTRAINT
+                    protected_position_marks_daily_date_check
+                CHECK (
+                    mark_type = 'MANUAL'
+                    OR market_date IS NOT NULL
+                );
+            
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_protected_position_marks_one_daily_close
+                ON protected_position_marks (
+                    protected_lot_id,
+                    market_date
+                )
+                WHERE mark_type = 'DAILY_CLOSE';
+            """)
+
+
+
+            
             cur.execute("""
                 ALTER TABLE execution_orders
                 ADD COLUMN IF NOT EXISTS

@@ -507,6 +507,7 @@ def inspect_option_execution_conflicts(
         "external_option_positions": (
             external_option_positions
         ),
+        "active_parity_execution_orders": parity_orders,
         "parity_option_orders": (
             parity_option_orders
         ),

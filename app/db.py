@@ -5235,7 +5235,59 @@ def create_protected_position_mark(
 
 
 
+def list_active_positions_for_daily_mark(
+    *,
+    market_date: date,
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Return active protected positions that do not yet have an official
+    daily closing mark for the requested market date.
 
+    This is database-only and does not contact the broker.
+    """
+
+    if limit <= 0 or limit > 5000:
+        raise ValueError("limit must be between 1 and 5000")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    position.id,
+                    position.parity_user_id,
+                    position.account_id,
+                    position.underlying_symbol,
+                    position.strategy_type,
+                    position.share_quantity,
+                    position.protection_opened_at
+
+                FROM protected_position_lots position
+
+                WHERE position.status = 'ACTIVE'
+                  AND position.entry_strategy_value IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM protected_position_marks mark
+                      WHERE mark.protected_lot_id = position.id
+                        AND mark.mark_type = 'DAILY_CLOSE'
+                        AND mark.market_date = %s
+                  )
+
+                ORDER BY
+                    position.protection_opened_at ASC,
+                    position.id ASC
+
+                LIMIT %s
+                """,
+                (
+                    market_date,
+                    limit,
+                ),
+            )
+
+            return cur.fetchall()
 
 
 def mark_protected_position_lot_closed(

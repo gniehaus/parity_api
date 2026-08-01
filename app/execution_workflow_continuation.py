@@ -8,6 +8,11 @@ from .db import (
 )
 from .execution_submission import submit_prepared_option_order
 
+from .execution_conflicts import (
+    ExecutionConflictError,
+    require_no_option_execution_conflicts,
+)
+
 
 class ExecutionWorkflowContinuationError(ValueError):
     pass
@@ -101,6 +106,17 @@ def submit_preapproved_option_overlay_after_underlying_fill(
                 "approval"
             )
 
+        option_conflict_check = (
+            require_no_option_execution_conflicts(
+                parity_user_id=parity_user_id,
+                account_id=workflow["account_id"],
+                underlying_symbol=workflow[
+                    "underlying_symbol"
+                ],
+            )
+        )
+
+        
         option_submission = submit_prepared_option_order(
             parity_user_id=parity_user_id,
             order_id=option_prepared_order["id"],
@@ -112,6 +128,21 @@ def submit_preapproved_option_overlay_after_underlying_fill(
             workflow_id=workflow_id,
         )
 
+
+    except ExecutionConflictError as exc:
+        try:
+            mark_workflow_action_required(
+                parity_user_id=parity_user_id,
+                workflow_id=workflow_id,
+            )
+        except Exception:
+            pass
+
+        raise ExecutionWorkflowContinuationError(
+            str(exc)
+        ) from exc
+
+    
     except Exception as exc:
         try:
             mark_workflow_action_required(
@@ -130,5 +161,8 @@ def submit_preapproved_option_overlay_after_underlying_fill(
         "option_order": option_submission["order"],
         "option_broker_response": (
             option_submission["broker_response"]
+        ),
+        "option_conflict_check": (
+            option_conflict_check
         ),
     }

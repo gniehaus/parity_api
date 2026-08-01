@@ -4954,7 +4954,14 @@ def list_active_option_execution_orders(
                       'OPTIONS',
                       'OPTIONS_PACKAGE'
                   )
-
+                AND execution_order.broker_order_id IS NOT NULL
+                AND execution_order.status IN (
+                        'SUBMITTED',
+                        'WORKING',
+                        'PARTIALLY_FILLED',
+                        'CANCELING',
+                        'ACTION_REQUIRED'
+                    )
                 ORDER BY execution_order.created_at DESC
                 """,
                 (

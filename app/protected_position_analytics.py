@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from .db import (
@@ -29,6 +29,8 @@ def calculate_protected_position_mark(
     *,
     parity_user_id: str,
     protected_lot_id: str,
+    mark_type: str = "MANUAL",
+    market_date: date | None = None,
 ) -> dict[str, Any]:
     """
     Calculate and persist one current midpoint valuation for an active

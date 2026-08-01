@@ -34,6 +34,11 @@ from .execution_closing import (
     prepare_close_options_overlay_draft,
 )
 
+from .execution_conflicts import (
+    ExecutionConflictError,
+    require_no_option_execution_conflicts,
+)
+
 
 from .defined_outcome_service import (
     choose_defined_outcome_match,
@@ -1327,6 +1332,27 @@ def execution_option_order_draft_create(
     parity_user_id = get_parity_user_id(request)
 
     try:
+        workflow = get_execution_workflow(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+        )
+
+        if not workflow:
+            raise HTTPException(
+                status_code=404,
+                detail="Execution workflow was not found",
+            )
+
+        option_conflict_check = (
+            require_no_option_execution_conflicts(
+                parity_user_id=parity_user_id,
+                account_id=workflow["account_id"],
+                underlying_symbol=workflow[
+                    "underlying_symbol"
+                ],
+            )
+        )
+
         order = prepare_option_order_draft(
             parity_user_id=parity_user_id,
             workflow_id=workflow_id,
@@ -1341,6 +1367,12 @@ def execution_option_order_draft_create(
             time_in_force=req.time_in_force,
             refresh_draft=req.refresh_draft,
         )
+    except ExecutionConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+        
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -1349,6 +1381,9 @@ def execution_option_order_draft_create(
 
     return {
         "order": order,
+        "option_conflict_check": (
+            option_conflict_check
+        ),
     }
 
 
@@ -1690,17 +1725,58 @@ def execution_order_submit(
     if order["execution_phase"] != "CLOSE_OPTIONS":
         require_new_execution_enabled(parity_user_id)
     try:
+        option_conflict_check = None
+
+        if (
+            order["execution_phase"] == "INITIAL"
+            and order["order_scope"]
+            in {"OPTIONS", "OPTIONS_PACKAGE"}
+        ):
+            workflow = get_execution_workflow(
+                parity_user_id=parity_user_id,
+                workflow_id=str(
+                    order["workflow_id"]
+                ),
+            )
+
+            if not workflow:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "Execution workflow was not found"
+                    ),
+                )
+
+            option_conflict_check = (
+                require_no_option_execution_conflicts(
+                    parity_user_id=parity_user_id,
+                    account_id=order["account_id"],
+                    underlying_symbol=workflow[
+                        "underlying_symbol"
+                    ],
+                )
+            )
+
         result = submit_prepared_option_order(
             parity_user_id=parity_user_id,
             order_id=order_id,
         )
 
+    except ExecutionConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
     except ExecutionSubmissionError as exc:
         raise HTTPException(
             status_code=409,
             detail=str(exc),
         ) from exc
 
+    if option_conflict_check is not None:
+        result["option_conflict_check"] = (
+            option_conflict_check
+        )
     return result
 
 

@@ -4867,61 +4867,29 @@ def list_active_protected_position_lots(
 
             return cur.fetchall()
 
-render@srv-d95ihhkvikkc73doukvg-669d64c57c-2h6hs:~/project/src$ sed -n '4800,4900p' app/db.py
-                    underlying_symbol.strip().upper(),
-                    share_quantity,
-                    share_source,
-                    share_entry_fill_price,
-                    share_entry_filled_at,
-                    underlying_reference_price,
-                    underlying_reference_at,
-                    strategy_type,
-                    json.dumps(option_contracts),
-                    option_entry_net_price,
-                    option_entry_price_effect,
-                    entry_strategy_value,
-                    json.dumps(entry_outcome_snapshot or {}),
-                    options_open_order_id,
-                    protection_opened_at,
-                ),
-            )
-
-            protected_lot = cur.fetchone()
-
-            if protected_lot is None:
-                cur.execute(
-                    """
-                    SELECT *
-                    FROM protected_position_lots
-                    WHERE opening_workflow_lot_id = %s
-                      AND parity_user_id = %s
-                    """,
-                    (
-                        opening_workflow_lot_id,
-                        parity_user_id,
-                    ),
-                )
-                protected_lot = cur.fetchone()
-
-            if protected_lot is None:
-                raise ValueError(
-                    "Protected position lot could not be created"
-                )
-
-            conn.commit()
-
-    return protected_lot
 
 
-def list_active_protected_position_lots(
+def list_managed_protected_position_lots(
     *,
     parity_user_id: str,
+    account_id: str,
+    underlying_symbol: str,
 ) -> list[dict]:
     """
-    Return active Parity-tracked protection lots for one user.
+    Return non-closed Parity-managed protected lots for one account
+    and underlying.
 
-    This does not call the brokerage or infer outside option positions.
+    This is database-only and does not call the brokerage.
     """
+
+    normalized_symbol = (
+        underlying_symbol.strip().upper()
+    )
+
+    if not normalized_symbol:
+        raise ValueError(
+            "underlying_symbol is required"
+        )
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -4930,45 +4898,22 @@ def list_active_protected_position_lots(
                 SELECT *
                 FROM protected_position_lots
                 WHERE parity_user_id = %s
-                  AND status = 'ACTIVE'
+                  AND account_id = %s
+                  AND underlying_symbol = %s
+                  AND status IN (
+                      'ACTIVE',
+                      'RECONCILIATION_REQUIRED'
+                  )
                 ORDER BY protection_opened_at DESC
                 """,
-                (parity_user_id,),
+                (
+                    parity_user_id,
+                    account_id,
+                    normalized_symbol,
+                ),
             )
 
             return cur.fetchall()
-
-
-
-def list_protected_positions_with_latest_mark(
-    *,
-    parity_user_id: str,
-) -> list[dict]:
-    """
-    Return all protected positions for one user together with each
-    position's most recent analytics mark.
-
-    This is database-only and does not refresh brokerage or market data.
-    """
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    position.*,
-
-                    latest_mark.id
-                        AS latest_mark_id,
-                    latest_mark.marked_at
-                        AS latest_marked_at,
-                    latest_mark.underlying_price
-                        AS latest_underlying_price,
-                    latest_mark.underlying_market_value
-                        AS latest_underlying_market_value,
-                    latest_mark.option_market_value
-                        AS latest_option_market_value,
-                    latest_mark.strategy_market_value
 
 def list_protected_positions_with_latest_mark(
     *,

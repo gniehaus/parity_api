@@ -359,6 +359,7 @@ def get_marketplace_products(request: MarketplaceRequest):
             "request": request.model_dump(),
             "products": {
                 "defined_range": legacy_payload["products"]["defined_floor"],
+                "buffered_growth": legacy_payload["products"]["buffered_growth"],
                 "insured_upside": married_put,
                 "income": covered_call,
             },

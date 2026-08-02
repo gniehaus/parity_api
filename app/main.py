@@ -106,6 +106,7 @@ from .db import (
     list_protected_position_marks,
     list_execution_activity,
     close_reconciliation_required_position,
+    resolve_execution_workflow_attention,
 )
 
 from .snaptrade_service import (
@@ -246,8 +247,24 @@ class ProtectedPositionExitStartRequest(BaseModel):
     option_limit_price: float = Field(gt=0)
     option_price_effect: str
     option_time_in_force: str = "Day"
+    
 class ExecutionWorkflowAbandonRequest(BaseModel):
     confirm_abandonment: bool
+
+
+class ExecutionWorkflowAttentionResolveRequest(BaseModel):
+    confirm_resolution: bool
+    confirm_no_active_broker_order: bool
+    resolution_code: Literal[
+        "NO_ACTIVE_BROKER_ORDER",
+        "POSITION_NO_LONGER_HELD",
+        "POSITION_REVIEWED_UNPROTECTED",
+        "DUPLICATE_OR_TEST_WORKFLOW",
+    ]
+    resolution_note: str | None = Field(
+        default=None,
+        max_length=500,
+    )
 
 class RecommendationRunRequest(BaseModel):
     engine_version: str = "v1"
@@ -399,6 +416,82 @@ class GuestClaimRequest(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     raw: dict | None = None
+
+
+
+
+
+
+@app.post(
+    "/api/execution/workflows/"
+    "{workflow_id}/attention/resolve"
+)
+def execution_workflow_attention_resolve(
+    workflow_id: str,
+    req: ExecutionWorkflowAttentionResolveRequest,
+    request: Request,
+):
+    """
+    Record that the user reviewed an attention-required workflow.
+
+    This preserves the workflow and every order record. It never
+    submits, cancels, replaces, or modifies a brokerage order.
+    """
+
+    if req.confirm_resolution is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_resolution must be true",
+        )
+
+    if req.confirm_no_active_broker_order is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Confirm that the brokerage account does not show "
+                "an active order before resolving this review"
+            ),
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        workflow = resolve_execution_workflow_attention(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            resolution_code=req.resolution_code,
+            resolution_note=req.resolution_note,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "workflow": workflow,
+        "resolution": {
+            "resolved_at": workflow[
+                "attention_resolved_at"
+            ],
+            "code": workflow[
+                "attention_resolution_code"
+            ],
+            "note": workflow[
+                "attention_resolution_note"
+            ],
+        },
+    }
+
+
+
+
+
+
+
+
+
 
 
 @app.get("/api/execution/accounts/{account_id}/symbols/""{underlying_symbol}/option-conflicts")

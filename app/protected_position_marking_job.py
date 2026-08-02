@@ -7,7 +7,9 @@ from .db import list_active_positions_for_daily_mark
 from .protected_position_analytics import (
     calculate_protected_position_mark,
 )
-
+from .protected_position_reconciliation import (
+    reconcile_active_protected_positions,
+)
 
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
@@ -30,6 +32,12 @@ def run_daily_protected_position_marks(
         or datetime.now(MARKET_TIMEZONE).date()
     )
 
+    reconciliation = (
+        reconcile_active_protected_positions(
+            limit=limit,
+        )
+    )
+
     if effective_market_date.weekday() >= 5:
         return {
             "market_date": effective_market_date.isoformat(),
@@ -40,6 +48,7 @@ def run_daily_protected_position_marks(
             "failed": 0,
             "results": [],
             "errors": [],
+            "reconciliation": reconciliation,
         }
 
     positions = list_active_positions_for_daily_mark(
@@ -101,6 +110,7 @@ def run_daily_protected_position_marks(
         "failed": len(errors),
         "results": results,
         "errors": errors,
+        "reconciliation": reconciliation,
     }
 
 

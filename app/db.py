@@ -5109,7 +5109,9 @@ def list_execution_activity(
                     workflow.underlying_shares,
                     workflow.strategy_type,
                     workflow.status AS workflow_status,
-
+                    workflow.attention_resolved_at,
+                    workflow.attention_resolution_code,
+                    workflow.attention_resolution_note,
                     workflow_lot.lot_number,
                     workflow_lot.share_quantity,
 

@@ -6823,3 +6823,181 @@ def abandon_execution_workflow(
             conn.commit()
 
             return abandoned_workflow
+
+def resolve_execution_workflow_attention(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    resolution_code: str,
+    resolution_note: str | None = None,
+) -> dict:
+    """
+    Record that a user has reviewed an attention-required workflow.
+
+    This preserves every workflow and order status. It never claims
+    that an ambiguous order was canceled, never calls the broker, and
+    never places, cancels, replaces, or closes an order.
+    """
+
+    allowed_resolution_codes = {
+        "NO_ACTIVE_BROKER_ORDER",
+        "POSITION_NO_LONGER_HELD",
+        "POSITION_REVIEWED_UNPROTECTED",
+        "DUPLICATE_OR_TEST_WORKFLOW",
+    }
+
+    if resolution_code not in allowed_resolution_codes:
+        raise ValueError(
+            "Invalid workflow attention resolution"
+        )
+
+    normalized_note = (
+        resolution_note.strip()
+        if resolution_note
+        else None
+    )
+
+    if normalized_note and len(normalized_note) > 500:
+        raise ValueError(
+            "Resolution note cannot exceed 500 characters"
+        )
+
+    active_order_statuses = {
+        "SUBMITTING",
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "CANCELING",
+    }
+
+    attention_order_statuses = {
+        "ACTION_REQUIRED",
+        "REJECTED",
+        "REQUOTE_REQUIRED",
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+
+            if not workflow:
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            if workflow.get("attention_resolved_at"):
+                return workflow
+
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    status,
+                    broker_order_id,
+                    filled_quantity
+                FROM execution_orders
+                WHERE workflow_id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            orders = cur.fetchall()
+
+            has_attention_state = (
+                workflow["status"] == "ACTION_REQUIRED"
+                or any(
+                    order["status"]
+                    in attention_order_statuses
+                    for order in orders
+                )
+            )
+
+            if not has_attention_state:
+                raise ValueError(
+                    "This workflow does not require attention"
+                )
+
+            has_active_order = any(
+                order["status"] in active_order_statuses
+                for order in orders
+            )
+
+            if has_active_order:
+                raise ValueError(
+                    "Active brokerage orders must reach a terminal "
+                    "status before this review can be resolved"
+                )
+
+            has_uncertain_broker_linked_order = any(
+                order["status"] == "ACTION_REQUIRED"
+                and order.get("broker_order_id")
+                for order in orders
+            )
+
+            if has_uncertain_broker_linked_order:
+                raise ValueError(
+                    "A broker-linked uncertain order must be "
+                    "reconciled before this review can be resolved"
+                )
+
+            cur.execute(
+                """
+                UPDATE execution_workflow_lots
+                SET
+                    reserved_share_quantity = 0,
+                    updated_at = NOW()
+                WHERE workflow_id = %s
+                  AND status <> 'COMPLETE'
+                """,
+                (workflow_id,),
+            )
+
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    attention_resolved_at = NOW(),
+                    attention_resolution_code = %s,
+                    attention_resolution_note = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                RETURNING *
+                """,
+                (
+                    resolution_code,
+                    normalized_note,
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            resolved_workflow = cur.fetchone()
+
+            if not resolved_workflow:
+                raise ValueError(
+                    "Workflow attention review could not be resolved"
+                )
+
+            conn.commit()
+
+    return resolved_workflow

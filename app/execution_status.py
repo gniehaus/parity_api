@@ -53,7 +53,7 @@ def _full_account_orders(
         user_id=snaptrade_user["snaptrade_user_id"],
         user_secret=snaptrade_user["user_secret"],
         account_id=account_id,
-        days=1,
+        days=30,
     )
 
     body = _to_plain(response.body) or []
@@ -213,30 +213,31 @@ def refresh_execution_order_status(
     }
 
       
-    if order["status"] == "CANCELING":
+    if order["order_scope"] == "OPTIONS_PACKAGE":
+        recent_feed_has_order = any(
+            str(candidate.get("brokerage_order_id"))
+            in expected_child_order_ids
+            for candidate in broker_orders
+        )
+    else:
+        recent_feed_has_order = any(
+            str(candidate.get("brokerage_order_id"))
+            == str(broker_order_id)
+            for candidate in broker_orders
+        )
+
+    if not recent_feed_has_order:
         full_order_history = _full_account_orders(
             snaptrade_user=snaptrade_user,
             account_id=order["account_id"],
         )
 
-        if order["order_scope"] == "OPTIONS_PACKAGE":
-            history_has_package_legs = any(
-                str(candidate.get("brokerage_order_id"))
-                in expected_child_order_ids
-                for candidate in full_order_history
+        if not isinstance(full_order_history, list):
+            raise ExecutionStatusError(
+                "SnapTrade returned an invalid full order history"
             )
 
-            if history_has_package_legs:
-                broker_orders = full_order_history
-        else:
-            history_has_order = any(
-                str(candidate.get("brokerage_order_id"))
-                == str(broker_order_id)
-                for candidate in full_order_history
-            )
-
-            if history_has_order:
-                broker_orders = full_order_history
+        broker_orders = full_order_history
     if (
         order["order_scope"] == "OPTIONS_PACKAGE"
         and expected_child_order_ids

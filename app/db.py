@@ -1060,6 +1060,7 @@ def init_db():
                         'FAILED',
                         'CANCELED'
                     )
+                
                 );
 
                 ALTER TABLE execution_workflows
@@ -1075,6 +1076,34 @@ def init_db():
                         'DEBIT',
                         'CREDIT',
                         'EVEN'
+                    )
+                );
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    attention_resolved_at TIMESTAMPTZ;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    attention_resolution_code TEXT;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    attention_resolution_note TEXT;
+
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_attention_resolution_code_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_attention_resolution_code_check
+                CHECK (
+                    attention_resolution_code IS NULL
+                    OR attention_resolution_code IN (
+                        'NO_ACTIVE_BROKER_ORDER',
+                        'POSITION_NO_LONGER_HELD',
+                        'POSITION_REVIEWED_UNPROTECTED',
+                        'DUPLICATE_OR_TEST_WORKFLOW'
                     )
                 );
             """)

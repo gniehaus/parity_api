@@ -5340,7 +5340,47 @@ def create_protected_position_mark(
 
     return mark
 
+def list_active_protected_positions_for_reconciliation(
+    *,
+    limit: int = 5000,
+) -> list[dict]:
+    """
+    Return every active protected position needed for broker
+    reconciliation.
 
+    This is database-only and does not contact the brokerage.
+    """
+
+    if limit <= 0 or limit > 5000:
+        raise ValueError("limit must be between 1 and 5000")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    parity_user_id,
+                    account_id,
+                    underlying_symbol,
+                    share_quantity,
+                    strategy_type,
+                    option_contracts,
+                    protection_opened_at
+                FROM protected_position_lots
+                WHERE status = 'ACTIVE'
+                ORDER BY
+                    parity_user_id,
+                    account_id,
+                    underlying_symbol,
+                    protection_opened_at,
+                    id
+                LIMIT %s
+                """,
+                (limit,),
+            )
+
+            return cur.fetchall()
 
 
 def list_active_positions_for_daily_mark(

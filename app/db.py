@@ -1308,6 +1308,69 @@ def init_db():
                 );
             """)
             cur.execute("""
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_requested_at TIMESTAMPTZ;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_status TEXT;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_final_share_quantity INTEGER;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_sell_order_id UUID
+                    REFERENCES execution_orders(id)
+                    ON DELETE SET NULL;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_error TEXT;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_completed_at TIMESTAMPTZ;
+
+                ALTER TABLE execution_workflows
+                ADD COLUMN IF NOT EXISTS
+                    unwind_broker_snapshot JSONB
+                    NOT NULL DEFAULT '{}'::jsonb;
+
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_unwind_status_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_unwind_status_check
+                CHECK (
+                    unwind_status IS NULL
+                    OR unwind_status IN (
+                        'REQUESTED',
+                        'CANCELING_ORDERS',
+                        'READY_TO_SELL',
+                        'SELL_SUBMITTED',
+                        'COMPLETE',
+                        'ACTION_REQUIRED'
+                    )
+                );
+
+                ALTER TABLE execution_workflows
+                DROP CONSTRAINT IF EXISTS
+                    execution_workflows_unwind_share_quantity_check;
+
+                ALTER TABLE execution_workflows
+                ADD CONSTRAINT
+                    execution_workflows_unwind_share_quantity_check
+                CHECK (
+                    unwind_final_share_quantity IS NULL
+                    OR unwind_final_share_quantity >= 0
+                );
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS protected_position_lots (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 

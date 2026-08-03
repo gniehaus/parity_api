@@ -144,7 +144,51 @@ def _validate_contracts_for_step(
             )
 
 
+def validate_option_workflow_step(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    sequence: int,
+    contracts: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Validate option contracts against a workflow step without
+    requesting market data or creating an execution order.
+    """
 
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    if not workflow:
+        raise ValueError(
+            "Execution workflow was not found"
+        )
+
+    step = _get_workflow_step(
+        workflow=workflow,
+        sequence=sequence,
+    )
+
+    if step["order_scope"] not in {
+        "OPTIONS",
+        "OPTIONS_PACKAGE",
+    }:
+        raise ValueError(
+            "This workflow step requires an equity order, "
+            "not an option order"
+        )
+
+    _validate_contracts_for_step(
+        step=step,
+        contracts=contracts,
+        underlying_symbol=(
+            workflow["underlying_symbol"].upper()
+        ),
+    )
+
+    return workflow, step
 
 
 def validate_and_quote_option_workflow_step(
@@ -161,29 +205,11 @@ def validate_and_quote_option_workflow_step(
     This never creates, prepares, or submits an execution order.
     """
 
-    workflow = get_execution_workflow(
+    workflow, step = validate_option_workflow_step(
         parity_user_id=parity_user_id,
         workflow_id=workflow_id,
-    )
-
-    if not workflow:
-        raise ValueError("Execution workflow was not found")
-
-    step = _get_workflow_step(
-        workflow=workflow,
         sequence=sequence,
-    )
-
-    if step["order_scope"] not in {"OPTIONS", "OPTIONS_PACKAGE"}:
-        raise ValueError(
-            "This workflow step requires an equity order, "
-            "not an option order"
-        )
-
-    _validate_contracts_for_step(
-        step=step,
         contracts=contracts,
-        underlying_symbol=workflow["underlying_symbol"].upper(),
     )
 
 

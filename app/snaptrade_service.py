@@ -95,17 +95,47 @@ def _date(value):
 
 def _instrument(position):
     position = _to_plain(position)
-    wrapper = _get(position, "symbol") or _get(position, "universal_symbol") or _get(position, "security") or {}
 
-    # SnapTrade often returns:
+    direct_instrument = _get(position, "instrument")
+
+    if isinstance(direct_instrument, dict):
+        return direct_instrument
+
+    wrapper = (
+        _get(position, "symbol")
+        or _get(position, "universal_symbol")
+        or _get(position, "security")
+        or {}
+    )
+
+    # Older SnapTrade position response:
     # position["symbol"]["symbol"]["type"]["code"]
     if isinstance(wrapper, dict):
         nested = wrapper.get("symbol")
+
         if isinstance(nested, dict):
             return nested
+
         return wrapper
 
     return {}
+
+
+def _position_or_instrument_value(position, *keys):
+    instrument = _instrument(position)
+
+    for key in keys:
+        value = _get(position, key)
+
+        if value is not None:
+            return value
+
+        value = _get(instrument, key)
+
+        if value is not None:
+            return value
+
+    return None
 
 
 def _extract_symbol(position):
@@ -144,50 +174,117 @@ def _extract_security_type(position):
 
 
 def _classify_position(position):
+    instrument = _instrument(position)
     symbol = (_extract_symbol(position) or "").upper()
     security_text = _extract_security_type(position)
 
-    option_fields_present = any([
-        _get(position, "option_type"),
-        _get(position, "optionType"),
-        _get(position, "strike_price"),
-        _get(position, "strikePrice"),
-        _get(position, "expiration_date"),
-        _get(position, "expirationDate"),
-        _get(position, "underlying_symbol"),
-        _get(position, "underlyingSymbol"),
-    ])
+    instrument_kind = _string(
+        _get(instrument, "kind"),
+        "",
+    ).strip().lower()
 
-    if option_fields_present or any(x in security_text for x in ["option", "call", "put"]):
+    option_fields_present = any(
+        _position_or_instrument_value(
+            position,
+            snake_case,
+            camel_case,
+        )
+        is not None
+        for snake_case, camel_case in [
+            ("option_type", "optionType"),
+            ("strike_price", "strikePrice"),
+            ("expiration_date", "expirationDate"),
+            ("underlying_symbol", "underlyingSymbol"),
+        ]
+    )
+
+    if (
+        instrument_kind == "option"
+        or option_fields_present
+        or any(
+            value in security_text
+            for value in ["option", "call", "put"]
+        )
+    ):
         return "option", "option"
 
-    if "cs" in security_text.split() or "common stock" in security_text:
+    if (
+        "cs" in security_text.split()
+        or "common stock" in security_text
+    ):
         return "us_stock", "common_stock"
 
-    if any(x in security_text for x in ["etf", "exchange traded fund", "exchange-traded fund"]):
-        if symbol in {"EFA", "VEA", "VXUS", "IEFA", "VWO", "IEMG", "EEM"}:
+    if any(
+        value in security_text
+        for value in [
+            "etf",
+            "exchange traded fund",
+            "exchange-traded fund",
+        ]
+    ):
+        if symbol in {
+            "EFA",
+            "VEA",
+            "VXUS",
+            "IEFA",
+            "VWO",
+            "IEMG",
+            "EEM",
+        }:
             return "international_equity", "etf"
-        if symbol in {"SGOV", "BIL", "SHV", "TFLO", "USFR", "GOVT", "IEF", "TLT", "SHY"}:
+
+        if symbol in {
+            "SGOV",
+            "BIL",
+            "SHV",
+            "TFLO",
+            "USFR",
+            "GOVT",
+            "IEF",
+            "TLT",
+            "SHY",
+        }:
             return "treasury", "etf"
+
         return "us_etf", "etf"
 
-    if any(x in security_text for x in ["mutual fund", "mutualfund"]):
+    if any(
+        value in security_text
+        for value in ["mutual fund", "mutualfund"]
+    ):
         return "mutual_fund", "fund"
 
-    if any(x in security_text for x in ["treasury", "t-bill", "tbill", "t bill"]):
+    if any(
+        value in security_text
+        for value in ["treasury", "t-bill", "tbill", "t bill"]
+    ):
         return "treasury", "fixed_income"
 
-    if any(x in security_text for x in ["bond", "fixed income", "note", "debenture"]):
+    if any(
+        value in security_text
+        for value in ["bond", "fixed income", "note", "debenture"]
+    ):
         return "bond", "fixed_income"
 
-    if any(x in security_text for x in ["cash", "money market", "sweep"]):
+    if any(
+        value in security_text
+        for value in ["cash", "money market", "sweep"]
+    ):
         return "cash", "cash"
 
-    if any(x in security_text for x in ["crypto", "bitcoin", "ethereum", "btc", "eth"]):
+    if any(
+        value in security_text
+        for value in [
+            "crypto",
+            "bitcoin",
+            "ethereum",
+            "btc",
+            "eth",
+        ]
+    ):
         return "crypto", "crypto"
 
     return "unknown", "unknown"
-
 
 def _market_value(position):
     for key in ["market_value", "marketValue", "value"]:
@@ -253,9 +350,23 @@ def normalize_position(parity_user_id: str, account_id: str, position: dict):
     currency_obj = _get(instrument, "currency") or _get(position, "currency") or {}
     currency = _string(_get(currency_obj, "code") or currency_obj, "USD")
 
-    option_type = _string(_get(position, "option_type") or _get(position, "optionType"))
+    option_type = _string(
+        _position_or_instrument_value(
+            position,
+            "option_type",
+            "optionType",
+        )
+    )
+
     if option_type:
-        option_type = option_type.lower()
+        normalized_option_type = option_type.strip().upper()
+
+        if normalized_option_type in {"C", "CALL"}:
+            option_type = "call"
+        elif normalized_option_type in {"P", "PUT"}:
+            option_type = "put"
+        else:
+            option_type = normalized_option_type.lower()
 
     type_obj = _get(instrument, "type") or _get(position, "type") or _get(position, "security_type") or {}
     asset_subtype = None
@@ -290,11 +401,43 @@ def normalize_position(parity_user_id: str, account_id: str, position: dict):
         "is_margin": False,
         "is_short": position_direction == "short",
         "is_option": asset_class == "option",
-        "underlying_symbol": _string(_get(position, "underlying_symbol") or _get(position, "underlyingSymbol")),
+        "underlying_symbol": _string(
+            _position_or_instrument_value(
+                position,
+                "underlying_symbol",
+                "underlyingSymbol",
+            )
+        ),
         "option_type": option_type,
-        "expiration_date": _date(_get(position, "expiration_date") or _get(position, "expirationDate")),
-        "strike_price": _num(_get(position, "strike_price") or _get(position, "strikePrice")),
-        "multiplier": _num(_get(position, "multiplier")) or (Decimal("100") if asset_class == "option" else None),
+        "expiration_date": _date(
+            _position_or_instrument_value(
+                position,
+                "expiration_date",
+                "expirationDate",
+            )
+        ),
+        "strike_price": _num(
+            _position_or_instrument_value(
+                position,
+                "strike_price",
+                "strikePrice",
+            )
+        ),
+        "multiplier": (
+            _num(
+                _position_or_instrument_value(
+                    position,
+                    "multiplier",
+                    "contract_multiplier",
+                    "contractMultiplier",
+                )
+            )
+            or (
+                Decimal("100")
+                if asset_class == "option"
+                else None
+            )
+        ),
         "contract_count": quantity if asset_class == "option" else None,
         "maturity_date": _date(_get(position, "maturity_date") or _get(position, "maturityDate")),
         "coupon_rate": _num(_get(position, "coupon_rate") or _get(position, "couponRate")),
@@ -764,11 +907,22 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                 )
 
                 try:
-                    positions = get_account_positions(parity_user_id, account_id)
-                except Exception as e:
-                    print(f"Failed to fetch positions for account {account_id}: {e}")
-                    positions = []
+                    positions_response = get_all_account_positions(
+                        parity_user_id=parity_user_id,
+                        account_id=account_id,
+                    )
+                    positions = positions_response["positions"]
 
+                except Exception as exc:
+                    print(
+                        "Failed to fetch all positions for account "
+                        f"{account_id}: {exc}"
+                    )
+
+                    # Preserve the account's previously synchronized
+                    # holdings when SnapTrade cannot return a complete
+                    # positions response.
+                    continue
                 cur.execute(
                     "DELETE FROM holdings WHERE parity_user_id = %s AND account_id = %s",
                     (parity_user_id, account_id),

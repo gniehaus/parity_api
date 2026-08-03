@@ -7303,7 +7303,26 @@ def update_execution_workflow_unwind(
                 raise ValueError(
                     "Requested workflow unwind was not found"
                 )
-
+            if unwind_status == "COMPLETE":
+                cur.execute(
+                    """
+                    UPDATE execution_workflow_lots
+                    SET
+                        status = CASE
+                            WHEN status = 'COMPLETE'
+                            THEN status
+                            ELSE 'CANCELED'
+                        END,
+                        reserved_share_quantity = 0,
+                        completed_at = COALESCE(
+                            completed_at,
+                            NOW()
+                        ),
+                        updated_at = NOW()
+                    WHERE workflow_id = %s
+                    """,
+                    (workflow_id,),
+                )
             conn.commit()
 
     return updated_workflow

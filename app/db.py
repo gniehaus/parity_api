@@ -7066,3 +7066,244 @@ def resolve_execution_workflow_attention(
             conn.commit()
 
     return resolved_workflow
+
+
+def claim_execution_workflow_unwind(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict:
+    """
+    Atomically record the user's request to stop a new-position
+    workflow and sell only the shares acquired by that workflow.
+
+    Repeated requests return the existing unwind state and do not
+    create another unwind.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+
+            if not workflow:
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            if workflow["underlying_source"] != "new":
+                raise ValueError(
+                    "Only new-position workflows can use "
+                    "abort-and-sell"
+                )
+
+            if workflow.get("unwind_status"):
+                conn.commit()
+                return workflow
+
+            if workflow["status"] == "COMPLETE":
+                raise ValueError(
+                    "This position is already complete and must use "
+                    "the protected-position exit flow"
+                )
+
+            if workflow["status"] in {
+                "DRAFT",
+                "UNDERLYING_ORDER_PREPARED",
+            }:
+                raise ValueError(
+                    "No shares have been submitted for this workflow"
+                )
+
+            cur.execute(
+                """
+                SELECT id
+                FROM protected_position_lots
+                WHERE opening_workflow_id = %s
+                  AND parity_user_id = %s
+                  AND status <> 'CLOSED'
+                LIMIT 1
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            if cur.fetchone():
+                raise ValueError(
+                    "This workflow already created a protected "
+                    "position and must use the protected-position "
+                    "exit flow"
+                )
+
+            cur.execute(
+                """
+                SELECT id
+                FROM execution_orders
+                WHERE workflow_id = %s
+                  AND parity_user_id = %s
+                  AND order_role = 'BUY_UNDERLYING'
+                  AND broker_order_id IS NOT NULL
+                LIMIT 1
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            if not cur.fetchone():
+                raise ValueError(
+                    "The workflow does not have a submitted share "
+                    "purchase to unwind"
+                )
+
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    unwind_requested_at = NOW(),
+                    unwind_status = 'REQUESTED',
+                    unwind_final_share_quantity = NULL,
+                    unwind_sell_order_id = NULL,
+                    unwind_error = NULL,
+                    unwind_completed_at = NULL,
+                    unwind_broker_snapshot = '{}'::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND unwind_status IS NULL
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            claimed_workflow = cur.fetchone()
+
+            if not claimed_workflow:
+                raise ValueError(
+                    "The workflow unwind could not be claimed"
+                )
+
+            conn.commit()
+
+    return claimed_workflow
+
+
+def update_execution_workflow_unwind(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+    unwind_status: str,
+    final_share_quantity: int | None = None,
+    sell_order_id: str | None = None,
+    error: str | None = None,
+    broker_snapshot: dict | None = None,
+) -> dict:
+    """
+    Persist one step of an already requested workflow unwind.
+    """
+
+    allowed_statuses = {
+        "REQUESTED",
+        "CANCELING_ORDERS",
+        "READY_TO_SELL",
+        "SELL_SUBMITTED",
+        "COMPLETE",
+        "ACTION_REQUIRED",
+    }
+
+    if unwind_status not in allowed_statuses:
+        raise ValueError(
+            f"Unsupported workflow unwind status: {unwind_status}"
+        )
+
+    if (
+        final_share_quantity is not None
+        and final_share_quantity < 0
+    ):
+        raise ValueError(
+            "Final unwind share quantity cannot be negative"
+        )
+
+    snapshot_payload = broker_snapshot or {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    unwind_status = %s,
+                    unwind_final_share_quantity = COALESCE(
+                        %s,
+                        unwind_final_share_quantity
+                    ),
+                    unwind_sell_order_id = COALESCE(
+                        %s,
+                        unwind_sell_order_id
+                    ),
+                    unwind_error = %s,
+                    unwind_broker_snapshot = COALESCE(
+                        unwind_broker_snapshot,
+                        '{}'::jsonb
+                    ) || %s::jsonb,
+                    unwind_completed_at = CASE
+                        WHEN %s = 'COMPLETE'
+                        THEN COALESCE(
+                            unwind_completed_at,
+                            NOW()
+                        )
+                        ELSE unwind_completed_at
+                    END,
+                    status = CASE
+                        WHEN %s = 'COMPLETE'
+                        THEN 'CANCELED'
+                        ELSE status
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND unwind_requested_at IS NOT NULL
+                RETURNING *
+                """,
+                (
+                    unwind_status,
+                    final_share_quantity,
+                    sell_order_id,
+                    error,
+                    json.dumps(snapshot_payload),
+                    unwind_status,
+                    unwind_status,
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            updated_workflow = cur.fetchone()
+
+            if not updated_workflow:
+                raise ValueError(
+                    "Requested workflow unwind was not found"
+                )
+
+            conn.commit()
+
+    return updated_workflow

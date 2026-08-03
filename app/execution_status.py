@@ -947,6 +947,7 @@ def refresh_execution_order_status(
             and updated_order["sequence"] == 1
             and updated_order["order_scope"] == "EQUITY"
             and updated_lot["status"] == "WAITING_FOR_NEXT_STEP"
+            and not workflow.get("unwind_requested_at")
         ):
             try:
                 continuation = (

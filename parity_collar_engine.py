@@ -1911,12 +1911,7 @@ def build_covered_call(
         ascending=[True, False, False],
     ).iloc[0]
     
-    # Do not represent a materially different outcome as satisfying
-    # the user's requested protection.
-    MAX_PROTECTION_ERROR = 0.05
-    
-    if float(best["protection_error"]) > MAX_PROTECTION_ERROR:
-        return None
+
 
     liq_score, total_volume, total_oi = liquidity_score(best)
 

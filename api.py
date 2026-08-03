@@ -340,11 +340,9 @@ def get_covered_call(request: CoveredCallRequest):
         )
 
         if result is None:
-            raise HTTPException(status_code=404,detail=(
-                            "No covered call was found within 0.50 "
-                            "percentage points of the requested total "
-                            "protection."
-                        ),
+            raise HTTPException(
+                status_code=404,
+                detail="No eligible covered call was found.",
                     )
 
         result["selected_expiry"] = selected_expiry_summary

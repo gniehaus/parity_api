@@ -20,6 +20,11 @@ from .protected_position_analytics import (
 )
 
 
+from .thetadata_quotes import (
+    ThetaDataQuoteError,
+    get_thetadata_option_quote,
+)
+
 from .execution_replacement import (
     ExecutionReplacementError,
     request_execution_order_replacement,
@@ -252,6 +257,10 @@ class ExecutionWorkflowAbandonRequest(BaseModel):
     confirm_abandonment: bool
 
 
+
+
+
+
 class ExecutionWorkflowAttentionResolveRequest(BaseModel):
     confirm_resolution: bool
     confirm_no_active_broker_order: bool
@@ -321,6 +330,12 @@ class ExecutionOptionContractRequest(BaseModel):
     strike: float
     action: str
 
+
+class ExecutionOptionQuoteRequest(BaseModel):
+    contracts: list[ExecutionOptionContractRequest] = Field(
+        min_length=1,
+        max_length=4,
+    )
 
 class ExecutionPrepareOptionOrderRequest(BaseModel):
     lot_id: str
@@ -1594,6 +1609,158 @@ def execution_option_order_draft_create(
         "order": order,
         "option_conflict_check": (
             option_conflict_check
+        ),
+    }
+
+
+@app.post("/api/execution/option-quotes")
+def execution_option_quotes(
+    req: ExecutionOptionQuoteRequest,
+    request: Request,
+):
+    """
+    Return fresh ThetaData OPRA quotes for an options package.
+
+    This endpoint is read-only. It does not create a workflow,
+    prepare an order, submit an order, or write to the database.
+
+    Package bid/ask values use a debit-positive convention:
+    positive = net debit
+    negative = net credit
+    """
+
+    get_parity_user_id(request)
+
+    quoted_legs: list[dict[str, Any]] = []
+
+    package_bid_per_share = 0.0
+    package_ask_per_share = 0.0
+
+    try:
+        for contract in req.contracts:
+            action = str(contract.action).strip().upper()
+
+            if action.startswith("BUY"):
+                side = "BUY"
+            elif action.startswith("SELL"):
+                side = "SELL"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Each option action must begin with "
+                        "BUY or SELL"
+                    ),
+                )
+
+            quote = get_thetadata_option_quote(
+                ticker=contract.ticker,
+                expiration=contract.expiration,
+                option_type=contract.option_type,
+                strike=contract.strike,
+            )
+
+            leg = {
+                **quote,
+                "action": action,
+                "side": side,
+            }
+
+            quoted_legs.append(leg)
+
+            if side == "BUY":
+                package_bid_per_share += quote[
+                    "bid_per_share"
+                ]
+                package_ask_per_share += quote[
+                    "ask_per_share"
+                ]
+            else:
+                package_bid_per_share -= quote[
+                    "ask_per_share"
+                ]
+                package_ask_per_share -= quote[
+                    "bid_per_share"
+                ]
+
+    except ThetaDataQuoteError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    package_bid_per_share = round(
+        package_bid_per_share,
+        4,
+    )
+    package_ask_per_share = round(
+        package_ask_per_share,
+        4,
+    )
+    package_mid_per_share = round(
+        (
+            package_bid_per_share
+            + package_ask_per_share
+        )
+        / 2,
+        4,
+    )
+
+    executable_net_per_share = package_ask_per_share
+    midpoint_net_per_share = package_mid_per_share
+
+    def pricing_result(
+        net_per_share: float,
+    ) -> dict[str, Any]:
+        if net_per_share > 0:
+            price_effect = "DEBIT"
+        elif net_per_share < 0:
+            price_effect = "CREDIT"
+        else:
+            price_effect = "EVEN"
+
+        return {
+            "price_effect": price_effect,
+            "price_per_share": round(
+                abs(net_per_share),
+                4,
+            ),
+            "price_per_contract": round(
+                abs(net_per_share) * 100,
+                2,
+            ),
+            "signed_net_per_share": round(
+                net_per_share,
+                4,
+            ),
+        }
+
+    timestamps = [
+        leg["quote_timestamp"]
+        for leg in quoted_legs
+    ]
+
+    return {
+        "market_status": "live",
+        "source": "THETADATA_OPRA",
+        "quote_timestamp": min(timestamps),
+        "legs": quoted_legs,
+        "package_market": {
+            "bid_per_share": package_bid_per_share,
+            "ask_per_share": package_ask_per_share,
+            "mid_per_share": package_mid_per_share,
+        },
+        "midpoint": pricing_result(
+            midpoint_net_per_share
+        ),
+        "executable": pricing_result(
+            executable_net_per_share
         ),
     }
 

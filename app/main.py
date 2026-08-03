@@ -1181,10 +1181,9 @@ def brokerage_connection_enable_trading(
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=404,
+            status_code=409,
             detail=str(exc),
         ) from exc
-
 
 @app.get("/api/brokerage/accounts")
 def brokerage_accounts(request: Request):

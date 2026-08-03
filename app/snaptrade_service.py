@@ -589,13 +589,31 @@ def create_trading_reconnect_url(
             "Brokerage connection was not found"
         )
 
-    response = snaptrade.authentication.login_snap_trade_user(
-        user_id=user["snaptrade_user_id"],
-        user_secret=user["user_secret"],
-        reconnect=str(authorization_id),
-        connection_type="trade",
+    brokerage = (
+        matching_authorization.get("brokerage") or {}
     )
 
+    brokerage_slug = str(
+        brokerage.get("slug") or ""
+    ).strip().upper()
+
+    connection_type = str(
+        matching_authorization.get("type") or ""
+    ).strip().lower()
+
+    if connection_type == "trade":
+        raise ValueError(
+            "Trading is already enabled for this brokerage connection"
+        )
+
+    if brokerage_slug == "SANDBOX":
+        raise ValueError(
+            "SnapTrade Sandbox is read-only and cannot be upgraded "
+            "to trading. Use an execution-enabled paper brokerage "
+            "account to test order execution."
+        )
+
+    response = snaptrade.authentication.login_snap_trade_user(
     body = _to_plain(response.body) or {}
     redirect_url = body.get("redirectURI")
 
@@ -1533,14 +1551,40 @@ def list_brokerage_connections(
 
         accounts = _to_plain(accounts_response.body) or []
 
+        brokerage_slug = str(
+            (
+                authorization.get("brokerage") or {}
+            ).get("slug")
+            or ""
+        ).strip().upper()
+
+        connection_type = str(
+            authorization.get("type") or ""
+        ).strip().lower()
+
+        is_disabled = bool(
+            authorization.get("disabled")
+        )
+
+        trading_enabled = (
+            connection_type == "trade"
+            and not is_disabled
+        )
+
+        can_enable_trading = (
+            not is_disabled
+            and not trading_enabled
+            and brokerage_slug != "SANDBOX"
+        )
+
         connections.append(
             {
                 "authorization_id": str(authorization_id),
-                "brokerage_slug": (
-                    authorization.get("brokerage") or {}
-                ).get("slug"),
-                "type": authorization.get("type"),
-                "disabled": bool(authorization.get("disabled")),
+                "brokerage_slug": brokerage_slug,
+                "type": connection_type,
+                "disabled": is_disabled,
+                "trading_enabled": trading_enabled,
+                "can_enable_trading": can_enable_trading,
                 "account_ids": [
                     str(account["id"])
                     for account in accounts

@@ -42,7 +42,6 @@ _CANCELABLE_STATUSES = {
     "SUBMITTED",
     "WORKING",
     "PARTIALLY_FILLED",
-    "ACTION_REQUIRED",
 }
 
 _TERMINAL_FAILURE_STATUSES = {
@@ -55,7 +54,9 @@ _TERMINAL_FAILURE_STATUSES = {
 }
 
 
-def _broker_status(order: dict[str, Any]) -> str:
+def _broker_status(
+    order: dict[str, Any],
+) -> str:
     broker_order = (
         (order.get("broker_response") or {}).get("order")
         or {}
@@ -77,7 +78,9 @@ def _confirmed_partial_buy_cancellation(
             "CANCELLED",
             "PARTIAL_CANCELED",
         }
-        and float(order.get("filled_quantity") or 0) > 0
+        and float(
+            order.get("filled_quantity") or 0
+        ) > 0
     )
 
 
@@ -148,7 +151,7 @@ def request_workflow_unwind_and_sell(
     workflow_id: str,
 ) -> dict[str, Any]:
     """
-    Record the user's unwind approval before touching any broker
+    Record the user's unwind approval before touching any brokerage
     order, then advance the unwind once.
     """
 
@@ -182,9 +185,8 @@ def advance_workflow_unwind_and_sell(
     """
     Advance one safe step of an approved workflow unwind.
 
-    Repeated calls are idempotent. The function never sells shares
-    until all previous brokerage orders have confirmed terminal
-    outcomes.
+    Repeated calls are idempotent. Shares are never sold until all
+    earlier brokerage orders have confirmed terminal outcomes.
     """
 
     workflow = get_execution_workflow(
@@ -228,13 +230,76 @@ def advance_workflow_unwind_and_sell(
                 ),
             )
 
+        if sell_order["status"] == "SUBMITTING":
+            return _mark_unwind_action_required(
+                parity_user_id=parity_user_id,
+                workflow_id=workflow_id,
+                message=(
+                    "The share-sale submission has an uncertain "
+                    "brokerage outcome and must be reconciled."
+                ),
+                snapshot={
+                    "submitting_sale_order_id": str(
+                        sell_order["id"]
+                    ),
+                },
+            )
+
+        if sell_order["status"] in {
+            "DRAFT",
+            "PREPARED",
+        }:
+            try:
+                if sell_order["status"] == "DRAFT":
+                    validate_execution_order_safety(
+                        sell_order,
+                        allowed_statuses={"DRAFT"},
+                    )
+
+                    sell_order = mark_execution_order_prepared(
+                        parity_user_id=parity_user_id,
+                        order_id=str(sell_order["id"]),
+                    )
+
+                sale_submission = submit_prepared_option_order(
+                    parity_user_id=parity_user_id,
+                    order_id=str(sell_order["id"]),
+                )
+
+                sell_order = sale_submission["order"]
+
+                update_execution_workflow_unwind(
+                    parity_user_id=parity_user_id,
+                    workflow_id=workflow_id,
+                    unwind_status="SELL_SUBMITTED",
+                    sell_order_id=str(sell_order["id"]),
+                    broker_snapshot={
+                        "recovered_sale_submission_id": str(
+                            sell_order["id"]
+                        ),
+                    },
+                )
+
+            except (
+                ValueError,
+                ExecutionSubmissionError,
+            ) as exc:
+                return _mark_unwind_action_required(
+                    parity_user_id=parity_user_id,
+                    workflow_id=workflow_id,
+                    message=str(exc),
+                )
+
         if sell_order["status"] in _ACTIVE_BROKER_STATUSES:
             try:
                 refresh_execution_order_status(
                     parity_user_id=parity_user_id,
                     order_id=str(sell_order["id"]),
                 )
-            except ExecutionStatusError as exc:
+            except (
+                ExecutionStatusError,
+                ValueError,
+            ) as exc:
                 return _mark_unwind_action_required(
                     parity_user_id=parity_user_id,
                     workflow_id=workflow_id,
@@ -305,7 +370,9 @@ def advance_workflow_unwind_and_sell(
                 ),
                 snapshot={
                     "sell_order_id": str(sell_order["id"]),
-                    "sell_order_status": sell_order["status"],
+                    "sell_order_status": (
+                        sell_order["status"]
+                    ),
                 },
             )
 
@@ -351,7 +418,10 @@ def advance_workflow_unwind_and_sell(
                 parity_user_id=parity_user_id,
                 order_id=str(order["id"]),
             )
-        except ExecutionStatusError as exc:
+        except (
+            ExecutionStatusError,
+            ValueError,
+        ) as exc:
             return _mark_unwind_action_required(
                 parity_user_id=parity_user_id,
                 workflow_id=workflow_id,
@@ -368,6 +438,29 @@ def advance_workflow_unwind_and_sell(
         workflow_id=workflow_id,
     )
 
+    submitting_orders = [
+        order
+        for order in orders
+        if order["status"] == "SUBMITTING"
+    ]
+
+    if submitting_orders:
+        return _mark_unwind_action_required(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            message=(
+                "An order submission has an uncertain brokerage "
+                "outcome and must be reconciled before shares can "
+                "be sold."
+            ),
+            snapshot={
+                "submitting_order_ids": [
+                    str(order["id"])
+                    for order in submitting_orders
+                ],
+            },
+        )
+
     if _option_fill_detected(orders):
         return _mark_unwind_action_required(
             parity_user_id=parity_user_id,
@@ -379,13 +472,37 @@ def advance_workflow_unwind_and_sell(
             ),
         )
 
+    uncertain_orders = [
+        order
+        for order in orders
+        if (
+            order["status"] == "ACTION_REQUIRED"
+            and not _confirmed_partial_buy_cancellation(
+                order
+            )
+        )
+    ]
+
+    if uncertain_orders:
+        return _mark_unwind_action_required(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            message=(
+                "An order has an uncertain brokerage outcome and "
+                "must be reconciled before shares can be sold."
+            ),
+            snapshot={
+                "uncertain_order_ids": [
+                    str(order["id"])
+                    for order in uncertain_orders
+                ],
+            },
+        )
+
     cancellation_requested = False
 
     for order in orders:
         if order["status"] not in _CANCELABLE_STATUSES:
-            continue
-
-        if _confirmed_partial_buy_cancellation(order):
             continue
 
         if not order.get("broker_order_id"):
@@ -397,7 +514,9 @@ def advance_workflow_unwind_and_sell(
                     "order ID and requires review."
                 ),
                 snapshot={
-                    "missing_broker_order_id": str(order["id"]),
+                    "missing_broker_order_id": str(
+                        order["id"]
+                    ),
                 },
             )
 
@@ -408,13 +527,18 @@ def advance_workflow_unwind_and_sell(
             )
             cancellation_requested = True
 
-        except ExecutionCancellationError as exc:
+        except (
+            ExecutionCancellationError,
+            ValueError,
+        ) as exc:
             return _mark_unwind_action_required(
                 parity_user_id=parity_user_id,
                 workflow_id=workflow_id,
                 message=str(exc),
                 snapshot={
-                    "cancellation_order_id": str(order["id"]),
+                    "cancellation_order_id": str(
+                        order["id"]
+                    ),
                 },
             )
 
@@ -497,10 +621,14 @@ def advance_workflow_unwind_and_sell(
         return _mark_unwind_action_required(
             parity_user_id=parity_user_id,
             workflow_id=workflow_id,
-            message="The broker returned an invalid share quantity.",
+            message=(
+                "The broker returned an invalid share quantity."
+            ),
         )
 
-    final_share_quantity = int(filled_quantity_value)
+    final_share_quantity = int(
+        filled_quantity_value
+    )
 
     if float(final_share_quantity) != filled_quantity_value:
         return _mark_unwind_action_required(

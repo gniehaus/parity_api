@@ -289,10 +289,16 @@ def _classify_position(position):
 def _market_value(position):
     for key in ["market_value", "marketValue", "value"]:
         parsed = _num(_get(position, key))
+
         if parsed is not None:
             return parsed
 
-    quantity = _num(_get(position, "units") or _get(position, "quantity") or _get(position, "qty"))
+    quantity = _num(
+        _get(position, "units")
+        or _get(position, "quantity")
+        or _get(position, "qty")
+    )
+
     price = _num(
         _get(position, "price")
         or _get(position, "last_price")
@@ -300,10 +306,27 @@ def _market_value(position):
         or _get(position, "average_purchase_price")
     )
 
-    if quantity is not None and price is not None:
-        return quantity * price
+    if quantity is None or price is None:
+        return None
 
-    return None
+    asset_class, _ = _classify_position(position)
+
+    if asset_class == "option":
+        multiplier = (
+            _num(
+                _position_or_instrument_value(
+                    position,
+                    "multiplier",
+                    "contract_multiplier",
+                    "contractMultiplier",
+                )
+            )
+            or Decimal("100")
+        )
+
+        return quantity * price * multiplier
+
+    return quantity * price
 
 
 def _account_total_value(account):
@@ -406,6 +429,7 @@ def normalize_position(parity_user_id: str, account_id: str, position: dict):
                 position,
                 "underlying_symbol",
                 "underlyingSymbol",
+                "underlying",
             )
         ),
         "option_type": option_type,

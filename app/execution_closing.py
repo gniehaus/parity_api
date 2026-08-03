@@ -580,6 +580,7 @@ def prepare_workflow_unwind_equity_sale_draft(
         "WORKING",
         "PARTIALLY_FILLED",
         "CANCELING",
+        "ACTION_REQUIRED",
     }
 
     def is_confirmed_partial_buy_cancellation(

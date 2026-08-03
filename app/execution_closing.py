@@ -582,13 +582,42 @@ def prepare_workflow_unwind_equity_sale_draft(
         "CANCELING",
     }
 
+    def is_confirmed_partial_buy_cancellation(
+        order: dict[str, Any],
+    ) -> bool:
+        broker_order = (
+            (order.get("broker_response") or {}).get("order")
+            or {}
+        )
+        broker_status = str(
+            broker_order.get("status") or ""
+        ).upper()
+
+        return (
+            order["order_role"] == "BUY_UNDERLYING"
+            and order["status"] == "ACTION_REQUIRED"
+            and broker_status in {
+                "CANCELED",
+                "CANCELLED",
+                "PARTIAL_CANCELED",
+            }
+            and float(
+                order.get("filled_quantity") or 0
+            ) > 0
+        )
+
     active_orders = [
         order
         for order in workflow_orders
         if (
             str(order["id"])
-            != str(workflow.get("unwind_sell_order_id") or "")
+            != str(
+                workflow.get("unwind_sell_order_id") or ""
+            )
             and order["status"] in active_statuses
+            and not is_confirmed_partial_buy_cancellation(
+                order
+            )
         )
     ]
 

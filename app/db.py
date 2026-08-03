@@ -7326,3 +7326,85 @@ def update_execution_workflow_unwind(
             conn.commit()
 
     return updated_workflow
+
+def cancel_unsubmitted_orders_for_workflow_unwind(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> list[dict]:
+    """
+    Cancel local drafts that never reached the broker after the user
+    requested a workflow unwind.
+
+    This never changes an order that has a brokerage order ID and
+    never calls SnapTrade.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_workflows
+                WHERE id = %s
+                  AND parity_user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+
+            if not workflow:
+                raise ValueError(
+                    "Execution workflow was not found"
+                )
+
+            if not workflow.get("unwind_requested_at"):
+                raise ValueError(
+                    "The workflow does not have an unwind request"
+                )
+
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'CANCELED',
+                    canceled_at = COALESCE(
+                        canceled_at,
+                        NOW()
+                    ),
+                    rejection_reason = (
+                        'Canceled before broker submission because '
+                        'the user requested a workflow unwind'
+                    ),
+                    updated_at = NOW()
+                WHERE workflow_id = %s
+                  AND parity_user_id = %s
+                  AND broker_order_id IS NULL
+                  AND status IN (
+                      'DRAFT',
+                      'PREPARED'
+                  )
+                  AND (
+                      %s::uuid IS NULL
+                      OR id <> %s::uuid
+                  )
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                    workflow.get("unwind_sell_order_id"),
+                    workflow.get("unwind_sell_order_id"),
+                ),
+            )
+
+            canceled_orders = cur.fetchall()
+
+            conn.commit()
+
+    return canceled_orders

@@ -120,6 +120,7 @@ from .db import (
     list_execution_activity,
     close_reconciliation_required_position,
     resolve_execution_workflow_attention,
+    cancel_unsubmitted_protected_position_exit,
 )
 
 from .snaptrade_service import (
@@ -1806,19 +1807,20 @@ def execution_equity_order_draft_create(
 @app.post(
     "/api/execution/protected-lots/{protected_lot_id}/exit"
 )
+@app.post(
+    "/api/execution/protected-lots/{protected_lot_id}/exit"
+)
 def protected_position_exit_start(
     protected_lot_id: str,
     req: ProtectedPositionExitStartRequest,
     request: Request,
 ):
     """
-    One approval for either:
-    - removing the option protection while keeping shares, or
-    - closing the protection, then selling its associated 100 shares.
+    Start an approved protected-position exit.
 
-    The equity sale is never submitted here. It is submitted only by
-    status reconciliation after the broker confirms every options leg
-    has filled.
+    Failures before broker submission cancel the empty exit and
+    restore the protected lot. Submission uncertainty remains
+    ACTION_REQUIRED.
     """
 
     parity_user_id = get_parity_user_id(request)
@@ -1862,8 +1864,9 @@ def protected_position_exit_start(
         )
 
         if not protected_lot:
-            raise ValueError("Protected position was not found")
-
+            raise ValueError(
+                "Protected position was not found"
+            )
 
         if protected_lot["status"] not in {
             "ACTIVE",
@@ -1885,8 +1888,8 @@ def protected_position_exit_start(
             exit_mode=req.exit_mode,
         )
 
-        existing_close_order_id = (
-            protected_exit.get("options_close_order_id")
+        existing_close_order_id = protected_exit.get(
+            "options_close_order_id"
         )
 
         if existing_close_order_id:
@@ -1908,7 +1911,9 @@ def protected_position_exit_start(
                     protected_lot["opening_workflow_id"]
                 ),
                 lot_id=str(
-                    protected_lot["opening_workflow_lot_id"]
+                    protected_lot[
+                        "opening_workflow_lot_id"
+                    ]
                 ),
                 limit_price=req.option_limit_price,
                 price_effect=req.option_price_effect,
@@ -1921,11 +1926,64 @@ def protected_position_exit_start(
             allowed_statuses={"DRAFT"},
         )
 
-        prepared_close_order = mark_execution_order_prepared(
-            parity_user_id=parity_user_id,
-            order_id=str(options_close_draft["id"]),
+        prepared_close_order = (
+            mark_execution_order_prepared(
+                parity_user_id=parity_user_id,
+                order_id=str(options_close_draft["id"]),
+            )
         )
 
+    except (
+        ExecutionSafetyError,
+        ValueError,
+    ) as exc:
+        if protected_exit:
+            try:
+                cancel_unsubmitted_protected_position_exit(
+                    parity_user_id=parity_user_id,
+                    exit_id=str(protected_exit["id"]),
+                )
+            except Exception:
+                try:
+                    update_protected_position_exit_status(
+                        parity_user_id=parity_user_id,
+                        exit_id=str(protected_exit["id"]),
+                        status="ACTION_REQUIRED",
+                    )
+                except Exception:
+                    pass
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        if protected_exit:
+            try:
+                cancel_unsubmitted_protected_position_exit(
+                    parity_user_id=parity_user_id,
+                    exit_id=str(protected_exit["id"]),
+                )
+            except Exception:
+                try:
+                    update_protected_position_exit_status(
+                        parity_user_id=parity_user_id,
+                        exit_id=str(protected_exit["id"]),
+                        status="ACTION_REQUIRED",
+                    )
+                except Exception:
+                    pass
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The protected-position exit could not be "
+                "prepared"
+            ),
+        ) from exc
+
+    try:
         close_submission = submit_prepared_option_order(
             parity_user_id=parity_user_id,
             order_id=str(prepared_close_order["id"]),
@@ -1941,21 +1999,36 @@ def protected_position_exit_start(
             )
         )
 
-    except (
-        ExecutionSafetyError,
-        ExecutionSubmissionError,
-        ValueError,
-    ) as exc:
-        if protected_exit:
+    except ExecutionSubmissionError as exc:
+        try:
             update_protected_position_exit_status(
                 parity_user_id=parity_user_id,
                 exit_id=str(protected_exit["id"]),
                 status="ACTION_REQUIRED",
             )
+        except Exception:
+            pass
 
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        try:
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="ACTION_REQUIRED",
+            )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The closing order result requires review"
+            ),
         ) from exc
 
     return {
@@ -1963,7 +2036,6 @@ def protected_position_exit_start(
         "exit_plan": exit_plan,
         "options_close_order": close_submission["order"],
     }
-
 
 @app.post("/api/execution/workflows/{workflow_id}/options-close/draft")
 def execution_options_close_draft_create(

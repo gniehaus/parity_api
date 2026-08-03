@@ -6036,6 +6036,243 @@ def update_protected_position_lot_status(
     return protected_lot
 
 
+def cancel_unsubmitted_protected_position_exit(
+    *,
+    parity_user_id: str,
+    exit_id: str,
+) -> dict:
+    """
+    Cancel an exit that failed before any closing order reached the
+    broker, cancel its local draft/prepared orders, and restore the
+    protected lot to ACTIVE.
+
+    This refuses cleanup if an order may have reached the broker.
+    """
+
+    active_exit_statuses = {
+        "APPROVED",
+        "OPTIONS_CLOSE_SUBMITTED",
+        "AWAITING_OPTIONS_FILL",
+        "EQUITY_SALE_SUBMITTED",
+        "ACTION_REQUIRED",
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    exit_record.*,
+                    protected_lot.opening_workflow_id,
+                    protected_lot.opening_workflow_lot_id,
+                    protected_lot.status AS protected_lot_status
+                FROM protected_position_exits exit_record
+                JOIN protected_position_lots protected_lot
+                  ON protected_lot.id =
+                     exit_record.protected_lot_id
+                WHERE exit_record.id = %s
+                  AND exit_record.parity_user_id = %s
+                  AND protected_lot.parity_user_id = %s
+                FOR UPDATE OF exit_record, protected_lot
+                """,
+                (
+                    exit_id,
+                    parity_user_id,
+                    parity_user_id,
+                ),
+            )
+
+            protected_exit = cur.fetchone()
+
+            if not protected_exit:
+                raise ValueError(
+                    "Protected-position exit was not found"
+                )
+
+            if protected_exit["status"] == "CANCELED":
+                conn.commit()
+                return {
+                    "protected_exit": protected_exit,
+                    "protected_lot": None,
+                    "canceled_orders": [],
+                }
+
+            if protected_exit.get("options_close_order_id"):
+                raise ValueError(
+                    "The options-close order must be reconciled "
+                    "before this exit can be canceled"
+                )
+
+            if protected_exit.get("equity_sale_order_id"):
+                raise ValueError(
+                    "The equity-sale order must be reconciled "
+                    "before this exit can be canceled"
+                )
+
+            cur.execute(
+                """
+                SELECT *
+                FROM execution_orders
+                WHERE workflow_id = %s
+                  AND lot_id = %s
+                  AND parity_user_id = %s
+                  AND execution_phase = 'CLOSE_OPTIONS'
+                  AND created_at >= %s
+                FOR UPDATE
+                """,
+                (
+                    protected_exit["opening_workflow_id"],
+                    protected_exit[
+                        "opening_workflow_lot_id"
+                    ],
+                    parity_user_id,
+                    protected_exit["created_at"],
+                ),
+            )
+
+            closing_orders = cur.fetchall()
+
+            uncertain_order = next(
+                (
+                    order
+                    for order in closing_orders
+                    if (
+                        order.get("broker_order_id")
+                        or order["status"] not in {
+                            "DRAFT",
+                            "PREPARED",
+                            "CANCELED",
+                        }
+                    )
+                ),
+                None,
+            )
+
+            if uncertain_order:
+                raise ValueError(
+                    "A closing order may have reached the broker "
+                    "and must be reconciled first"
+                )
+
+            cur.execute(
+                """
+                UPDATE execution_orders
+                SET
+                    status = 'CANCELED',
+                    canceled_at = COALESCE(
+                        canceled_at,
+                        NOW()
+                    ),
+                    rejection_reason = (
+                        'Canceled locally because exit preparation '
+                        'failed before broker submission'
+                    ),
+                    updated_at = NOW()
+                WHERE workflow_id = %s
+                  AND lot_id = %s
+                  AND parity_user_id = %s
+                  AND execution_phase = 'CLOSE_OPTIONS'
+                  AND created_at >= %s
+                  AND broker_order_id IS NULL
+                  AND status IN (
+                      'DRAFT',
+                      'PREPARED'
+                  )
+                RETURNING *
+                """,
+                (
+                    protected_exit["opening_workflow_id"],
+                    protected_exit[
+                        "opening_workflow_lot_id"
+                    ],
+                    parity_user_id,
+                    protected_exit["created_at"],
+                ),
+            )
+
+            canceled_orders = cur.fetchall()
+
+            cur.execute(
+                """
+                UPDATE protected_position_exits
+                SET
+                    status = 'CANCELED',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND options_close_order_id IS NULL
+                  AND equity_sale_order_id IS NULL
+                RETURNING *
+                """,
+                (
+                    exit_id,
+                    parity_user_id,
+                ),
+            )
+
+            canceled_exit = cur.fetchone()
+
+            if not canceled_exit:
+                raise ValueError(
+                    "Protected-position exit could not be canceled"
+                )
+
+            restored_lot = None
+
+            if (
+                canceled_exit["exit_mode"]
+                == "SELL_PROTECTED_POSITION"
+            ):
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM protected_position_exits
+                    WHERE protected_lot_id = %s
+                      AND parity_user_id = %s
+                      AND id <> %s
+                      AND status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (
+                        canceled_exit["protected_lot_id"],
+                        parity_user_id,
+                        exit_id,
+                        list(active_exit_statuses),
+                    ),
+                )
+
+                another_active_exit = cur.fetchone()
+
+                if not another_active_exit:
+                    cur.execute(
+                        """
+                        UPDATE protected_position_lots
+                        SET
+                            status = 'ACTIVE',
+                            updated_at = NOW()
+                        WHERE id = %s
+                          AND parity_user_id = %s
+                          AND status = 'EXITING'
+                        RETURNING *
+                        """,
+                        (
+                            canceled_exit[
+                                "protected_lot_id"
+                            ],
+                            parity_user_id,
+                        ),
+                    )
+
+                    restored_lot = cur.fetchone()
+
+            conn.commit()
+
+    return {
+        "protected_exit": canceled_exit,
+        "protected_lot": restored_lot,
+        "canceled_orders": canceled_orders,
+    }
+
 
 def list_reconcilable_execution_orders(
     *,

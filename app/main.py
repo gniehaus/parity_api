@@ -1807,9 +1807,6 @@ def execution_equity_order_draft_create(
 @app.post(
     "/api/execution/protected-lots/{protected_lot_id}/exit"
 )
-@app.post(
-    "/api/execution/protected-lots/{protected_lot_id}/exit"
-)
 def protected_position_exit_start(
     protected_lot_id: str,
     req: ProtectedPositionExitStartRequest,

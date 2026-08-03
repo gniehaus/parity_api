@@ -3,7 +3,11 @@ from typing import Literal
 from typing import Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+)
 
 from nanos_engine import build_weekly_outcomes_payload
 from app.db import get_public_scorecard_snapshot
@@ -75,20 +79,44 @@ class MarriedPutRequest(BaseModel):
 class CoveredCallRequest(BaseModel):
     ticker: str
     horizon: int
-    target_income: float
+    target_protection: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Target total protection as a decimal. "
+            "Includes executable call premium and "
+            "expected dividends. Example: 0.04 = 4%."
+        ),
+        validation_alias=AliasChoices(
+            "target_protection",
+            "target_income",
+        ),
+    )
     assumed_dividend_yield: float = 0.0
     investment_amount: float | None = None
-
 
 class MarketplaceRequest(BaseModel):
     ticker: str
     horizon: int
     max_loss: float = 0.10
-    target_income: float = 0.05
+    target_protection: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Covered-call target total protection as "
+            "a decimal, including executable call "
+            "premium and expected dividends."
+        ),
+        validation_alias=AliasChoices(
+            "target_protection",
+            "target_income",
+        ),
+    )
     target_gain: float = 0.08
     assumed_dividend_yield: float = 0.0
     investment_amount: float | None = None
-
 
 def get_orats_token() -> str:
     token = os.getenv("ORATS_TOKEN")
@@ -303,12 +331,21 @@ def get_covered_call(request: CoveredCallRequest):
 
         result = build_covered_call(
             expiry_chain=expiry_chain,
-            target_income_pct=request.target_income,
-            assumed_dividend_yield=request.assumed_dividend_yield,
+            target_protection_pct=(
+                request.target_protection
+            ),
+            assumed_dividend_yield=(
+                request.assumed_dividend_yield
+            ),
         )
 
         if result is None:
-            raise HTTPException(status_code=404, detail="No covered call found.")
+            raise HTTPException(status_code=404,detail=(
+                            "No covered call was found within 0.50 "
+                            "percentage points of the requested total "
+                            "protection."
+                        ),
+                    )
 
         result["selected_expiry"] = selected_expiry_summary
         result["request"] = request.model_dump()
@@ -348,10 +385,13 @@ def get_marketplace_products(request: MarketplaceRequest):
 
         covered_call = build_covered_call(
             expiry_chain=expiry_chain,
-            target_income_pct=request.target_income,
-            assumed_dividend_yield=request.assumed_dividend_yield,
+            target_protection_pct=(
+                request.target_protection
+            ),
+            assumed_dividend_yield=(
+                request.assumed_dividend_yield
+            ),
         )
-
         payload = {
             "ticker": request.ticker,
             "horizon": request.horizon,

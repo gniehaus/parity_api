@@ -1777,7 +1777,7 @@ def build_married_put(
 
 def build_covered_call(
     expiry_chain,
-    target_income_pct=0.05,
+    target_protection_pct=0.05,
     assumed_dividend_yield=None,
 ):
     """
@@ -1839,18 +1839,49 @@ def build_covered_call(
     calls["call_credit_dollars"] = calls["callMid"] * MULT
     calls["execution_call_credit_dollars"] = (calls["callBidPrice"] * MULT)
 
-    calls["option_income_pct"] = calls["call_credit_dollars"] / notional
-    calls["total_income_dollars"] = (
-        calls["call_credit_dollars"] + expected_dividend_dollars
+    calls["option_income_pct"] = (
+        calls["call_credit_dollars"] / notional
     )
-    calls["total_income_pct"] = calls["total_income_dollars"] / notional
-    calls["execution_total_income_dollars"] = (
-    calls["execution_call_credit_dollars"]+ expected_dividend_dollars)
-    calls["execution_total_income_pct"] = (calls["execution_total_income_dollars"] / notional)
-
-    calls["income_error"] = (
-        calls["total_income_pct"] - target_income_pct
+    
+    # Total protection includes the call premium and expected dividends.
+    calls["midpoint_protection_dollars"] = (
+        calls["call_credit_dollars"]
+        + expected_dividend_dollars
+    )
+    calls["midpoint_protection_pct"] = (
+        calls["midpoint_protection_dollars"]
+        / notional
+    )
+    
+    calls["executable_protection_dollars"] = (
+        calls["execution_call_credit_dollars"]
+        + expected_dividend_dollars
+    )
+    calls["executable_protection_pct"] = (
+        calls["executable_protection_dollars"]
+        / notional
+    )
+    
+    # Select using executable protection so the target is based on
+    # selling the call at its current bid.
+    calls["protection_error"] = (
+        calls["executable_protection_pct"]
+        - target_protection_pct
     ).abs()
+    
+    # Temporary aliases for existing API consumers.
+    calls["total_income_dollars"] = (
+        calls["midpoint_protection_dollars"]
+    )
+    calls["total_income_pct"] = (
+        calls["midpoint_protection_pct"]
+    )
+    calls["execution_total_income_dollars"] = (
+        calls["executable_protection_dollars"]
+    )
+    calls["execution_total_income_pct"] = (
+        calls["executable_protection_pct"]
+    )
 
     calls["cap_value"] = (
         calls["strike"] * MULT
@@ -1870,10 +1901,22 @@ def build_covered_call(
     calls["execution_breakeven_value"] = (notional - calls["execution_total_income_dollars"])
     calls["execution_breakeven_return"] = (calls["execution_breakeven_value"] / notional - 1)
     # Pick income closest to target; tie-break by higher cap / better OI.
+    # Pick executable total protection closest to the user's target.
     best = calls.sort_values(
-        ["income_error", "cap_return", "callOpenInterest"],
+        [
+            "protection_error",
+            "cap_return",
+            "callOpenInterest",
+        ],
         ascending=[True, False, False],
     ).iloc[0]
+    
+    # Do not represent a materially different outcome as satisfying
+    # the user's requested protection.
+    MAX_PROTECTION_ERROR = 0.05
+    
+    if float(best["protection_error"]) > MAX_PROTECTION_ERROR:
+        return None
 
     liq_score, total_volume, total_oi = liquidity_score(best)
 
@@ -1892,7 +1935,7 @@ def build_covered_call(
         "expected_dividend_dollars": expected_dividend_dollars,
         "expected_dividend_per_share": expected_dividend_per_share,
 
-        "target_income_pct": target_income_pct,
+        "target_protection_pct": target_protection_pct,
 
         "long_put_strike": None,
         "short_put_strike": None,
@@ -1941,6 +1984,12 @@ def build_covered_call(
         "breakeven_return": float(
             best["breakeven_return"]
         ),
+        "protection_dollars": float(
+        best["midpoint_protection_dollars"]
+        ),
+        "protection_pct": float(
+        best["midpoint_protection_pct"]
+        ),
     },
     "executable": {
         "option_income_dollars": float(
@@ -1962,6 +2011,12 @@ def build_covered_call(
         "breakeven_return": float(
             best["execution_breakeven_return"]
         ),
+        "protection_dollars": float(
+        best["executable_protection_dollars"]
+        ),
+        "protection_pct": float(
+        best["executable_protection_pct"]
+        ),
     },
 },
 
@@ -1972,7 +2027,7 @@ def build_covered_call(
         "display": {
             "title": "Income",
             "subtitle": "Generate income while keeping limited upside",
-            "estimated_income_pct": round_pct(float(best["total_income_pct"])),
+            "estimated_protection_pct": round_pct(float(best["midpoint_protection_pct"])),
             "estimated_cap_pct": round_pct(float(best["cap_return"])),
             "estimated_max_loss_label": "Substantial downside remains",
             "estimated_option_income_dollars": float(best["call_credit_dollars"]),

@@ -4475,8 +4475,9 @@ def claim_workflow_option_submission_after_underlying_fill(
                     updated_at = NOW()
                 WHERE w.id = %s
                   AND w.parity_user_id = %s
-                  AND w.status = (
-                      'APPROVED_PENDING_UNDERLYING_FILL'
+                  AND w.status IN (
+                      'APPROVED_PENDING_UNDERLYING_FILL',
+                      'PENDING_OPTIONS_SUBMISSION'
                   )
                   AND EXISTS (
                       SELECT 1
@@ -4496,6 +4497,50 @@ def claim_workflow_option_submission_after_underlying_fill(
             conn.commit()
 
     return workflow
+
+
+def mark_workflow_option_submission_retry_required(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict:
+    """
+    Return an option-submission claim to a retryable state when
+    current option quotes or the market window are unavailable.
+
+    This does not alter, submit, cancel, or replace a broker order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE execution_workflows
+                SET
+                    status = 'PENDING_OPTIONS_SUBMISSION',
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND status = 'OPTIONS_SUBMITTING'
+                RETURNING *
+                """,
+                (
+                    workflow_id,
+                    parity_user_id,
+                ),
+            )
+
+            workflow = cur.fetchone()
+            conn.commit()
+
+    if not workflow:
+        raise ValueError(
+            "Workflow option submission could not be "
+            "returned to a retryable state"
+        )
+
+    return workflow
+
 
 
 def mark_workflow_options_submitted(

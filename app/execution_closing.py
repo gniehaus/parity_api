@@ -13,6 +13,7 @@ from .db import (
     get_protected_position_exit,
     get_protected_position_lot,
     refresh_execution_order_draft,
+    update_execution_workflow_unwind,
 )
 from .execution_quotes import get_orats_option_quote
 from .mleg_payloads import (
@@ -464,3 +465,289 @@ def prepare_protected_position_equity_sale_draft(
         execution_phase="CLOSE_EQUITY",
         quote_snapshot=quote_snapshot,
     )
+
+def prepare_workflow_unwind_equity_sale_draft(
+    *,
+    parity_user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    """
+    Prepare a market sale for only the shares acquired by an aborted
+    new-position workflow.
+
+    All share-purchase and option-package orders must already be in
+    confirmed terminal states. This function never cancels an order
+    and never submits the sale.
+    """
+
+    workflow = get_execution_workflow(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    if not workflow:
+        raise ValueError(
+            "Execution workflow was not found"
+        )
+
+    if workflow["underlying_source"] != "new":
+        raise ValueError(
+            "Only new-position workflows can use an unwind sale"
+        )
+
+    if not workflow.get("unwind_requested_at"):
+        raise ValueError(
+            "The workflow does not have an approved unwind request"
+        )
+
+    if workflow.get("unwind_status") != "READY_TO_SELL":
+        raise ValueError(
+            "All working orders must be canceled before shares "
+            "can be sold"
+        )
+
+    existing_sell_order_id = workflow.get(
+        "unwind_sell_order_id"
+    )
+
+    if existing_sell_order_id:
+        existing_sell_order = get_execution_order(
+            parity_user_id=parity_user_id,
+            order_id=str(existing_sell_order_id),
+        )
+
+        if existing_sell_order:
+            return existing_sell_order
+
+    final_share_quantity = workflow.get(
+        "unwind_final_share_quantity"
+    )
+
+    if final_share_quantity is None:
+        raise ValueError(
+            "The unwind is missing its final filled share quantity"
+        )
+
+    share_quantity = int(final_share_quantity)
+
+    if (
+        share_quantity <= 0
+        or float(final_share_quantity) != float(share_quantity)
+    ):
+        raise ValueError(
+            "The unwind share quantity must be a positive whole "
+            "number"
+        )
+
+    if share_quantity > int(workflow["underlying_shares"]):
+        raise ValueError(
+            "The unwind cannot sell more shares than this workflow "
+            "was approved to purchase"
+        )
+
+    workflow_orders = get_execution_workflow_orders(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+    )
+
+    underlying_order = next(
+        (
+            order
+            for order in workflow_orders
+            if order["order_role"] == "BUY_UNDERLYING"
+        ),
+        None,
+    )
+
+    if not underlying_order:
+        raise ValueError(
+            "The workflow is missing its share-purchase order"
+        )
+
+    if float(
+        underlying_order.get("filled_quantity") or 0
+    ) != float(share_quantity):
+        raise ValueError(
+            "The confirmed share fill does not match the unwind "
+            "sale quantity"
+        )
+
+    active_statuses = {
+        "DRAFT",
+        "PREPARED",
+        "SUBMITTING",
+        "SUBMITTED",
+        "WORKING",
+        "PARTIALLY_FILLED",
+        "CANCELING",
+    }
+
+    active_orders = [
+        order
+        for order in workflow_orders
+        if (
+            str(order["id"])
+            != str(workflow.get("unwind_sell_order_id") or "")
+            and order["status"] in active_statuses
+        )
+    ]
+
+    if active_orders:
+        raise ValueError(
+            "All existing workflow orders must reach a terminal "
+            "state before shares can be sold"
+        )
+
+    option_orders = [
+        order
+        for order in workflow_orders
+        if order["order_scope"] in {
+            "OPTIONS",
+            "OPTIONS_PACKAGE",
+        }
+    ]
+
+    option_fill_detected = any(
+        (
+            order["status"] == "FILLED"
+            or float(order.get("filled_quantity") or 0) > 0
+        )
+        for order in option_orders
+    )
+
+    if option_fill_detected:
+        raise ValueError(
+            "An option order filled during cancellation. Use the "
+            "protected-position exit flow before selling shares"
+        )
+
+    existing_unwind_sale = next(
+        (
+            order
+            for order in workflow_orders
+            if (
+                order["order_role"] == "SELL_UNDERLYING"
+                and (
+                    order.get("quote_snapshot") or {}
+                ).get("exit_type") == "ABORT_NEW_POSITION"
+            )
+        ),
+        None,
+    )
+
+    if existing_unwind_sale:
+        update_execution_workflow_unwind(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+            unwind_status="READY_TO_SELL",
+            final_share_quantity=share_quantity,
+            sell_order_id=str(existing_unwind_sale["id"]),
+            broker_snapshot={
+                "recovered_existing_sale_order_id": str(
+                    existing_unwind_sale["id"]
+                ),
+            },
+        )
+        return existing_unwind_sale
+
+    positions_response = get_all_account_positions(
+        parity_user_id=parity_user_id,
+        account_id=workflow["account_id"],
+    )
+
+    matching_share_position = next(
+        (
+            position
+            for position in positions_response["positions"]
+            if (
+                str(
+                    (position.get("instrument") or {}).get(
+                        "symbol"
+                    ) or ""
+                ).upper()
+                == workflow["underlying_symbol"].upper()
+                and str(
+                    (position.get("instrument") or {}).get(
+                        "kind"
+                    ) or ""
+                ).lower()
+                != "option"
+            )
+        ),
+        None,
+    )
+
+    if not matching_share_position:
+        raise ValueError(
+            "The broker does not show the shares acquired by this "
+            "workflow"
+        )
+
+    broker_share_quantity = _as_float(
+        matching_share_position.get("units")
+    )
+
+    if broker_share_quantity < share_quantity:
+        raise ValueError(
+            "The broker no longer shows enough shares to complete "
+            "this unwind"
+        )
+
+    next_sequence = (
+        max(
+            int(order["sequence"])
+            for order in workflow_orders
+        )
+        + 1
+    )
+
+    order_payload = {
+        "action": "SELL",
+        "order_type": "Market",
+        "time_in_force": "Day",
+        "symbol": workflow["underlying_symbol"].upper(),
+        "units": share_quantity,
+        "trading_session": "REGULAR",
+    }
+
+    quote_snapshot = {
+        "source": "WORKFLOW",
+        "prepared_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "exit_type": "ABORT_NEW_POSITION",
+        "workflow_id": str(workflow["id"]),
+        "equity_buy_order_id": str(
+            underlying_order["id"]
+        ),
+        "share_quantity": share_quantity,
+        "broker_positions_as_of": (
+            positions_response.get("data_freshness") or {}
+        ).get("as_of"),
+    }
+
+    sell_order = create_execution_order(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+        lot_id=str(underlying_order["lot_id"]),
+        sequence=next_sequence,
+        order_role="SELL_UNDERLYING",
+        order_scope="EQUITY",
+        requested_quantity=share_quantity,
+        order_payload=order_payload,
+        execution_phase="CLOSE_EQUITY",
+        quote_snapshot=quote_snapshot,
+    )
+
+    update_execution_workflow_unwind(
+        parity_user_id=parity_user_id,
+        workflow_id=workflow_id,
+        unwind_status="READY_TO_SELL",
+        final_share_quantity=share_quantity,
+        sell_order_id=str(sell_order["id"]),
+        broker_snapshot={
+            "sale_draft_order_id": str(sell_order["id"]),
+        },
+    )
+
+    return sell_order

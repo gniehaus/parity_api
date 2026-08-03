@@ -561,10 +561,13 @@ def create_trading_reconnect_url(
     user-owned brokerage connection to trading permission.
     """
 
-    user = get_or_create_snaptrade_user(parity_user_id)
+    user = get_or_create_snaptrade_user(
+        parity_user_id
+    )
 
     authorizations_response = (
-        snaptrade.connections.list_brokerage_authorizations(
+        snaptrade.connections
+        .list_brokerage_authorizations(
             user_id=user["snaptrade_user_id"],
             user_secret=user["user_secret"],
         )
@@ -603,23 +606,35 @@ def create_trading_reconnect_url(
 
     if connection_type == "trade":
         raise ValueError(
-            "Trading is already enabled for this brokerage connection"
+            "Trading is already enabled for this "
+            "brokerage connection"
         )
 
     if brokerage_slug == "SANDBOX":
         raise ValueError(
-            "SnapTrade Sandbox is read-only and cannot be upgraded "
-            "to trading. Use an execution-enabled paper brokerage "
-            "account to test order execution."
+            "SnapTrade Sandbox is read-only and cannot "
+            "be upgraded to trading. Use an "
+            "execution-enabled paper brokerage account "
+            "to test order execution."
         )
 
-    response = snaptrade.authentication.login_snap_trade_user(
+    response = (
+        snaptrade.authentication
+        .login_snap_trade_user(
+            user_id=user["snaptrade_user_id"],
+            user_secret=user["user_secret"],
+            reconnect=str(authorization_id),
+            connection_type="trade",
+        )
+    )
+
     body = _to_plain(response.body) or {}
     redirect_url = body.get("redirectURI")
 
     if not redirect_url:
         raise RuntimeError(
-            "SnapTrade did not return a trading reconnect URL"
+            "SnapTrade did not return a trading "
+            "reconnect URL"
         )
 
     return {

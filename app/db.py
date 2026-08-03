@@ -6971,8 +6971,11 @@ def resolve_execution_workflow_attention(
                 """
                 SELECT
                     id,
+                    order_role,
+                    order_scope,
                     status,
                     broker_order_id,
+                    requested_quantity,
                     filled_quantity
                 FROM execution_orders
                 WHERE workflow_id = %s
@@ -6986,6 +6989,51 @@ def resolve_execution_workflow_attention(
             )
 
             orders = cur.fetchall()
+            has_filled_underlying = any(
+                order["order_role"] == "BUY_UNDERLYING"
+                and order["order_scope"] == "EQUITY"
+                and order["status"] == "FILLED"
+                and float(
+                    order.get("filled_quantity") or 0
+                ) > 0
+                for order in orders
+            )
+
+            broker_linked_option_orders = [
+                order
+                for order in orders
+                if (
+                    order["order_scope"]
+                    in {"OPTIONS", "OPTIONS_PACKAGE"}
+                    and order.get("broker_order_id")
+                )
+            ]
+
+            terminal_unfilled_option_statuses = {
+                "CANCELED",
+                "EXPIRED",
+                "REJECTED",
+                "FAILED",
+            }
+
+            has_terminal_unfilled_protection = (
+                bool(broker_linked_option_orders)
+                and all(
+                    order["status"]
+                    in terminal_unfilled_option_statuses
+                    and float(
+                        order.get("filled_quantity") or 0
+                    ) == 0
+                    for order in broker_linked_option_orders
+                )
+            )
+
+            is_unprotected_position_review = (
+                resolution_code
+                == "POSITION_REVIEWED_UNPROTECTED"
+                and has_filled_underlying
+                and has_terminal_unfilled_protection
+            )
 
             has_attention_state = (
                 workflow["status"] == "ACTION_REQUIRED"
@@ -6994,13 +7042,13 @@ def resolve_execution_workflow_attention(
                     in attention_order_statuses
                     for order in orders
                 )
+                or is_unprotected_position_review
             )
 
             if not has_attention_state:
                 raise ValueError(
                     "This workflow does not require attention"
                 )
-
             has_active_order = any(
                 order["status"] in active_order_statuses
                 for order in orders

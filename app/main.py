@@ -79,6 +79,14 @@ from .execution_workflow_start import (
     start_approved_new_position_workflow,
 )
 
+
+from .execution_workflow_unwind import (
+    ExecutionWorkflowUnwindError,
+    advance_workflow_unwind_and_sell,
+    request_workflow_unwind_and_sell,
+)
+
+
 from .execution_cancellation import (
     ExecutionCancellationError,
     request_execution_order_cancellation,
@@ -256,7 +264,9 @@ class ProtectedPositionExitStartRequest(BaseModel):
 class ExecutionWorkflowAbandonRequest(BaseModel):
     confirm_abandonment: bool
 
-
+class ExecutionWorkflowAbortAndSellRequest(BaseModel):
+    confirm_cancel_working_orders: bool
+    confirm_market_sale: bool
 
 
 
@@ -2284,6 +2294,59 @@ def execution_order_replace(
         ) from exc
 
 
+
+@app.post(
+    "/api/execution/workflows/"
+    "{workflow_id}/abort-and-sell"
+)
+def execution_workflow_abort_and_sell(
+    workflow_id: str,
+    req: ExecutionWorkflowAbortAndSellRequest,
+    request: Request,
+):
+    """
+    Cancel active orders and sell only the shares acquired by this
+    new-position workflow.
+
+    The user's approval is persisted before any brokerage action.
+    """
+
+    if req.confirm_cancel_working_orders is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm_cancel_working_orders must be true"
+            ),
+        )
+
+    if req.confirm_market_sale is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_market_sale must be true",
+        )
+
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+    require_new_execution_enabled(parity_user_id)
+
+    try:
+        return request_workflow_unwind_and_sell(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+        )
+
+    except ExecutionWorkflowUnwindError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+
 @app.post(
     "/api/execution/workflows/{workflow_id}/abandon"
 )
@@ -2327,7 +2390,38 @@ def execution_workflow_abandon(
     return {
         "workflow": workflow,
     }
+@app.post(
+    "/api/execution/workflows/"
+    "{workflow_id}/abort-and-sell/advance"
+)
+def execution_workflow_abort_and_sell_advance(
+    workflow_id: str,
+    request: Request,
+):
+    """
+    Reconcile cancellation or sale status and safely advance an
+    already approved unwind by one step.
+    """
 
+    parity_user_id = get_parity_user_id(request)
+
+    require_subscription_feature(
+        request,
+        "can_execute_new_orders",
+    )
+    require_new_execution_enabled(parity_user_id)
+
+    try:
+        return advance_workflow_unwind_and_sell(
+            parity_user_id=parity_user_id,
+            workflow_id=workflow_id,
+        )
+
+    except ExecutionWorkflowUnwindError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
 
 @app.post("/api/execution/orders/{order_id}/status/refresh")

@@ -960,20 +960,40 @@ def refresh_execution_order_status(
 
                 if continuation:
                     updated_workflow = continuation["workflow"]
-
             except ExecutionWorkflowContinuationError:
                 updated_workflow = get_execution_workflow(
                     parity_user_id=parity_user_id,
                     workflow_id=updated_order["workflow_id"],
                 )
 
-                continuation = {
-                    "status": "ACTION_REQUIRED",
-                    "message": (
-                        "The approved protection package requires "
-                        "review before submission."
-                    ),
-                }   
+                continuation_status = (
+                    updated_workflow.get("status")
+                    if updated_workflow
+                    else "ACTION_REQUIRED"
+                )
+
+                if (
+                    continuation_status
+                    == "PENDING_OPTIONS_SUBMISSION"
+                ):
+                    continuation = {
+                        "status": "PENDING_OPTIONS_SUBMISSION",
+                        "retryable": True,
+                        "message": (
+                            "Your shares are filled. Parity is waiting "
+                            "for a fresh protection quote and will try "
+                            "the approved package again."
+                        ),
+                    }
+                else:
+                    continuation = {
+                        "status": "ACTION_REQUIRED",
+                        "retryable": False,
+                        "message": (
+                            "The protection package requires review "
+                            "before it can be submitted."
+                        ),
+                    }   
 
     return {
         "found": True,

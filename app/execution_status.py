@@ -313,7 +313,7 @@ def refresh_execution_order_status(
             "REPLACED",
         }
 
-         if all_children_executed:
+        if all_children_executed:
             local_status = "FILLED"
             filled_quantity = float(
                 order["requested_quantity"]

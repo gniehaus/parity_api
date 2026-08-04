@@ -242,10 +242,10 @@ def validate_execution_order_safety(
 
 
     snapshot_timestamp_value = (
-        quote_snapshot.get("prepared_at")
-        or quote_snapshot.get("fetched_at")
+        quote_snapshot.get("fetched_at")
+        or quote_snapshot.get("prepared_at")
     )
-    
+        
     if enforce_quote_freshness and not snapshot_timestamp_value:
         raise ExecutionSafetyError(
             "Option order is missing its live quote timestamp"

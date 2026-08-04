@@ -204,7 +204,7 @@ def build_covered_call_cards(
 
         product = build_covered_call(
             expiry_chain=expiry_chain,
-            target_income_pct=0.10,
+            target_protection_pct=0.10,
         )
 
         if not product:

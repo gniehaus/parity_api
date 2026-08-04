@@ -7327,10 +7327,6 @@ def resolve_execution_workflow_attention(
                 or is_unprotected_position_review
             )
 
-            if not has_attention_state:
-                raise ValueError(
-                    "This workflow does not require attention"
-                )
             has_active_order = any(
                 order["status"] in active_order_statuses
                 for order in orders

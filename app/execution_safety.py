@@ -221,7 +221,7 @@ def validate_execution_order_safety(
             "Option order has an invalid price effect"
         )
 
-    if not payload.get("limit_price"):
+     if payload.get("limit_price") is None:
         raise ExecutionSafetyError(
             "Option order is missing a limit price"
         )
@@ -233,12 +233,37 @@ def validate_execution_order_safety(
 
     if not quoted_contracts:
         raise ExecutionSafetyError(
-            "Option order is missing its ORATS quote snapshot"
+            "Option order is missing its live quote snapshot"
         )
 
     current_time = (now or datetime.now(timezone.utc)).astimezone(
         timezone.utc
     )
+
+
+    snapshot_timestamp_value = (
+        quote_snapshot.get("prepared_at")
+        or quote_snapshot.get("fetched_at")
+    )
+    
+    if enforce_quote_freshness and not snapshot_timestamp_value:
+        raise ExecutionSafetyError(
+            "Option order is missing its live quote timestamp"
+        )
+    
+    if enforce_quote_freshness:
+        snapshot_timestamp = _as_utc_datetime(
+            snapshot_timestamp_value
+        )
+    
+        snapshot_age_seconds = (
+            current_time - snapshot_timestamp
+        ).total_seconds()
+    
+        if snapshot_age_seconds > MAX_QUOTE_AGE_SECONDS:
+            raise ExecutionSafetyError(
+                "Option quote snapshot is stale and requires a refresh"
+            )
 
     for quoted_contract in quoted_contracts:
         quote = quoted_contract.get("quote") or {}
@@ -273,19 +298,6 @@ def validate_execution_order_safety(
         if bid > 0 and ask > 0 and ask < bid:
             raise ExecutionSafetyError(
                 "An option quote has an invalid bid-ask spread"
-            )
-
-        quote_timestamp = _as_utc_datetime(
-            quote.get("quote_timestamp")
-        )
-
-        quote_age_seconds = (
-            current_time - quote_timestamp
-        ).total_seconds()
-
-        if (enforce_quote_freshness and quote_age_seconds > MAX_QUOTE_AGE_SECONDS):
-            raise ExecutionSafetyError(
-                "Option quote is stale and requires a refresh"
             )
     return {
         "checked_at": current_time.isoformat(),

@@ -108,15 +108,61 @@ def request_execution_order_replacement(
             "Execution workflow was not found"
         )
 
-    option_contracts = (
-        workflow.get("approved_option_contracts") or []
+    quoted_contracts = (
+        (original_order.get("quote_snapshot") or {}).get(
+            "contracts"
+        )
+        or []
     )
-
+    
+    option_contracts = []
+    
+    for quoted_contract in quoted_contracts:
+        quote = quoted_contract.get("quote") or {}
+        action = quoted_contract.get("action")
+    
+        ticker = (
+            quote.get("ticker")
+            or quote.get("underlying_symbol")
+        )
+        expiration = (
+            quote.get("expiration")
+            or quote.get("expiration_date")
+        )
+        option_type = quote.get("option_type")
+        strike = (
+            quote.get("strike")
+            if quote.get("strike") is not None
+            else quote.get("strike_price")
+        )
+    
+        if (
+            action
+            and ticker
+            and expiration
+            and option_type
+            and strike is not None
+        ):
+            option_contracts.append(
+                {
+                    "action": action,
+                    "ticker": ticker,
+                    "expiration": expiration,
+                    "option_type": option_type,
+                    "strike": float(strike),
+                }
+            )
+    
+    if not option_contracts:
+        option_contracts = (
+            workflow.get("approved_option_contracts")
+            or []
+        )
+    
     if not option_contracts:
         raise ExecutionReplacementError(
-            "Workflow is missing its approved option contracts"
+            "Original order is missing its option contracts"
         )
-
     try:
         replacement_draft = prepare_option_order_draft(
             parity_user_id=parity_user_id,

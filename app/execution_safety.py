@@ -221,7 +221,7 @@ def validate_execution_order_safety(
             "Option order has an invalid price effect"
         )
 
-     if payload.get("limit_price") is None:
+    if payload.get("limit_price") is None:
         raise ExecutionSafetyError(
             "Option order is missing a limit price"
         )

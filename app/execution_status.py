@@ -289,6 +289,19 @@ def refresh_execution_order_status(
             for quantity in child_filled_quantities
         )
 
+
+        close_package_terminal_unfilled = (
+            order["execution_phase"] == "CLOSE_OPTIONS"
+            and len(matched_child_orders)
+            == len(expected_child_order_ids)
+            and not any_child_filled
+            and child_statuses <= {
+                "CANCELED",
+                "CANCELLED",
+                "EXPIRED",
+            }
+        )
+
         terminal_child_statuses = {
             "CANCELED",
             "CANCELLED",
@@ -300,7 +313,7 @@ def refresh_execution_order_status(
             "REPLACED",
         }
 
-        if all_children_executed:
+         if all_children_executed:
             local_status = "FILLED"
             filled_quantity = float(
                 order["requested_quantity"]
@@ -325,7 +338,11 @@ def refresh_execution_order_status(
                 average_fill_price = buy_total - sell_total
             else:
                 average_fill_price = 0.0
-        elif all_children_canceled:
+
+        elif (
+            all_children_canceled
+            or close_package_terminal_unfilled
+        ):
             local_status = "CANCELED"
             filled_quantity = 0.0
             average_fill_price = None
@@ -572,10 +589,27 @@ def refresh_execution_order_status(
                         ),
                         status="RECONCILIATION_REQUIRED",
                     )
-
+        elif (
+            local_status == "CANCELED"
+            and float(
+                updated_order.get("filled_quantity") or 0
+            ) == 0
+            and protected_exit
+        ):
+            update_protected_position_exit_status(
+                parity_user_id=parity_user_id,
+                exit_id=str(protected_exit["id"]),
+                status="CANCELED",
+            )
+            update_protected_position_lot_status(
+                parity_user_id=parity_user_id,
+                protected_lot_id=str(
+                    protected_exit["protected_lot_id"]
+                ),
+                status="ACTIVE",
+            )
         elif local_status in {
             "ACTION_REQUIRED",
-            "CANCELED",
             "EXPIRED",
             "FAILED",
             "REJECTED",

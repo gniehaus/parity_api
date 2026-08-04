@@ -106,7 +106,10 @@ def prepare_close_options_overlay_draft(
         )
         if (
             str(order["lot_id"]) == str(lot_id)
-            and order["execution_phase"] == "INITIAL"
+            and order["execution_phase"] in {
+                                "INITIAL",
+                                "REQUOTE",
+            }"
             and order["status"] == "FILLED"
             and order["order_scope"] in {
                 "OPTIONS",

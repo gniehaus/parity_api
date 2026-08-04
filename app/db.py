@@ -5220,6 +5220,13 @@ def list_execution_activity(
                     workflow.attention_resolved_at,
                     workflow.attention_resolution_code,
                     workflow.attention_resolution_note,
+                    
+                    workflow.unwind_requested_at,
+                    workflow.unwind_status,
+                    workflow.unwind_final_share_quantity,
+                    workflow.unwind_sell_order_id,
+                    workflow.unwind_error,
+                    workflow.unwind_completed_at,
                     workflow_lot.lot_number,
                     workflow_lot.share_quantity,
 

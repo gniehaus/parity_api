@@ -1303,7 +1303,8 @@ def init_db():
                         'CONTINUATION',
                         'RECONCILIATION',
                         'REQUOTE',
-                        'CLOSE_OPTIONS'
+                        'CLOSE_OPTIONS',
+                        'CLOSE_EQUITY'
                     )
                 );
             """)

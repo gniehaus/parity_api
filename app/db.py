@@ -4671,6 +4671,7 @@ def create_execution_order(
                   AND lot_id = %s
                   AND sequence = %s
                   AND execution_phase = %s
+                  AND replaces_order_id IS NOT DISTINCT FROM %s
                   AND status IN (
                       'DRAFT',
                       'PREPARED',
@@ -4688,6 +4689,7 @@ def create_execution_order(
                     lot_id,
                     sequence,
                     execution_phase,
+                    replaces_order_id,
                 ),
             )
 

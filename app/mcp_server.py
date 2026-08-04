@@ -6,7 +6,6 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
-from .dividend_data import get_dividend_data
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
@@ -16,6 +15,7 @@ from parity_collar_engine import (
     build_defined_outcome_recommendations,
     clean_chain,
     fetch_orats_chain,
+    get_backend_dividend_data,
     select_single_expiry,
 )
 
@@ -202,14 +202,14 @@ def model_defined_outcomes(
     ticker = symbol.strip().upper()
 
     try:
-        dividend_data = get_dividend_data(ticker)
-
+        dividend_data = get_backend_dividend_data(ticker)
+        
         annual_dividend_per_share = float(
-            dividend_data.get("annual_dividend_per_share") or 0
+            dividend_data.get("annual_dividend_per_share") or 0.0
         )
-
+        
         dividend_yield = float(
-            dividend_data.get("dividend_yield") or 0
+            dividend_data.get("annual_dividend_yield") or 0.0
         )
 
         # Fetch the option chain once for all calculations.
@@ -243,7 +243,7 @@ def model_defined_outcomes(
         # Calculate the Covered Call using the same market data.
         covered_call = build_covered_call(
             expiry_chain,
-            target_income_pct=target_income_percent / 100,
+            target_protection_pct=target_income_percent / 100,
             assumed_dividend_yield=dividend_yield,
         )
 
@@ -288,7 +288,7 @@ def model_defined_outcomes(
         "ticker": ticker,
         "annual_dividend_per_share": annual_dividend_per_share,
         "annual_dividend_yield_percent": dividend_yield * 100,
-        "source": dividend_data.get("source", "Implied market dividend data"),
+        "source": "Market dividend data",
         "source_updated_at": (
             str(dividend_data.get("source_updated_at"))
             if dividend_data.get("source_updated_at")

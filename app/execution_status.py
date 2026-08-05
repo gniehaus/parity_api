@@ -617,18 +617,32 @@ def refresh_execution_order_status(
             ) == 0
             and protected_exit
         ):
-            update_protected_position_exit_status(
-                parity_user_id=parity_user_id,
-                exit_id=str(protected_exit["id"]),
-                status="CANCELED",
-            )
-            update_protected_position_lot_status(
-                parity_user_id=parity_user_id,
-                protected_lot_id=str(
-                    protected_exit["protected_lot_id"]
-                ),
-                status="ACTIVE",
-            )
+            if close_replacement_exists:
+                update_protected_position_exit_status(
+                    parity_user_id=parity_user_id,
+                    exit_id=str(protected_exit["id"]),
+                    status="ACTION_REQUIRED",
+                )
+                update_protected_position_lot_status(
+                    parity_user_id=parity_user_id,
+                    protected_lot_id=str(
+                        protected_exit["protected_lot_id"]
+                    ),
+                    status="RECONCILIATION_REQUIRED",
+                )
+            else:
+                update_protected_position_exit_status(
+                    parity_user_id=parity_user_id,
+                    exit_id=str(protected_exit["id"]),
+                    status="CANCELED",
+                )
+                update_protected_position_lot_status(
+                    parity_user_id=parity_user_id,
+                    protected_lot_id=str(
+                        protected_exit["protected_lot_id"]
+                    ),
+                    status="ACTIVE",
+                )
         elif local_status in {
             "ACTION_REQUIRED",
             "EXPIRED",

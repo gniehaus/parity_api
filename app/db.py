@@ -86,7 +86,48 @@ def init_db():
 
 
 
-
+                CREATE TABLE IF NOT EXISTS dividend_forecasts (
+                    ticker VARCHAR(20) NOT NULL,
+                    ex_date DATE NOT NULL,
+                    amount_per_share NUMERIC(18, 8) NOT NULL,
+                    frequency INTEGER,
+                    source VARCHAR(30) NOT NULL DEFAULT 'ORATS',
+                    source_filename TEXT,
+                    imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                
+                    PRIMARY KEY (ticker, ex_date)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_dividend_forecasts_ticker_ex_date
+                ON dividend_forecasts (ticker, ex_date);
+                
+                CREATE INDEX IF NOT EXISTS idx_dividend_forecasts_imported_at
+                ON dividend_forecasts (imported_at DESC);
+                
+                
+                CREATE TABLE IF NOT EXISTS dividend_forecast_imports (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    source VARCHAR(30) NOT NULL DEFAULT 'ORATS',
+                    source_filename TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    row_count INTEGER,
+                    status TEXT NOT NULL
+                        CHECK (
+                            status IN (
+                                'RUNNING',
+                                'COMPLETE',
+                                'FAILED'
+                            )
+                        ),
+                    error_message TEXT
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_dividend_forecast_imports_started_at
+                ON dividend_forecast_imports (started_at DESC);
+                
+                CREATE INDEX IF NOT EXISTS idx_dividend_forecast_imports_status
+                ON dividend_forecast_imports (status);
 
                 CREATE TABLE IF NOT EXISTS orats_summary_snapshots (
                     ticker VARCHAR(20) PRIMARY KEY,

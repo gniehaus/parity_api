@@ -76,6 +76,7 @@ def start_approved_new_position_workflow(
     option_limit_price: float,
     option_price_effect: str,
     option_time_in_force: str = "Day",
+    expected_dividends_per_share_through_expiration: float | None = None,
 ) -> dict[str, Any]:
     """
     Record one explicit approval for a new position and submit only
@@ -107,6 +108,9 @@ def start_approved_new_position_workflow(
             "limit_price": option_limit_price,
             "price_effect": option_price_effect,
             "time_in_force": option_time_in_force,
+            "expected_dividends_per_share_through_expiration": (
+                expected_dividends_per_share_through_expiration
+            ),
         }
         if workflow["underlying_source"] != "new":
             raise ExecutionWorkflowStartError(

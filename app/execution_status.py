@@ -908,10 +908,6 @@ def refresh_execution_order_status(
                     or []
                 )
 
-
-
-
-
             
             entry_outcome_snapshot = {
                 "strategy_type": workflow["strategy_type"],
@@ -928,6 +924,14 @@ def refresh_execution_order_status(
                 ),
                 "option_entry_price_effect": (
                     option_entry_price_effect
+                ),
+                "expected_dividends_per_share_through_expiration": (
+                    (
+                        workflow.get("approved_option_quote_snapshot")
+                        or {}
+                    ).get(
+                        "expected_dividends_per_share_through_expiration"
+                    )
                 ),
             }
 

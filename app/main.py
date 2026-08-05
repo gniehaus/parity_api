@@ -381,6 +381,10 @@ class ExecutionWorkflowStartRequest(BaseModel):
         "EVEN",
     ]
     option_time_in_force: Literal["Day"] = "Day"
+    expected_dividends_per_share_through_expiration: float | None = Field(
+        default=None,
+        ge=0,
+    )
 
 
 class ExpenseRatioRequest(BaseModel):
@@ -1549,7 +1553,11 @@ def execution_workflow_start(
             option_limit_price=req.option_limit_price,
             option_price_effect=req.option_price_effect,
             option_time_in_force=req.option_time_in_force,
+            expected_dividends_per_share_through_expiration=(
+                req.expected_dividends_per_share_through_expiration
+            ),
         )
+
     except ExecutionWorkflowStartError as exc:
         raise HTTPException(
             status_code=409,

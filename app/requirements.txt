@@ -19,3 +19,4 @@ psycopg2-binary==2.9.10
 pandas-market-calendars>=4.6,<6
 PyJWT[crypto]>=2.10,<3
 thetadata>=1.0.9,<2.0
+paramiko==3.5.1

@@ -6,6 +6,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+
+from .db import get_conn, init_db
 
 import paramiko
 
@@ -160,10 +163,219 @@ def parse_forecast_file(
     return rows
 
 
+def create_import_record(
+    *,
+    source_filename: str,
+) -> str:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO dividend_forecast_imports (
+                    source,
+                    source_filename,
+                    status
+                )
+                VALUES (
+                    'ORATS',
+                    %s,
+                    'RUNNING'
+                )
+                RETURNING id
+                """,
+                (source_filename,),
+            )
+
+            row = cur.fetchone()
+            conn.commit()
+
+    return str(row["id"])
+
+
+def mark_import_failed(
+    *,
+    import_id: str,
+    error_message: str,
+) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE dividend_forecast_imports
+                SET
+                    status = 'FAILED',
+                    completed_at = NOW(),
+                    error_message = %s
+                WHERE id = %s
+                """,
+                (
+                    error_message[:4000],
+                    import_id,
+                ),
+            )
+            conn.commit()
+
+
+def replace_dividend_forecasts(
+    *,
+    rows: list[DividendForecast],
+    source_filename: str,
+    import_id: str,
+) -> int:
+    if len(rows) < 10000:
+        raise ValueError(
+            f"Refusing to replace dividend forecasts with only "
+            f"{len(rows)} rows"
+        )
+
+    imported_at = datetime.now(timezone.utc)
+
+    values = [
+        (
+            row.ticker,
+            row.ex_date,
+            row.amount_per_share,
+            row.frequency,
+            "ORATS",
+            source_filename,
+            imported_at,
+        )
+        for row in rows
+    ]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TEMP TABLE dividend_forecasts_stage
+                (
+                    LIKE dividend_forecasts
+                    INCLUDING DEFAULTS
+                    INCLUDING CONSTRAINTS
+                )
+                ON COMMIT DROP
+                """
+            )
+
+            cur.executemany(
+                """
+                INSERT INTO dividend_forecasts_stage (
+                    ticker,
+                    ex_date,
+                    amount_per_share,
+                    frequency,
+                    source,
+                    source_filename,
+                    imported_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                """,
+                values,
+            )
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS row_count
+                FROM dividend_forecasts_stage
+                """
+            )
+            staged_count = cur.fetchone()["row_count"]
+
+            if staged_count != len(rows):
+                raise ValueError(
+                    f"Staged row count {staged_count} does not match "
+                    f"parsed row count {len(rows)}"
+                )
+
+            cur.execute("TRUNCATE TABLE dividend_forecasts")
+
+            cur.execute(
+                """
+                INSERT INTO dividend_forecasts (
+                    ticker,
+                    ex_date,
+                    amount_per_share,
+                    frequency,
+                    source,
+                    source_filename,
+                    imported_at
+                )
+                SELECT
+                    ticker,
+                    ex_date,
+                    amount_per_share,
+                    frequency,
+                    source,
+                    source_filename,
+                    imported_at
+                FROM dividend_forecasts_stage
+                """
+            )
+
+            cur.execute(
+                """
+                UPDATE dividend_forecast_imports
+                SET
+                    status = 'COMPLETE',
+                    completed_at = NOW(),
+                    row_count = %s,
+                    error_message = NULL
+                WHERE id = %s
+                """,
+                (
+                    staged_count,
+                    import_id,
+                ),
+            )
+
+            conn.commit()
+
+    return staged_count
+
+
+def import_dividend_forecasts() -> dict:
+    init_db()
+
+    source_filename = "ORATSStockDivForecasts.txt"
+
+    import_id = create_import_record(
+        source_filename=source_filename,
+    )
+
+    try:
+        downloaded_path = download_forecast_file()
+        rows = parse_forecast_file(downloaded_path)
+
+        imported_count = replace_dividend_forecasts(
+            rows=rows,
+            source_filename=source_filename,
+            import_id=import_id,
+        )
+
+        return {
+            "status": "COMPLETE",
+            "import_id": import_id,
+            "row_count": imported_count,
+            "source_filename": source_filename,
+        }
+
+    except Exception as exc:
+        mark_import_failed(
+            import_id=import_id,
+            error_message=str(exc),
+        )
+        raise
+
 
 
 if __name__ == "__main__":
-    downloaded_path = download_forecast_file()
-
-    print(f"Downloaded: {downloaded_path}")
-    print(f"Bytes: {downloaded_path.stat().st_size}")
+    result = import_dividend_forecasts()
+    print(result)

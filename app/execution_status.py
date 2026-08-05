@@ -908,7 +908,23 @@ def refresh_execution_order_status(
                     or []
                 )
 
-            
+            entry_expected_dividends = (
+                (
+                    workflow.get("approved_option_quote_snapshot")
+                    or {}
+                ).get(
+                    "expected_dividends_per_share_through_expiration"
+                )
+            )
+
+            if entry_expected_dividends is None:
+                entry_expected_dividends = (
+                    updated_order.get("quote_snapshot")
+                    or {}
+                ).get(
+                    "expected_dividends_per_share_through_expiration"
+                )
+
             entry_outcome_snapshot = {
                 "strategy_type": workflow["strategy_type"],
                 "underlying_symbol": (
@@ -926,12 +942,7 @@ def refresh_execution_order_status(
                     option_entry_price_effect
                 ),
                 "expected_dividends_per_share_through_expiration": (
-                    (
-                        workflow.get("approved_option_quote_snapshot")
-                        or {}
-                    ).get(
-                        "expected_dividends_per_share_through_expiration"
-                    )
+                    entry_expected_dividends
                 ),
             }
 

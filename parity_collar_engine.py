@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 import requests
 
+from app.dividend_forecast_service import (
+    get_expected_dividends_per_share,
+)
+
 from app.db import get_orats_summary
 
 MULT = 100
@@ -271,6 +275,58 @@ def get_backend_dividend_data(ticker: str) -> dict:
         "fetched_at": summary.get("fetched_at"),
     }
 
+
+
+
+from datetime import date
+
+def get_expected_dividend_amount(
+    expiry_chain,
+) -> tuple[float, float]:
+    """
+    Returns:
+
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars
+    )
+    """
+
+    if expiry_chain.empty:
+        return 0.0, 0.0
+
+    ticker = (
+        str(expiry_chain["ticker"].iloc[0])
+        .strip()
+        .upper()
+    )
+
+    valuation_date = (
+        expiry_chain["tradeDate"]
+        .iloc[0]
+        .date()
+    )
+
+    expiration_date = (
+        expiry_chain["expirDate"]
+        .iloc[0]
+        .date()
+    )
+
+    expected_dividend_per_share = float(
+        get_expected_dividends_per_share(
+            ticker=ticker,
+            as_of_date=valuation_date,
+            expiration_date=expiration_date,
+        )
+    )
+
+    return (
+        expected_dividend_per_share,
+        expected_dividend_per_share * MULT,
+    )
+
+
 def liquidity_score(*rows):
     total_volume = 0.0
     total_oi = 0.0
@@ -362,12 +418,12 @@ def build_zero_cost_dividend_floor_collar(
     dte = float(g["dte"].median())
     underlying_notional = spot * MULT
 
-    expected_dividend_dollars = (
-        underlying_notional
-        * assumed_dividend_yield
-        * (dte / 365.25)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
     )
-    expected_dividend_per_share = expected_dividend_dollars / MULT
 
     target_floor_return = -max_loss_pct
 
@@ -955,8 +1011,12 @@ def build_zero_cost_target_cap_buffer(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
-    expected_dividend_per_share = expected_dividend_dollars / MULT
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
+    )
 
     long_put_target = spot - expected_dividend_per_share
 
@@ -1378,21 +1438,17 @@ def build_defined_outcome_recommendations(
         "horizon": horizon,
         "selected_expiry": selected_expiry_summary,
         "assumptions": {
-            "assumed_dividend_yield": assumed_dividend_yield,
-            "dividend_note": (
-                "Expected dividends are included in terminal economics only. "
-                "They are not assumed to be available upfront."
+            "dividend_source": "ORATS Forecast",
+            "dividend_methodology": (
+                "Expected cash dividends occurring before the selected expiration "
+                "are included in terminal economics."
             ),
-            "cost_note": (
-                "Products are constructed using zero-or-smallest-debit option cost. "
-                "Net credits are not accepted."
-            ),
-        },
-        "products": {
-            "defined_floor": collar,
-            "buffered_growth": buffer,
-        },
-    }
+        }
+                "products": {
+                    "defined_floor": collar,
+                    "buffered_growth": buffer,
+                },
+            }
 
     return make_json_safe(payload)
 
@@ -1598,9 +1654,12 @@ def build_married_put(
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())
     notional = spot * MULT
-
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
-    expected_dividend_per_share = expected_dividend_dollars / MULT
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
+    )
 
     # Target the actual insurance strike, not the premium-adjusted floor.
     target_put_strike = spot * (1 - max_loss_pct) - expected_dividend_per_share
@@ -1819,8 +1878,12 @@ def build_covered_call(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
-    expected_dividend_per_share = expected_dividend_dollars / MULT
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
+    )
 
 
     calls = g[
@@ -2106,8 +2169,12 @@ def build_unlimited_upside_put_spread_ladder(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
-    expected_dividend_per_share = expected_dividend_dollars / MULT
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
+    )
 
     valid_puts = g[
         (g["strike"] < spot)
@@ -2319,9 +2386,13 @@ def analyze_defined_income_product(
     option_income_dollars = option_income_per_share * MULT
     option_income_pct = option_income_dollars / notional
 
-    expected_dividend_dollars = notional * assumed_dividend_yield * (dte / 365.25)
-    expected_dividend_per_share = expected_dividend_dollars / MULT
-
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+    ) = get_expected_dividend_amount(
+        expiry_chain
+    )
+    
     total_income_dollars = option_income_dollars + expected_dividend_dollars
     total_income_pct = total_income_dollars / notional
 

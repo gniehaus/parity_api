@@ -5859,6 +5859,71 @@ def get_protected_position_exit_for_equity_sale_order(
 
             return cur.fetchone()
 
+def relink_options_close_order_to_replacement(
+    *,
+    parity_user_id: str,
+    original_order_id: str,
+    replacement_order_id: str,
+) -> dict:
+    """
+    Move an active protected-position exit from its canceled original
+    close order to the submitted replacement order.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE protected_position_exits exit_record
+                SET
+                    options_close_order_id = %s,
+                    updated_at = NOW()
+                WHERE exit_record.parity_user_id = %s
+                  AND exit_record.options_close_order_id = %s
+                  AND exit_record.status IN (
+                      'OPTIONS_CLOSE_SUBMITTED',
+                      'AWAITING_OPTIONS_FILL'
+                  )
+                  AND EXISTS (
+                      SELECT 1
+                      FROM execution_orders replacement
+                      WHERE replacement.id = %s
+                        AND replacement.parity_user_id = %s
+                        AND replacement.replaces_order_id = %s
+                        AND replacement.execution_phase =
+                            'CLOSE_OPTIONS'
+                        AND replacement.order_role =
+                            'CLOSE_OPTIONS_OVERLAY'
+                        AND replacement.status IN (
+                            'SUBMITTED',
+                            'WORKING',
+                            'PARTIALLY_FILLED'
+                        )
+                  )
+                RETURNING exit_record.*;
+                """,
+                (
+                    replacement_order_id,
+                    parity_user_id,
+                    original_order_id,
+                    replacement_order_id,
+                    parity_user_id,
+                    original_order_id,
+                ),
+            )
+
+            protected_exit = cur.fetchone()
+
+            if not protected_exit:
+                raise ValueError(
+                    "The active exit could not be linked to its "
+                    "replacement close order"
+                )
+
+            conn.commit()
+
+    return protected_exit
+            
 
 def attach_options_close_order_to_protected_position_exit(
     *,

@@ -55,6 +55,7 @@ def prepare_close_options_overlay_draft(
     limit_price: str | float,
     price_effect: str,
     time_in_force: str = "Day",
+    replaces_order_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Prepare a fresh-quoted draft that closes the option overlay for one
@@ -284,6 +285,7 @@ def prepare_close_options_overlay_draft(
         workflow_id=workflow_id,
         lot_id=lot_id,
         sequence=sequence,
+        replaces_order_id=replaces_order_id,
         order_role="CLOSE_OPTIONS_OVERLAY",
         order_scope=(
             "OPTIONS"

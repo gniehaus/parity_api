@@ -16,6 +16,7 @@ from .db import (
     update_protected_position_exit_status,
     update_protected_position_lot_status,
     get_execution_order_replacement,
+    relink_options_close_order_to_replacement,
 )
 
 
@@ -463,6 +464,7 @@ def refresh_execution_order_status(
 
     replacement_order = None
     replacement_error = None
+    close_replacement_exists = False
 
     if (
         updated_order["status"] == "CANCELED"
@@ -471,6 +473,13 @@ def refresh_execution_order_status(
         replacement_order = get_execution_order_replacement(
             parity_user_id=parity_user_id,
             original_order_id=str(updated_order["id"]),
+        )
+
+        close_replacement_exists = bool(
+            replacement_order
+            and updated_order["execution_phase"] == "CLOSE_OPTIONS"
+            and updated_order["order_role"]
+            == "CLOSE_OPTIONS_OVERLAY"
         )
 
         if (
@@ -488,7 +497,19 @@ def refresh_execution_order_status(
 
                 replacement_order = replacement_submission["order"]
 
-            except ExecutionSubmissionError as exc:
+                if close_replacement_exists:
+                    relink_options_close_order_to_replacement(
+                        parity_user_id=parity_user_id,
+                        original_order_id=str(updated_order["id"]),
+                        replacement_order_id=str(
+                            replacement_order["id"]
+                        ),
+                    )
+
+            except (
+                ExecutionSubmissionError,
+                ValueError,
+            ) as exc:
                 replacement_order = get_execution_order(
                     parity_user_id=parity_user_id,
                     order_id=str(replacement_order["id"]),

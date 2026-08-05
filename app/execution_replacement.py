@@ -16,6 +16,9 @@ from .execution_safety import (
     validate_execution_order_safety,
 )
 
+from .execution_closing import (
+    prepare_close_options_overlay_draft,
+)
 
 class ExecutionReplacementError(ValueError):
     pass
@@ -159,25 +162,37 @@ def request_execution_order_replacement(
             or []
         )
     
-    if not option_contracts:
-        raise ExecutionReplacementError(
-            "Original order is missing its option contracts"
-        )
     try:
-        replacement_draft = prepare_option_order_draft(
-            parity_user_id=parity_user_id,
-            workflow_id=str(original_order["workflow_id"]),
-            lot_id=str(original_order["lot_id"]),
-            sequence=int(original_order["sequence"]),
-            contracts=option_contracts,
-            limit_price=option_limit_price,
-            price_effect=option_price_effect,
-            time_in_force=option_time_in_force,
-            execution_phase="REQUOTE",
-            replaces_order_id=order_id,
-            allow_replacement=True,
-        )
-
+        if original_order["execution_phase"] == "CLOSE_OPTIONS":
+            replacement_draft = prepare_close_options_overlay_draft(
+                parity_user_id=parity_user_id,
+                workflow_id=str(original_order["workflow_id"]),
+                lot_id=str(original_order["lot_id"]),
+                limit_price=option_limit_price,
+                price_effect=option_price_effect,
+                time_in_force=option_time_in_force,
+                replaces_order_id=order_id,
+            )
+        else:
+            if not option_contracts:
+                raise ExecutionReplacementError(
+                    "Original order is missing its option contracts"
+                )
+    
+            replacement_draft = prepare_option_order_draft(
+                parity_user_id=parity_user_id,
+                workflow_id=str(original_order["workflow_id"]),
+                lot_id=str(original_order["lot_id"]),
+                sequence=int(original_order["sequence"]),
+                contracts=option_contracts,
+                limit_price=option_limit_price,
+                price_effect=option_price_effect,
+                time_in_force=option_time_in_force,
+                execution_phase="REQUOTE",
+                replaces_order_id=order_id,
+                allow_replacement=True,
+            )
+    
         replacement_safety = validate_execution_order_safety(
             replacement_draft,
             allowed_statuses={"DRAFT"},

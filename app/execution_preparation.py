@@ -262,6 +262,7 @@ def prepare_option_order_draft(
     execution_phase: str = "INITIAL",
     replaces_order_id: str | None = None,
     allow_replacement: bool = False,
+    expected_dividends_per_share_through_expiration: float | None = None,
 ) -> dict[str, Any]:
     """
     Build and persist one ORATS-quoted option-order draft.
@@ -476,6 +477,7 @@ def prepare_option_order_draft(
         "source": "THETADATA_OPRA",
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "contracts": quoted_contracts,
+        "expected_dividends_per_share_through_expiration": (expected_dividends_per_share_through_expiration),
     }
 
     order = create_execution_order(

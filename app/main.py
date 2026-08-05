@@ -356,6 +356,7 @@ class ExecutionPrepareOptionOrderRequest(BaseModel):
     price_effect: str
     refresh_draft: bool = False
     time_in_force: str = "Day"
+    expected_dividends_per_share_through_expiration: float | None = Field(default=None,ge=0,)
 
 class ExecutionPrepareEquityOrderRequest(BaseModel):
     lot_id: str
@@ -1610,6 +1611,7 @@ def execution_option_order_draft_create(
             price_effect=req.price_effect,
             time_in_force=req.time_in_force,
             refresh_draft=req.refresh_draft,
+            expected_dividends_per_share_through_expiration=( req.expected_dividends_per_share_through_expiration),
         )
     except ExecutionConflictError as exc:
         raise HTTPException(

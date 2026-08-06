@@ -603,12 +603,24 @@ def refresh_execution_order_status(
                         ),
                     )
 
-                except Exception:
+                except Exception as exc:
+                    message = str(exc)
+                    
+                    if (
+                    "Broker still shows open option positions"
+                    in message
+                    ):
+                    # Broker has not reconciled yet.
+                    # Leave status as AWAITING_OPTIONS_FILL.
+                    pass
+                    
+                    else:
                     update_protected_position_exit_status(
                         parity_user_id=parity_user_id,
                         exit_id=str(protected_exit["id"]),
                         status="ACTION_REQUIRED",
                     )
+                    
                     update_protected_position_lot_status(
                         parity_user_id=parity_user_id,
                         protected_lot_id=str(

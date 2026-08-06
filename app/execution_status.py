@@ -551,16 +551,22 @@ def refresh_execution_order_status(
             elif (
                 protected_exit["exit_mode"]
                 == "SELL_PROTECTED_POSITION"
-                and protected_exit["status"]
-                == "OPTIONS_CLOSE_SUBMITTED"
+                and protected_exit["status"] in {
+                    "OPTIONS_CLOSE_SUBMITTED",
+                    "AWAITING_OPTIONS_FILL",
+                }
             ):
                 try:
-                    update_protected_position_exit_status(
-                        parity_user_id=parity_user_id,
-                        exit_id=str(protected_exit["id"]),
-                        status="AWAITING_OPTIONS_FILL",
-                    )
-
+                    if (
+                        protected_exit["status"]
+                        == "OPTIONS_CLOSE_SUBMITTED"
+                    ):
+                        update_protected_position_exit_status(
+                            parity_user_id=parity_user_id,
+                            exit_id=str(protected_exit["id"]),
+                            status="AWAITING_OPTIONS_FILL",
+                        )
+            
                     equity_draft = (
                         prepare_protected_position_equity_sale_draft(
                             parity_user_id=parity_user_id,

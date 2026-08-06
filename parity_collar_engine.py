@@ -1443,12 +1443,12 @@ def build_defined_outcome_recommendations(
                 "Expected cash dividends occurring before the selected expiration "
                 "are included in terminal economics."
             ),
-        }
-                "products": {
-                    "defined_floor": collar,
-                    "buffered_growth": buffer,
-                },
-            }
+        },
+        "products": {
+            "defined_floor": collar,
+            "buffered_growth": buffer,
+        },
+    }
 
     return make_json_safe(payload)
 

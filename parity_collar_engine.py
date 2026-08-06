@@ -419,13 +419,13 @@ def build_zero_cost_dividend_floor_collar(
     dte = float(g["dte"].median())
     underlying_notional = spot * MULT
 
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
 
     target_floor_return = -max_loss_pct
 

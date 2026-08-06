@@ -234,15 +234,6 @@ def start_approved_new_position_workflow(
         ) from exc
 
     except Exception as exc:
-        if approval_recorded:
-            try:
-                mark_workflow_action_required(
-                    parity_user_id=parity_user_id,
-                    workflow_id=workflow_id,
-                )
-            except Exception:
-                pass
-    
         message = str(exc)
     
         if (
@@ -255,10 +246,19 @@ def start_approved_new_position_workflow(
                 message
             ) from exc
     
+        if approval_recorded:
+            try:
+                mark_workflow_action_required(
+                    parity_user_id=parity_user_id,
+                    workflow_id=workflow_id,
+                )
+            except Exception:
+                pass
+    
         raise ExecutionWorkflowStartError(
             "The equity order could not be submitted safely"
         ) from exc
-
+        
     return {
         "workflow": approved_workflow,
         "underlying_order": equity_submission["order"],

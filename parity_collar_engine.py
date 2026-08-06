@@ -1065,13 +1065,13 @@ def build_zero_cost_target_cap_buffer(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
 
     long_put_target = spot - expected_dividend_per_share
 
@@ -1710,13 +1710,13 @@ def build_married_put(
     spot = float(g["spot"].median())
     dte = float(g["dte"].median())
     notional = spot * MULT
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
 
     # Target the actual insurance strike, not the premium-adjusted floor.
     target_put_strike = spot * (1 - max_loss_pct) - expected_dividend_per_share
@@ -1936,13 +1936,13 @@ def build_covered_call(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
 
 
     calls = g[
@@ -2229,13 +2229,13 @@ def build_unlimited_upside_put_spread_ladder(
     dte = float(g["dte"].median())
     notional = spot * MULT
 
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
 
     valid_puts = g[
         (g["strike"] < spot)
@@ -2447,13 +2447,13 @@ def analyze_defined_income_product(
     option_income_dollars = option_income_per_share * MULT
     option_income_pct = option_income_dollars / notional
 
-(
-    expected_dividend_per_share,
-    expected_dividend_dollars,
-    expected_dividend_schedule,
-) = get_expected_dividend_details(
-    expiry_chain
-)
+    (
+        expected_dividend_per_share,
+        expected_dividend_dollars,
+        expected_dividend_schedule,
+    ) = get_expected_dividend_details(
+        expiry_chain
+    )
     
     total_income_dollars = option_income_dollars + expected_dividend_dollars
     total_income_pct = total_income_dollars / notional

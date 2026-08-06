@@ -242,7 +242,19 @@ def start_approved_new_position_workflow(
                 )
             except Exception:
                 pass
-
+    
+        message = str(exc)
+    
+        if (
+            "market is closed" in message.lower()
+            or "nyse is closed" in message.lower()
+            or "outside trading hours" in message.lower()
+            or "outside allowed trading window" in message.lower()
+        ):
+            raise ExecutionWorkflowStartError(
+                message
+            ) from exc
+    
         raise ExecutionWorkflowStartError(
             "The equity order could not be submitted safely"
         ) from exc

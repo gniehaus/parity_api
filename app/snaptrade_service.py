@@ -888,14 +888,19 @@ def get_account_recent_orders(
 
 
 
-
-
-
-
-
-
 def sync_brokerage_accounts_and_holdings(parity_user_id: str):
     accounts = list_accounts(parity_user_id)
+
+    if not isinstance(accounts, list):
+        raise RuntimeError(
+            "SnapTrade returned an invalid accounts response"
+        )
+
+    active_account_ids = {
+        str(account["id"])
+        for account in accounts
+        if isinstance(account, dict) and account.get("id")
+    }
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -1090,7 +1095,60 @@ def sync_brokerage_accounts_and_holdings(parity_user_id: str):
                             normalized["raw_json"],
                         ),
                     )
+            cur.execute(
+                """
+                SELECT id
+                FROM brokerage_accounts
+                WHERE parity_user_id = %s
+                """,
+                (parity_user_id,),
+            )
 
+            local_account_ids = {
+                str(row["id"])
+                for row in cur.fetchall()
+            }
+
+            stale_account_ids = sorted(
+                local_account_ids - active_account_ids
+            )
+
+            if stale_account_ids:
+                cur.execute(
+                    """
+                    DELETE FROM normalized_holdings
+                    WHERE parity_user_id = %s
+                      AND account_id = ANY(%s)
+                    """,
+                    (
+                        parity_user_id,
+                        stale_account_ids,
+                    ),
+                )
+
+                cur.execute(
+                    """
+                    DELETE FROM holdings
+                    WHERE parity_user_id = %s
+                      AND account_id = ANY(%s)
+                    """,
+                    (
+                        parity_user_id,
+                        stale_account_ids,
+                    ),
+                )
+
+                cur.execute(
+                    """
+                    DELETE FROM brokerage_accounts
+                    WHERE parity_user_id = %s
+                      AND id = ANY(%s)
+                    """,
+                    (
+                        parity_user_id,
+                        stale_account_ids,
+                    ),
+                )
             conn.commit()
 
     portfolio = get_portfolio_summary(parity_user_id)

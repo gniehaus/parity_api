@@ -378,8 +378,23 @@ def prepare_protected_position_equity_sale_draft(
         order_id=str(options_close_order_id),
     )
 
-    if not options_close_order or (
+    if not options_close_order:
+        raise ValueError(
+            "The options-close order was not found"
+        )
+    
+    requested_contracts = _as_float(
+        options_close_order.get("requested_quantity")
+    )
+    
+    filled_contracts = _as_float(
+        options_close_order.get("filled_quantity")
+    )
+    
+    if (
         options_close_order["status"] != "FILLED"
+        or requested_contracts <= 0
+        or filled_contracts != requested_contracts
     ):
         raise ValueError(
             "The options overlay must be fully filled before shares "
@@ -399,6 +414,68 @@ def prepare_protected_position_equity_sale_draft(
         parity_user_id=parity_user_id,
         account_id=protected_lot["account_id"],
     )
+
+
+
+
+    close_legs = (
+        options_close_order.get("order_payload") or {}
+    ).get("legs") or []
+    
+    closing_option_symbols = {
+        str(
+            (leg.get("instrument") or {}).get("symbol") or ""
+        ).strip()
+        for leg in close_legs
+        if str(
+            (leg.get("instrument") or {}).get("symbol") or ""
+        ).strip()
+    }
+    
+    if not closing_option_symbols:
+        raise ValueError(
+            "The options-close order does not identify the contracts "
+            "that must be closed"
+        )
+    
+    remaining_option_positions = []
+    
+    for position in positions_response["positions"]:
+        instrument = position.get("instrument") or {}
+    
+        if str(instrument.get("kind") or "").lower() != "option":
+            continue
+    
+        option_symbol = str(
+            instrument.get("symbol") or ""
+        ).strip()
+    
+        if option_symbol not in closing_option_symbols:
+            continue
+    
+        remaining_units = _as_float(
+            position.get("units")
+        )
+    
+        if abs(remaining_units) > 0.000001:
+            remaining_option_positions.append(
+                {
+                    "symbol": option_symbol,
+                    "units": remaining_units,
+                }
+            )
+    
+    if remaining_option_positions:
+        remaining_description = ", ".join(
+            f'{position["symbol"]} '
+            f'({position["units"]} contracts)'
+            for position in remaining_option_positions
+        )
+    
+        raise ValueError(
+            "Broker still shows open option positions for this "
+            f"protected-position exit: {remaining_description}"
+        )
 
     matching_share_position = next(
         (

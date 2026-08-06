@@ -232,13 +232,109 @@ def prepare_close_options_overlay_draft(
         expiration = str(instrument.get("expiration_date") or "")
         strike = instrument.get("strike_price")
 
-        quote = get_orats_option_quote(
-            chain,
-            ticker=workflow["underlying_symbol"],
-            expiration=expiration,
-            option_type=option_type,
-            strike=strike,
-        )
+        try:
+            quote = get_orats_option_quote(
+                chain,
+                ticker=workflow["underlying_symbol"],
+                expiration=expiration,
+                option_type=option_type,
+                strike=strike,
+            )
+        
+        except ValueError as exc:
+            if "usable two-sided quote" not in str(exc):
+                raise
+        
+            normalized_ticker = workflow["underlying_symbol"].upper()
+            normalized_expiration = str(expiration)
+            normalized_type = str(option_type).upper()
+            normalized_strike = float(strike)
+        
+            matching_rows = chain[
+                (
+                    chain["ticker"].astype(str).str.upper()
+                    == normalized_ticker
+                )
+                & (
+                    chain["expirDate"].astype(str)
+                    == normalized_expiration
+                )
+                & (
+                    chain["strike"].astype(float)
+                    == normalized_strike
+                )
+            ]
+        
+            if matching_rows.empty:
+                raise
+        
+            row = matching_rows.iloc[0]
+            prefix = (
+                "call"
+                if normalized_type in {"CALL", "C"}
+                else "put"
+            )
+        
+            bid = float(row[f"{prefix}BidPrice"])
+            ask = float(row[f"{prefix}AskPrice"])
+        
+            if close_action == "BUY_TO_CLOSE":
+                if ask <= 0:
+                    raise ValueError(
+                        "The requested option does not have a usable ask quote"
+                    )
+        
+            elif close_action == "SELL_TO_CLOSE":
+                if bid <= 0:
+                    raise ValueError(
+                        "The requested option does not have a usable bid quote"
+                    )
+        
+            else:
+                raise ValueError(
+                    f"Unsupported option close action: {close_action}"
+                )
+        
+            quote = {
+                "ticker": normalized_ticker,
+                "expiration": normalized_expiration,
+                "option_type": (
+                    "CALL"
+                    if normalized_type in {"CALL", "C"}
+                    else "PUT"
+                ),
+                "strike": normalized_strike,
+                "bid_per_share": bid,
+                "ask_per_share": ask,
+                "mid_per_share": (
+                    (bid + ask) / 2
+                    if bid > 0 and ask > 0
+                    else None
+                ),
+                "spread_per_share": (
+                    ask - bid
+                    if bid > 0 and ask > 0
+                    else None
+                ),
+                "bid_size": int(
+                    row[f"{prefix}BidSize"] or 0
+                ),
+                "ask_size": int(
+                    row[f"{prefix}AskSize"] or 0
+                ),
+                "open_interest": int(
+                    row[f"{prefix}OpenInterest"] or 0
+                ),
+                "recent_volume": int(
+                    row[f"{prefix}Volume"] or 0
+                ),
+                "quote_timestamp": str(
+                    row["quoteDate"]
+                ),
+                "source_updated_at": str(
+                    row["updatedAt"]
+                ),
+            }
 
         close_legs.append(
             build_option_leg(

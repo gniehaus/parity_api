@@ -87,6 +87,22 @@ def start_approved_new_position_workflow(
     order is broker-confirmed FILLED.
     """
 
+
+    normalized_effect = str(option_price_effect).strip().upper()
+    normalized_limit = float(option_limit_price)
+    
+    if normalized_effect == "EVEN":
+        if normalized_limit != 0:
+            raise ExecutionWorkflowStartError(
+                "EVEN option packages must have a zero limit price"
+            )
+    else:
+        if normalized_limit <= 0:
+            raise ExecutionWorkflowStartError(
+                "DEBIT and CREDIT option packages must have "
+                "a limit price greater than zero"
+            )
+        
     if option_time_in_force != "Day":
         raise ExecutionWorkflowStartError(
             "Option orders must use Day time in force"

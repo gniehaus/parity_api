@@ -239,7 +239,7 @@ class ExecutionOrderCancelRequest(BaseModel):
 
 class ExecutionOrderReplaceRequest(BaseModel):
     confirm_replacement: bool
-    option_limit_price: float = Field(gt=0)
+    option_limit_price: float = Field(ge=0)
     option_price_effect: Literal[
         "DEBIT",
         "CREDIT",
@@ -251,14 +251,14 @@ class ExecutionOrderReplaceRequest(BaseModel):
 
 class ExecutionCloseOptionsOverlayRequest(BaseModel):
     lot_id: str
-    limit_price: float = Field(gt=0)
+    limit_price: float = Field(ge=0)
     price_effect: str
     time_in_force: str = "Day"
 
 class ProtectedPositionExitStartRequest(BaseModel):
     confirm_exit: bool
     exit_mode: str
-    option_limit_price: float = Field(gt=0)
+    option_limit_price: float = Field(ge=0)
     option_price_effect: str
     option_time_in_force: str = "Day"
     
@@ -352,7 +352,7 @@ class ExecutionPrepareOptionOrderRequest(BaseModel):
     lot_id: str
     sequence: int
     contracts: list[ExecutionOptionContractRequest]
-    limit_price: float = Field(gt=0)
+    limit_price: float = Field(ge=0)
     price_effect: str
     refresh_draft: bool = False
     time_in_force: str = "Day"
@@ -375,7 +375,7 @@ class ExecutionWorkflowStartRequest(BaseModel):
     confirm_plan: bool
     lot_id: str
     contracts: list[ExecutionOptionContractRequest]
-    option_limit_price: float = Field(gt=0)
+    option_limit_price: float = Field(ge=0)
     option_price_effect: Literal[
         "DEBIT",
         "CREDIT",

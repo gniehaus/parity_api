@@ -76,13 +76,10 @@ def request_execution_order_replacement(
         raise ExecutionReplacementError(
             "Replacement option orders must use Day time in force"
         )
+    normalized_effect = str(option_price_effect).strip().upper()
+    normalized_limit = float(option_limit_price)
 
-    if option_limit_price <= 0:
-        raise ExecutionReplacementError(
-            "Replacement limit price must be greater than zero"
-        )
-
-    if option_price_effect not in {
+    if normalized_effect not in {
         "DEBIT",
         "CREDIT",
         "EVEN",
@@ -90,6 +87,18 @@ def request_execution_order_replacement(
         raise ExecutionReplacementError(
             "Replacement order has an invalid price effect"
         )
+
+    if normalized_effect == "EVEN":
+        if normalized_limit != 0:
+            raise ExecutionReplacementError(
+                "EVEN replacement orders must have a zero limit price"
+            )
+    else:
+        if normalized_limit <= 0:
+            raise ExecutionReplacementError(
+                "DEBIT and CREDIT replacement orders must have "
+                "a limit price greater than zero"
+            )
 
     existing_replacement = get_execution_order_replacement(
         parity_user_id=parity_user_id,
@@ -168,8 +177,8 @@ def request_execution_order_replacement(
                 parity_user_id=parity_user_id,
                 workflow_id=str(original_order["workflow_id"]),
                 lot_id=str(original_order["lot_id"]),
-                limit_price=option_limit_price,
-                price_effect=option_price_effect,
+                limit_price=normalized_limit,
+                price_effect=ormalized_effect,
                 time_in_force=option_time_in_force,
                 replaces_order_id=order_id,
             )
@@ -185,8 +194,8 @@ def request_execution_order_replacement(
                 lot_id=str(original_order["lot_id"]),
                 sequence=int(original_order["sequence"]),
                 contracts=option_contracts,
-                limit_price=option_limit_price,
-                price_effect=option_price_effect,
+                limit_price=normalized_limit,
+                price_effect=normalized_effect,
                 time_in_force=option_time_in_force,
                 execution_phase="REQUOTE",
                 replaces_order_id=order_id,

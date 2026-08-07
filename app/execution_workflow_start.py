@@ -90,6 +90,12 @@ def start_approved_new_position_workflow(
 
     normalized_effect = str(option_price_effect).strip().upper()
     normalized_limit = float(option_limit_price)
+
+
+    if normalized_effect not in {"DEBIT", "CREDIT", "EVEN"}:
+        raise ExecutionWorkflowStartError(
+            "Option price effect must be DEBIT, CREDIT, or EVEN"
+    )
     
     if normalized_effect == "EVEN":
         if normalized_limit != 0:

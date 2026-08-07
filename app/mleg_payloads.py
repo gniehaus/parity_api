@@ -116,10 +116,28 @@ def build_limit_mleg_payload(
             "time_in_force must be Day, GTC, IOC, or FOK"
         )
 
+    if normalized_effect == "EVEN":
+        price = Decimal(str(limit_price))
+    
+        if not price.is_finite():
+            raise ValueError(
+                "limit_price must be a finite number"
+            )
+    
+        if price != 0:
+            raise ValueError(
+                "EVEN orders must have a zero limit_price"
+            )
+    
+        formatted_limit_price = "0.00"
+    
+    else:
+        formatted_limit_price = _format_price(limit_price)
+    
     return {
         "order_type": "LIMIT",
         "time_in_force": time_in_force,
-        "limit_price": _format_price(limit_price),
+        "limit_price": formatted_limit_price,
         "price_effect": normalized_effect,
         "legs": legs,
     }

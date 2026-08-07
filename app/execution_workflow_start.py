@@ -127,8 +127,8 @@ def start_approved_new_position_workflow(
         option_approval_snapshot = {
             "source": "USER_APPROVED_TERMS",
             "contracts": option_contracts,
-            "limit_price": option_limit_price,
-            "price_effect": option_price_effect,
+            "limit_price": normalized_limit,
+            "price_effect": normalized_effect,
             "time_in_force": option_time_in_force,
             "expected_dividends_per_share_through_expiration": (
                 expected_dividends_per_share_through_expiration
@@ -209,8 +209,8 @@ def start_approved_new_position_workflow(
                 parity_user_id=parity_user_id,
                 workflow_id=workflow_id,
                 option_contracts=option_contracts,
-                option_limit_price=option_limit_price,
-                option_price_effect=option_price_effect,
+                option_limit_price=normalized_limit,
+                option_price_effect=normalized_effect,
                 option_time_in_force=option_time_in_force,
                 option_quote_snapshot=(
                     option_approval_snapshot

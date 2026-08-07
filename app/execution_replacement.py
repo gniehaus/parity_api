@@ -178,7 +178,7 @@ def request_execution_order_replacement(
                 workflow_id=str(original_order["workflow_id"]),
                 lot_id=str(original_order["lot_id"]),
                 limit_price=normalized_limit,
-                price_effect=ormalized_effect,
+                price_effect=normalized_effect,
                 time_in_force=option_time_in_force,
                 replaces_order_id=order_id,
             )

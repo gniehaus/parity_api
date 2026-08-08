@@ -1179,12 +1179,37 @@ def build_zero_cost_target_cap_buffer(
             protected_start_return = long_put_strike / spot - 1
             protected_end_return = short_put_strike / spot - 1
 
+
+            midpoint_investment = notional + net_cost
+            
+            midpoint_effective_buffer_dollars = (
+                buffer_width_points * MULT
+            )
+            
+            midpoint_effective_buffer_return = (
+                midpoint_effective_buffer_dollars
+                / midpoint_investment
+            )
+
             long_put_ask = float(long_put.get("putAskPrice", long_put["putMid"]))
             short_put_bid = float(short_put.get("putBidPrice", short_put["putMid"]))
             call_bid = float(call.get("callBidPrice", call["callMid"]))
 
             worst_net_cost = (long_put_ask - short_put_bid - call_bid) * MULT
+
+            execution_investment = (
+                notional + worst_net_cost
+            )
             
+            execution_effective_buffer_dollars = (
+                buffer_width_points * MULT
+            )
+            
+            execution_effective_buffer_return = (
+                execution_effective_buffer_dollars
+                / execution_investment
+            )
+
             # Same existing cap formula, priced at executable bid/ask.
             execution_cap_value = (
                 call_strike * MULT
@@ -1233,6 +1258,18 @@ def build_zero_cost_target_cap_buffer(
                 ),
                 "call_mid_per_share": float(
                     call["callMid"]
+                ),
+                "midpoint_effective_buffer_dollars": (
+                midpoint_effective_buffer_dollars
+                ),
+                "midpoint_effective_buffer_return": (
+                    midpoint_effective_buffer_return
+                ),
+                "execution_effective_buffer_dollars": (
+                    execution_effective_buffer_dollars
+                ),
+                "execution_effective_buffer_return": (
+                    execution_effective_buffer_return
                 ),
                 "long_put_strike": long_put_strike,
                 "long_put_cost": long_put_cost,
@@ -1367,35 +1404,47 @@ def build_zero_cost_target_cap_buffer(
         "cap_return": float(best["cap_return"]),
 
         "pricing": {
-        "midpoint": {
-        "option_cost_dollars": net_cost,
-        "option_cost_bps": net_cost_bps,
-        "cap_value": float(best["cap_value"]),
-        "cap_return": float(best["cap_return"]),
-        "protected_start_return": float(
-            best["protected_start_return"]
-        ),
-        "protected_end_return": float(
-            best["protected_end_return"]
-        ),
-    },
-    "executable": {
-        "option_cost_dollars": float(
-            best["execution_net_cost"]
-        ),
-        "option_cost_bps": float(
-            best["execution_net_cost"] / notional * 10_000
-        ),
-        "cap_value": float(best["execution_cap_value"]),
-        "cap_return": float(best["execution_cap_return"]),
-        "protected_start_return": float(
-            best["protected_start_return"]
-        ),
-        "protected_end_return": float(
-            best["protected_end_return"]
-        ),
-    },
-},
+            "midpoint": {
+                "option_cost_dollars": net_cost,
+                "option_cost_bps": net_cost_bps,
+                "effective_buffer_dollars": float(
+                    best["midpoint_effective_buffer_dollars"]
+                ),
+                "effective_buffer_return": float(
+                    best["midpoint_effective_buffer_return"]
+                ),
+                "cap_value": float(best["cap_value"]),
+                "cap_return": float(best["cap_return"]),
+                "protected_start_return": float(
+                    best["protected_start_return"]
+                ),
+                "protected_end_return": float(
+                    best["protected_end_return"]
+                ),
+            },
+        "executable": {
+            "option_cost_dollars": float(
+                best["execution_net_cost"]
+            ),
+            "option_cost_bps": float(
+                best["execution_net_cost"] / notional * 10_000
+            ),
+            "effective_buffer_dollars": float(
+                best["execution_effective_buffer_dollars"]
+            ),
+            "effective_buffer_return": float(
+                best["execution_effective_buffer_return"]
+            ),
+            "cap_value": float(best["execution_cap_value"]),
+            "cap_return": float(best["execution_cap_return"]),
+            "protected_start_return": float(
+                best["protected_start_return"]
+            ),
+            "protected_end_return": float(
+                best["protected_end_return"]
+            ),
+        },
+        },
 
         "floor_value": None,
         "floor_return": None,
@@ -1410,7 +1459,8 @@ def build_zero_cost_target_cap_buffer(
         "display": {
             "title": "Buffered Growth",
             "subtitle": "First-loss buffer with capped upside",
-            "estimated_buffer_pct": round_pct(float(best["buffer_pct"])),
+            "estimated_buffer_pct": round_pct(float(best["midpoint_effective_buffer_return"])),
+            "estimated_execution_buffer_pct": round_pct(float(best["execution_effective_buffer_return"])),           
             "estimated_cap_pct": round_pct(float(best["cap_return"])),
             "protected_start_pct": round_pct(float(best["protected_start_return"])),
             "protected_end_pct": round_pct(float(best["protected_end_return"])),

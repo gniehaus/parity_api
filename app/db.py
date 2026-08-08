@@ -1991,7 +1991,135 @@ def get_public_scorecard_snapshot(
 
     return dict(snapshot)
 
+def create_saved_scenario(
+    *,
+    parity_user_id: str,
+    name: str | None,
+    underlying_symbol: str,
+    strategy_type: str,
+    underlying_source: str,
+    share_quantity: int,
+    expiration_date: date,
+    underlying_price: float,
+    engine_version: str,
+    scenario_snapshot: dict[str, Any],
+    client_request_id: str,
+    model_schema_version: int = 1,
+) -> dict[str, Any]:
+    normalized_symbol = underlying_symbol.strip().upper()
 
+    if not normalized_symbol:
+        raise ValueError("underlying_symbol is required")
+
+    if strategy_type not in {
+        "classic_collar",
+        "buffered_collar_first_loss",
+        "married_put",
+        "covered_call",
+    }:
+        raise ValueError("Invalid saved scenario strategy_type")
+
+    if underlying_source not in {"existing", "new"}:
+        raise ValueError("Invalid saved scenario underlying_source")
+
+    if share_quantity <= 0:
+        raise ValueError("share_quantity must be greater than zero")
+
+    if underlying_price <= 0:
+        raise ValueError("underlying_price must be greater than zero")
+
+    if not engine_version.strip():
+        raise ValueError("engine_version is required")
+
+    if not scenario_snapshot:
+        raise ValueError("scenario_snapshot is required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO saved_scenarios (
+                    parity_user_id,
+                    name,
+                    underlying_symbol,
+                    strategy_type,
+                    underlying_source,
+                    share_quantity,
+                    expiration_date,
+                    underlying_price,
+                    model_schema_version,
+                    engine_version,
+                    scenario_snapshot,
+                    client_request_id
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb,
+                    %s
+                )
+                ON CONFLICT (
+                    parity_user_id,
+                    client_request_id
+                )
+                WHERE client_request_id IS NOT NULL
+                DO NOTHING
+                RETURNING *
+                """,
+                (
+                    parity_user_id,
+                    name.strip() if name else None,
+                    normalized_symbol,
+                    strategy_type,
+                    underlying_source,
+                    share_quantity,
+                    expiration_date,
+                    underlying_price,
+                    model_schema_version,
+                    engine_version.strip(),
+                    json.dumps(scenario_snapshot),
+                    client_request_id,
+                ),
+            )
+
+            saved = cur.fetchone()
+
+            if saved is None:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM saved_scenarios
+                    WHERE parity_user_id = %s
+                      AND client_request_id = %s
+                      AND deleted_at IS NULL
+                    """,
+                    (
+                        parity_user_id,
+                        client_request_id,
+                    ),
+                )
+
+                saved = cur.fetchone()
+
+            if saved is None:
+                raise RuntimeError(
+                    "Saved scenario could not be created"
+                )
+
+            conn.commit()
+
+    return dict(saved)
+
+
+    
 def create_advisory_client(
     parity_user_id: str,
     email: str,

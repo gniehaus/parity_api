@@ -2038,6 +2038,20 @@ def create_saved_scenario(
         with conn.cursor() as cur:
             cur.execute(
                 """
+                INSERT INTO parity_users (
+                    id,
+                    created_at,
+                    last_login_at
+                )
+                VALUES (%s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    last_login_at = NOW()
+                """,
+                (parity_user_id,),
+            )
+            cur.execute(
+                """
                 INSERT INTO saved_scenarios (
                     parity_user_id,
                     name,

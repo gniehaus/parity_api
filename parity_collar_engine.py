@@ -1074,7 +1074,7 @@ def build_zero_cost_target_cap_buffer(
     )
 
     long_put_target = spot - expected_dividend_per_share
-
+    
     valid_puts = g[
         (g["strike"] < spot)
         & (g["putBidPrice"] > 0)
@@ -1086,18 +1086,26 @@ def build_zero_cost_target_cap_buffer(
         & (g["callBidPrice"] > 0)
         & (g["callAskPrice"] > 0)
     ].copy()
-
+    
     if valid_puts.empty or valid_calls.empty:
         return None
-
-    # 1. Long put near spot
-    valid_puts["long_put_distance"] = (
-        valid_puts["strike"] - long_put_target
+    
+    # Long put must provide first-loss protection on a
+    # dividend-adjusted total-return basis.
+    long_put_candidates = valid_puts[
+        valid_puts["strike"] >= long_put_target
+    ].copy()
+    
+    if long_put_candidates.empty:
+        return None
+    
+    long_put_candidates["long_put_distance"] = (
+        long_put_candidates["strike"] - long_put_target
     ).abs()
-
-    long_put = valid_puts.sort_values(
+    
+    long_put = long_put_candidates.sort_values(
         ["long_put_distance", "strike"],
-        ascending=[True, False],
+        ascending=[True, True],
     ).iloc[0]
 
     long_put_strike = float(long_put["strike"])

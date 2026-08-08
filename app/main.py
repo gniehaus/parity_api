@@ -121,6 +121,10 @@ from .db import (
     close_reconciliation_required_position,
     resolve_execution_workflow_attention,
     cancel_unsubmitted_protected_position_exit,
+    create_saved_scenario,
+    get_saved_scenario,
+    list_saved_scenarios,
+    delete_saved_scenario,
 )
 
 from .snaptrade_service import (
@@ -390,6 +394,52 @@ class ExecutionWorkflowStartRequest(BaseModel):
 
 class ExpenseRatioRequest(BaseModel):
     symbols: List[str]
+
+
+
+
+class SavedScenarioCreateRequest(BaseModel):
+    client_request_id: str
+
+    name: str | None = Field(
+        default=None,
+        max_length=120,
+    )
+
+    underlying_symbol: str = Field(
+        min_length=1,
+        max_length=20,
+    )
+
+    strategy_type: Literal[
+        "classic_collar",
+        "buffered_collar_first_loss",
+        "married_put",
+        "covered_call",
+    ]
+
+    underlying_source: Literal[
+        "existing",
+        "new",
+    ]
+
+    share_quantity: int = Field(gt=0)
+
+    expiration_date: date
+
+    underlying_price: float = Field(gt=0)
+
+    engine_version: str = Field(
+        min_length=1,
+        max_length=50,
+    )
+
+    model_schema_version: int = Field(
+        default=1,
+        ge=1,
+    )
+
+    scenario_snapshot: Dict[str, Any]
 
 
 class RecommendRequest(BaseModel):

@@ -224,7 +224,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS","DELTE"],
     allow_headers=[
         "Authorization",
         "Content-Type",
@@ -441,6 +441,118 @@ class SavedScenarioCreateRequest(BaseModel):
     )
 
     scenario_snapshot: Dict[str, Any]
+
+@app.post("/api/saved-scenarios")
+def saved_scenario_create(
+    req: SavedScenarioCreateRequest,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    if not req.scenario_snapshot:
+        raise HTTPException(
+            status_code=400,
+            detail="scenario_snapshot is required",
+        )
+
+    try:
+        scenario = create_saved_scenario(
+            parity_user_id=parity_user_id,
+            name=req.name,
+            underlying_symbol=req.underlying_symbol,
+            strategy_type=req.strategy_type,
+            underlying_source=req.underlying_source,
+            share_quantity=req.share_quantity,
+            expiration_date=req.expiration_date,
+            underlying_price=req.underlying_price,
+            engine_version=req.engine_version,
+            scenario_snapshot=req.scenario_snapshot,
+            client_request_id=req.client_request_id,
+            model_schema_version=req.model_schema_version,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "scenario": scenario,
+    }
+
+
+@app.get("/api/saved-scenarios")
+def saved_scenarios_list(
+    request: Request,
+    limit: int = 25,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    try:
+        scenarios = list_saved_scenarios(
+            parity_user_id=parity_user_id,
+            limit=limit,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "scenarios": scenarios,
+        "count": len(scenarios),
+    }
+
+
+@app.get("/api/saved-scenarios/{scenario_id}")
+def saved_scenario_get(
+    scenario_id: str,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    scenario = get_saved_scenario(
+        parity_user_id=parity_user_id,
+        scenario_id=scenario_id,
+    )
+
+    if not scenario:
+        raise HTTPException(
+            status_code=404,
+            detail="Saved scenario was not found",
+        )
+
+    return {
+        "scenario": scenario,
+    }
+
+
+@app.delete("/api/saved-scenarios/{scenario_id}")
+def saved_scenario_delete(
+    scenario_id: str,
+    request: Request,
+):
+    parity_user_id = get_parity_user_id(request)
+
+    scenario = delete_saved_scenario(
+        parity_user_id=parity_user_id,
+        scenario_id=scenario_id,
+    )
+
+    if not scenario:
+        raise HTTPException(
+            status_code=404,
+            detail="Saved scenario was not found",
+        )
+
+    return {
+        "deleted": True,
+        "scenario_id": str(scenario["id"]),
+    }
+
 
 
 class RecommendRequest(BaseModel):

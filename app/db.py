@@ -2133,6 +2133,175 @@ def create_saved_scenario(
     return dict(saved)
 
 
+def get_saved_scenario(
+    *,
+    parity_user_id: str,
+    scenario_id: str,
+) -> dict[str, Any] | None:
+    """
+    Return one active saved scenario only when it belongs
+    to the requesting user.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM saved_scenarios
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND deleted_at IS NULL
+                """,
+                (
+                    scenario_id,
+                    parity_user_id,
+                ),
+            )
+
+            scenario = cur.fetchone()
+
+    return dict(scenario) if scenario else None
+
+
+def list_saved_scenarios(
+    *,
+    parity_user_id: str,
+    limit: int = 25,
+    before_created_at: datetime | None = None,
+    before_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return one cursor-paginated page of active saved scenarios
+    for the requesting user.
+
+    Cursor ordering is (created_at DESC, id DESC).
+    """
+
+    if limit <= 0 or limit > 100:
+        raise ValueError(
+            "limit must be between 1 and 100"
+        )
+
+    if (
+        (before_created_at is None)
+        != (before_id is None)
+    ):
+        raise ValueError(
+            "before_created_at and before_id must "
+            "be provided together"
+        )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if before_created_at is None:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM saved_scenarios
+                    WHERE parity_user_id = %s
+                      AND deleted_at IS NULL
+                    ORDER BY
+                        created_at DESC,
+                        id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        parity_user_id,
+                        limit,
+                    ),
+                )
+
+            else:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM saved_scenarios
+                    WHERE parity_user_id = %s
+                      AND deleted_at IS NULL
+                      AND (
+                          created_at < %s
+                          OR (
+                              created_at = %s
+                              AND id < %s
+                          )
+                      )
+                    ORDER BY
+                        created_at DESC,
+                        id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        parity_user_id,
+                        before_created_at,
+                        before_created_at,
+                        before_id,
+                        limit,
+                    ),
+                )
+
+            rows = cur.fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def delete_saved_scenario(
+    *,
+    parity_user_id: str,
+    scenario_id: str,
+) -> dict[str, Any] | None:
+    """
+    Soft-delete one saved scenario owned by the requesting user.
+
+    Repeated deletion is safe and does not expose another user's
+    scenario.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE saved_scenarios
+                SET
+                    deleted_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND parity_user_id = %s
+                  AND deleted_at IS NULL
+                RETURNING *
+                """,
+                (
+                    scenario_id,
+                    parity_user_id,
+                ),
+            )
+
+            scenario = cur.fetchone()
+
+            if scenario is None:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM saved_scenarios
+                    WHERE id = %s
+                      AND parity_user_id = %s
+                      AND deleted_at IS NOT NULL
+                    """,
+                    (
+                        scenario_id,
+                        parity_user_id,
+                    ),
+                )
+
+                scenario = cur.fetchone()
+
+            conn.commit()
+
+    return dict(scenario) if scenario else None
+
+
+
+
     
 def create_advisory_client(
     parity_user_id: str,

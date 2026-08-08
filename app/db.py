@@ -1049,9 +1049,95 @@ def init_db():
                 ALTER TABLE execution_workflows
                 ADD COLUMN IF NOT EXISTS execution_preference TEXT;
             """)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_scenarios (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            
+                    parity_user_id TEXT NOT NULL
+                    REFERENCES parity_users(id)
+                    ON DELETE CASCADE,
+                            
+                    name TEXT,
+            
+                    underlying_symbol TEXT NOT NULL,
+            
+                    strategy_type TEXT NOT NULL CHECK (
+                        strategy_type IN (
+                            'classic_collar',
+                            'buffered_collar_first_loss',
+                            'married_put',
+                            'covered_call'
+                        )
+                    ),
+            
+                    underlying_source TEXT NOT NULL CHECK (
+                        underlying_source IN (
+                            'existing',
+                            'new'
+                        )
+                    ),
+            
+                    share_quantity INTEGER NOT NULL CHECK (
+                        share_quantity > 0
+                    ),
+            
+                    expiration_date DATE NOT NULL,
+            
+                    underlying_price NUMERIC(18, 6) NOT NULL,
+            
+                    model_schema_version INTEGER NOT NULL DEFAULT 1,
+                    engine_version TEXT NOT NULL,
+            
+                    scenario_snapshot JSONB NOT NULL,
+            
+                    client_request_id UUID,
+            
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    deleted_at TIMESTAMPTZ
+                );
+                """
+            )
 
-
-
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    idx_saved_scenarios_user_created
+                ON saved_scenarios (
+                    parity_user_id,
+                    created_at DESC,
+                    id DESC
+                )
+                WHERE deleted_at IS NULL;
+                """
+            )
+            
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    idx_saved_scenarios_user_symbol_created
+                ON saved_scenarios (
+                    parity_user_id,
+                    underlying_symbol,
+                    created_at DESC,
+                    id DESC
+                )
+                WHERE deleted_at IS NULL;
+                """
+            )
+            
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_saved_scenarios_user_request
+                ON saved_scenarios (
+                    parity_user_id,
+                    client_request_id
+                )
+                WHERE client_request_id IS NOT NULL;
+                """
+            )
 
             cur.execute("""
                 ALTER TABLE execution_workflows

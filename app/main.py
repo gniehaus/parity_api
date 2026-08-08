@@ -8,6 +8,7 @@ from snaptrade_client import SnapTrade
 from .expense_ratio_service import get_expense_ratio
 from pydantic import BaseModel, Field
 from .auth import get_parity_user_id
+from datetime import date
 from .execution_access import require_new_execution_enabled
 from .subscriptions import (
     router as subscriptions_router,
@@ -461,7 +462,6 @@ class UserUpsertRequest(BaseModel):
     raw: dict | None = None
 
 
-from datetime import date
 from pydantic import BaseModel
 
 

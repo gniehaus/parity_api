@@ -1076,8 +1076,7 @@ def build_zero_cost_target_cap_buffer(
     long_put_target = spot - expected_dividend_per_share
     
     valid_puts = g[
-        (g["strike"] < spot)
-        & (g["putBidPrice"] > 0)
+        (g["putBidPrice"] > 0)
         & (g["putAskPrice"] > 0)
     ].copy()
     
